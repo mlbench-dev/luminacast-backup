@@ -30,7 +30,15 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-WEBHOOK_BASE = "https://www.luminacast.com/api/webhooks/runpod"
+# WEBHOOK_BASE = "https://www.luminacast.com/api/webhooks/runpod"
+def _webhook_base() -> str:
+    domain = getattr(settings, "APP_DOMAIN", None) or "localhost"
+    if domain in ("localhost", "127.0.0.1"):
+        return "https://www.luminacast.com/api/webhooks/runpod"
+    scheme = "http" if domain.replace(".", "").isdigit() else "https"
+    return f"{scheme}://{domain}/api/webhooks/runpod"
+
+WEBHOOK_BASE = _webhook_base()
 
 
 def calculate_stall_threshold(audio_duration_s: float, quality: str = "480p") -> int:
