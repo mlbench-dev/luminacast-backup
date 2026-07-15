@@ -147,10 +147,9 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:
-          host: 145.223.121.28
+          host: 72.62.39.238
           username: root
           password: ${{ secrets.SSH_PASSWORD }}
-          script_stop: true
           command_timeout: 20m
           script: |
             set -e
