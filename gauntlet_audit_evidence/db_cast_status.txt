@@ -1,0 +1,23 @@
+Cast Status Distribution — E2E test casts (captured 2026-04-13)
+
+SELECT status, COUNT(*) FROM casts WHERE name LIKE 'E2E%' OR name LIKE 'G0%' OR name LIKE 'Gauntlet%' GROUP BY status;
+
+    status     | count
+---------------+-------
+ tts_ready     |     4
+ DRAFT         |     2
+ SCRIPT_REVIEW |     2
+
+Individual casts:
+        id        |            name             |    status     |               progress_step               | progress_percent
+------------------+-----------------------------+---------------+-------------------------------------------+------------------
+ cst_6934f6468fca | E2E Test Cast 1776027439196 | tts_ready     | Audio complete. Review and time overlays. |                0
+ cst_d9f6cfa3b772 | E2E Test Cast 1776027290026 | tts_ready     | Audio complete. Review and time overlays. |                0
+ cst_26fa12d492df | E2E Test Cast 1776027105846 | tts_ready     | Audio complete. Review and time overlays. |                0
+ cst_f75ec53c5e2b | E2E Test Cast 1776026963291 | tts_ready     | Audio complete. Review and time overlays. |                0
+ cst_583012a76633 | E2E Test Cast 1776026860150 | DRAFT         |                                           |                0
+ cst_261a8fd8cb87 | E2E Test Cast 1776026793248 | DRAFT         |                                           |                0
+ cst_66f3695a472e | E2E Test Cast 1776026526839 | SCRIPT_REVIEW |                                           |                0
+ cst_5258a6fd32f6 | E2E Test Cast 1776026380600 | SCRIPT_REVIEW |                                           |                0
+
+Only 1 cast in entire system reached READY: cst_88ea09fe483f ("111") with progress_step="Complete"

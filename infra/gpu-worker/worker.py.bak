@@ -1,0 +1,1664 @@
+"""Unified GPU Worker — FastAPI server for BS-RoFormer, Fish Speech, InfiniteTalk, Upscale.
+
+Runs on a dedicated HOSTKEY RTX 4090 server. Models hot-swap behind asyncio.Lock()
+so only one model uses the GPU at a time. Models stay loaded between same-type jobs.
+
+Endpoints:
+  POST /api/bs-roformer   — vocal isolation + Whisper transcription
+  POST /api/fish-speech    — TTS generation (stub — TODO)
+  POST /api/infinitetalk   — talking head video generation
+  POST /api/upscale-video  — video upscaling via Real-ESRGAN
+  GET  /api/health         — GPU status
+"""
+
+import asyncio
+import gc
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import wave
+from typing import Optional
+
+import boto3
+import numpy as np
+import requests
+import torch
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("gpu-worker")
+
+# Better Stack logging
+try:
+    from logtail import LogtailHandler
+    betterstack_token = os.environ.get("BETTERSTACK_GPU_TOKEN") or os.environ.get("BETTERSTACK_TOKEN")
+    if betterstack_token:
+        handler = LogtailHandler(source_token=betterstack_token)
+        logging.getLogger().addHandler(handler)
+        logger.info("Better Stack logging connected")
+except ImportError:
+    pass  # logtail not installed
+
+app = FastAPI(title="Luminacast GPU Worker")
+
+# ── GPU state ──
+gpu_lock = asyncio.Lock()
+current_model: Optional[str] = None
+model_instance = None
+
+# ── R2 config ──
+R2_ENDPOINT = os.environ.get("R2_ENDPOINT", "")
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "")
+R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "")
+R2_BUCKET = os.environ.get("R2_BUCKET", "luminacast")
+R2_PUBLIC_URL = os.environ.get("R2_PUBLIC_URL", "https://media.luminacast.com")
+
+# ── InfiniteTalk paths ──
+INFINITETALK_REPO = "/opt/gpu-worker/InfiniteTalk"
+MODELS_DIR = "/opt/gpu-worker/models"
+WAN_CKPT_DIR = os.path.join(MODELS_DIR, "Wan2.1-I2V-14B-480P")
+WAV2VEC_DIR = os.path.join(MODELS_DIR, "chinese-wav2vec2-base")
+INFINITETALK_WEIGHTS = os.path.join(MODELS_DIR, "infinitetalk/single/infinitetalk.safetensors")
+
+
+def get_s3():
+    return boto3.client(
+        "s3",
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=R2_ACCESS_KEY,
+        aws_secret_access_key=R2_SECRET_KEY,
+        region_name="auto",
+    )
+
+
+# ═══════════════════════════════════════════
+# Model management
+# ═══════════════════════════════════════════
+
+def _unload_current():
+    global current_model, model_instance
+    if model_instance is not None:
+        logger.info(f"Unloading model: {current_model}")
+        del model_instance
+        model_instance = None
+        current_model = None
+        torch.cuda.empty_cache()
+        gc.collect()
+
+
+def _load_bs_roformer():
+    global current_model, model_instance
+    if current_model == "bs_roformer":
+        return model_instance
+    _unload_current()
+    logger.info("Loading BS-RoFormer model...")
+    from audio_separator.separator import Separator
+    sep = Separator()
+    sep.load_model("model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+    model_instance = sep
+    current_model = "bs_roformer"
+    logger.info("BS-RoFormer loaded")
+    return sep
+
+
+def _load_whisper():
+    """Load Whisper large-v3 (doesn't conflict with BS-RoFormer — both fit in 24GB)."""
+    import whisper
+    return whisper.load_model("large-v3", device="cuda")
+
+
+# Cache whisper model separately (it's small enough to keep alongside BS-RoFormer)
+_whisper_model = None
+
+
+def _get_whisper():
+    global _whisper_model
+    if _whisper_model is None:
+        logger.info("Loading Whisper large-v3...")
+        import whisper
+        _whisper_model = whisper.load_model("large-v3", device="cuda")
+        logger.info("Whisper loaded")
+    return _whisper_model
+
+
+
+def _load_realesrgan(enhance_faces: bool = False):
+    """Load Real-ESRGAN 4x upscaler (+ optional GFPGAN face enhancer).
+
+    Follows hot-swap pattern: check current_model, call _unload_current if different.
+    Uses tile=400 and half=True for VRAM efficiency on RTX 4090.
+    """
+    global current_model, model_instance
+    target = "realesrgan_face" if enhance_faces else "realesrgan"
+    if current_model == target:
+        return model_instance
+    _unload_current()
+    logger.info(f"Loading Real-ESRGAN (enhance_faces={enhance_faces})...")
+
+    from basicsr.archs.rrdbnet_arch import RRDBNet
+    from realesrgan import RealESRGANer
+
+    rrdb_model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
+                         num_block=23, num_grow_ch=32, scale=4)
+    upsampler = RealESRGANer(
+        scale=4,
+        model_path="/opt/gpu-worker/models/RealESRGAN_x4plus.pth",
+        model=rrdb_model,
+        tile=400,
+        tile_pad=10,
+        pre_pad=0,
+        half=True,
+        device="cuda",
+    )
+
+    face_enhancer = None
+    if enhance_faces:
+        from gfpgan import GFPGANer
+        face_enhancer = GFPGANer(
+            model_path="/opt/gpu-worker/models/GFPGANv1.4.pth",
+            upscale=4,
+            arch="clean",
+            channel_multiplier=2,
+            bg_upsampler=upsampler,
+        )
+
+    model_instance = {"upsampler": upsampler, "face_enhancer": face_enhancer}
+    current_model = target
+    logger.info(f"Real-ESRGAN loaded (target={target})")
+    return model_instance
+
+
+# ═══════════════════════════════════════════
+# BS-RoFormer pipeline
+# ═══════════════════════════════════════════
+
+class BSRoFormerRequest(BaseModel):
+    audio_url: str
+    output_key: str
+    max_duration: int = 90
+
+
+def _download_audio(url: str, work_dir: str) -> str:
+    """Download audio/video from URL, extract WAV."""
+    audio_path = os.path.join(work_dir, "input.wav")
+
+    # Strip query params for extension check
+    url_path = url.split("?")[0]
+    if url_path.endswith(".wav") or url_path.endswith(".mp3"):
+        resp = requests.get(url, timeout=120)
+        resp.raise_for_status()
+        ext = ".wav" if url_path.endswith(".wav") else ".mp3"
+        raw_path = os.path.join(work_dir, "raw_input" + ext)
+        with open(raw_path, "wb") as f:
+            f.write(resp.content)
+        # If already WAV, use directly
+        if ext == ".wav":
+            return raw_path
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_path, "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1", audio_path],
+            capture_output=True, timeout=30,
+        )
+        return audio_path
+    else:
+        # Download video/generic and extract audio
+        raw_path = os.path.join(work_dir, "raw_input.mp4")
+        resp = requests.get(url, timeout=120)
+        resp.raise_for_status()
+        with open(raw_path, "wb") as f:
+            f.write(resp.content)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_path, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1", audio_path],
+            capture_output=True, timeout=30,
+        )
+        return audio_path
+
+
+def _isolate_vocals(separator, audio_path: str, work_dir: str) -> str:
+    """Run BS-RoFormer vocal isolation on GPU."""
+    output_dir = os.path.join(work_dir, "separated")
+    os.makedirs(output_dir, exist_ok=True)
+
+    separator.output_dir = output_dir
+    output_files = separator.separate(audio_path)
+
+    # separator.separate() returns relative filenames — resolve to absolute
+    vocals_path = None
+    for f in output_files:
+        # Try absolute first, then resolve relative to output_dir
+        abs_path = f if os.path.isabs(f) else os.path.join(output_dir, os.path.basename(f))
+        if not os.path.exists(abs_path):
+            abs_path = os.path.join(output_dir, f)
+        if os.path.exists(abs_path) and ("vocal" in f.lower() or "voice" in f.lower()):
+            vocals_path = abs_path
+            break
+    # Fallback: find any file with "Vocal" in the output dir
+    if not vocals_path:
+        for fname in os.listdir(output_dir):
+            if "vocal" in fname.lower():
+                vocals_path = os.path.join(output_dir, fname)
+                break
+    if not vocals_path:
+        logger.warning("BS-RoFormer produced no vocals, using original")
+        return audio_path
+
+    logger.info(f"Vocals isolated: {vocals_path} ({os.path.getsize(vocals_path)} bytes)")
+    return vocals_path
+
+
+def _process_audio(vocals_path: str, work_dir: str, max_duration: int = 90) -> str:
+    """Silence trim, highpass, loudnorm, select best segment."""
+    processed_path = os.path.join(work_dir, "processed.wav")
+    ffmpeg_filter = (
+        "highpass=f=80,"
+        "lowpass=f=14000,"
+        "silenceremove=start_periods=1:start_silence=0.3:start_threshold=-35dB:"
+        "stop_periods=-1:stop_silence=0.3:stop_threshold=-35dB,"
+        "loudnorm=I=-16:LRA=11:TP=-1.5"
+    )
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", vocals_path, "-af", ffmpeg_filter,
+         "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1", processed_path],
+        capture_output=True, timeout=60,
+    )
+    if result.returncode != 0 or not os.path.exists(processed_path):
+        return vocals_path
+
+    file_size = os.path.getsize(processed_path)
+    duration_s = file_size / (44100 * 2)
+
+    if duration_s <= max_duration:
+        return processed_path
+
+    # Select densest speech segment
+    final_path = os.path.join(work_dir, "final.wav")
+    try:
+        with wave.open(processed_path, "rb") as wf:
+            frames = wf.readframes(wf.getnframes())
+            audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+
+        sample_rate = 44100
+        window_size = sample_rate
+        n_windows = len(audio_data) // window_size
+        energies = []
+        for i in range(n_windows):
+            chunk = audio_data[i * window_size:(i + 1) * window_size]
+            energies.append(np.sqrt(np.mean(chunk ** 2)))
+
+        target_windows = min(max_duration, n_windows)
+        best_start = 0
+        best_energy = 0
+        for start in range(n_windows - target_windows + 1):
+            total_energy = sum(energies[start:start + target_windows])
+            if total_energy > best_energy:
+                best_energy = total_energy
+                best_start = start
+
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", processed_path,
+             "-ss", str(best_start), "-t", str(target_windows),
+             "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1", final_path],
+            capture_output=True, timeout=30,
+        )
+        if os.path.exists(final_path) and os.path.getsize(final_path) > 1000:
+            return final_path
+    except Exception as e:
+        logger.warning(f"Segment selection failed: {e}")
+
+    return processed_path
+
+
+def _transcribe(whisper_model, audio_path: str) -> str:
+    """Transcribe with Whisper large-v3 on GPU."""
+    try:
+        result = whisper_model.transcribe(audio_path, language="en")
+        text = result.get("text", "").strip()
+        logger.info(f"Transcription ({len(text)} chars)")
+        return text
+    except Exception as e:
+        logger.warning(f"Transcription failed: {e}")
+        return ""
+
+
+def _run_bs_roformer_pipeline(req: BSRoFormerRequest) -> dict:
+    """Full BS-RoFormer pipeline (runs in executor thread)."""
+    work_dir = tempfile.mkdtemp(prefix="gpu_bsrf_")
+    try:
+        # 1. Download
+        logger.info(f"Downloading: {req.audio_url[:80]}")
+        audio_path = _download_audio(req.audio_url, work_dir)
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
+            raise RuntimeError("Failed to download audio")
+
+        # 2. Vocal isolation
+        separator = _load_bs_roformer()
+        vocals_path = _isolate_vocals(separator, audio_path, work_dir)
+
+        # 3. Process
+        final_path = _process_audio(vocals_path, work_dir, req.max_duration)
+        final_size = os.path.getsize(final_path)
+        duration = final_size / (44100 * 2)
+
+        # 4. Transcribe
+        whisper_model = _get_whisper()
+        transcript = _transcribe(whisper_model, final_path)
+
+        # 5. Upload to R2
+        s3 = get_s3()
+        s3.upload_file(final_path, R2_BUCKET, req.output_key,
+                       ExtraArgs={"ContentType": "audio/wav"})
+        vocals_url = f"{R2_PUBLIC_URL}/{req.output_key}"
+
+        return {
+            "vocals_url": vocals_url,
+            "transcript": transcript,
+            "duration_seconds": round(duration, 1),
+        }
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.post("/api/bs-roformer")
+async def bs_roformer_endpoint(req: BSRoFormerRequest):
+    async with gpu_lock:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: _run_bs_roformer_pipeline(req))
+        return result
+
+
+# ═══════════════════════════════════════════
+# Fish Speech (stub — TODO)
+# ═══════════════════════════════════════════
+
+class FishSpeechRequest(BaseModel):
+    text: str
+    reference_audio_b64: str
+    format: str = "mp3"
+
+
+@app.post("/api/fish-speech")
+async def fish_speech_endpoint(req: FishSpeechRequest):
+    raise HTTPException(501, "Fish Speech not yet implemented on GPU server. Use RunPod fallback.")
+
+
+# ═══════════════════════════════════════════
+# InfiniteTalk — talking head video generation
+# ═══════════════════════════════════════════
+
+class InfiniteTalkRequest(BaseModel):
+    image_url: str
+    audio_url: str
+    output_key: str = ""
+    prompt: str = "A person is talking naturally."
+    size: str = "480p"
+    sample_steps: int = 40
+    max_seconds: int = 40  # max video duration in seconds (default 40s = 1000 frames)
+
+
+# Cached InfiniteTalk pipeline and wav2vec components
+_infinitetalk_pipeline = None
+_wav2vec_extractor = None
+_wav2vec_encoder = None
+
+
+def _load_infinitetalk():
+    """Load InfiniteTalk pipeline with VRAM management for RTX 4090 (24GB).
+
+    Uses num_persistent_param_in_dit=0 for full CPU offloading of the 14B DiT model.
+    This means inference is slower but fits in 24GB VRAM.
+    """
+    global current_model, model_instance, _infinitetalk_pipeline, _wav2vec_extractor, _wav2vec_encoder
+
+    if current_model == "infinitetalk" and _infinitetalk_pipeline is not None:
+        return _infinitetalk_pipeline, _wav2vec_extractor, _wav2vec_encoder
+
+    # Unload any other model first
+    _unload_current()
+
+    # Also clear whisper from VRAM if loaded
+    global _whisper_model
+    if _whisper_model is not None:
+        logger.info("Unloading Whisper to free VRAM for InfiniteTalk")
+        del _whisper_model
+        _whisper_model = None
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    logger.info("Loading InfiniteTalk pipeline...")
+
+    # Add InfiniteTalk repo to path
+    if INFINITETALK_REPO not in sys.path:
+        sys.path.insert(0, INFINITETALK_REPO)
+
+    import wan
+    from wan.configs import WAN_CONFIGS
+    from transformers import Wav2Vec2FeatureExtractor
+    from src.audio_analysis.wav2vec2 import Wav2Vec2Model
+
+    cfg = WAN_CONFIGS["infinitetalk-14B"]
+
+    logger.info("Creating InfiniteTalkPipeline (this will take a few minutes)...")
+    pipeline = wan.InfiniteTalkPipeline(
+        config=cfg,
+        checkpoint_dir=WAN_CKPT_DIR,
+        device_id=0,
+        rank=0,
+        t5_fsdp=False,
+        dit_fsdp=False,
+        use_usp=False,
+        t5_cpu=False,
+        infinitetalk_dir=INFINITETALK_WEIGHTS,
+    )
+
+    # Enable VRAM management — offload DiT params to CPU, keep 0 persistent in VRAM
+    # This is necessary for RTX 4090 (24GB) with a 14B model (~28GB in bf16)
+    pipeline.vram_management = True
+    pipeline.enable_vram_management(num_persistent_param_in_dit=0)
+
+    logger.info("InfiniteTalk pipeline loaded with VRAM management")
+
+    # Load wav2vec2 components
+    logger.info("Loading wav2vec2 audio encoder...")
+    # Use attn_implementation="eager" to avoid SDPA vs output_attentions conflict
+    # (InfiniteTalk's custom Wav2Vec2Model sets config.output_attentions=True in forward())
+    wav2vec_encoder = Wav2Vec2Model.from_pretrained(
+        WAV2VEC_DIR, local_files_only=True, attn_implementation="eager"
+    ).to("cpu")
+    wav2vec_encoder.feature_extractor._freeze_parameters()
+    wav2vec_extractor = Wav2Vec2FeatureExtractor.from_pretrained(WAV2VEC_DIR, local_files_only=True)
+    logger.info("wav2vec2 loaded")
+
+    _infinitetalk_pipeline = pipeline
+    _wav2vec_extractor = wav2vec_extractor
+    _wav2vec_encoder = wav2vec_encoder
+    model_instance = pipeline
+    current_model = "infinitetalk"
+
+    return pipeline, wav2vec_extractor, wav2vec_encoder
+
+
+def _get_audio_embedding(speech_array, wav2vec_extractor, wav2vec_encoder, sr=16000):
+    """Extract wav2vec2 audio embeddings for InfiniteTalk."""
+    from einops import rearrange
+
+    audio_duration = len(speech_array) / sr
+    video_length = audio_duration * 25  # 25 fps
+
+    audio_feature = np.squeeze(
+        wav2vec_extractor(speech_array, sampling_rate=sr).input_values
+    )
+    audio_feature = torch.from_numpy(audio_feature).float().to(device="cpu")
+    audio_feature = audio_feature.unsqueeze(0)
+
+    with torch.no_grad():
+        embeddings = wav2vec_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
+
+    if len(embeddings) == 0:
+        raise RuntimeError("Failed to extract audio embedding")
+
+    audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
+    audio_emb = rearrange(audio_emb, "b s d -> s b d")
+    audio_emb = audio_emb.cpu().detach()
+    return audio_emb
+
+
+def _run_infinitetalk_pipeline(req: InfiniteTalkRequest) -> dict:
+    """Full InfiniteTalk pipeline (runs in executor thread)."""
+    import librosa
+    import pyloudnorm as pyln
+    import soundfile as sf
+    from einops import rearrange
+
+    work_dir = tempfile.mkdtemp(prefix="gpu_italk_")
+    try:
+        # 1. Download image
+        logger.info(f"Downloading image: {req.image_url[:80]}")
+        img_resp = requests.get(req.image_url, timeout=120)
+        img_resp.raise_for_status()
+        img_path = os.path.join(work_dir, "input_image.png")
+        with open(img_path, "wb") as f:
+            f.write(img_resp.content)
+
+        # 2. Download audio
+        logger.info(f"Downloading audio: {req.audio_url[:80]}")
+        audio_resp = requests.get(req.audio_url, timeout=120)
+        audio_resp.raise_for_status()
+        url_path = req.audio_url.split("?")[0]
+        ext = ".wav"
+        for e in [".mp3", ".mp4", ".m4a", ".ogg", ".flac"]:
+            if url_path.endswith(e):
+                ext = e
+                break
+        raw_audio_path = os.path.join(work_dir, f"raw_audio{ext}")
+        with open(raw_audio_path, "wb") as f:
+            f.write(audio_resp.content)
+
+        # Convert to WAV 16kHz mono if needed
+        audio_16k_path = os.path.join(work_dir, "audio_16k.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_audio_path, "-vn", "-acodec", "pcm_s16le",
+             "-ar", "16000", "-ac", "1", audio_16k_path],
+            capture_output=True, timeout=60,
+        )
+        if not os.path.exists(audio_16k_path) or os.path.getsize(audio_16k_path) < 100:
+            raise RuntimeError("Failed to convert audio to 16kHz WAV")
+
+        # 3. Load and normalize audio
+        speech_array, sr = librosa.load(audio_16k_path, sr=16000)
+        meter = pyln.Meter(sr)
+        loudness = meter.integrated_loudness(speech_array)
+        if abs(loudness) <= 100:
+            speech_array = pyln.normalize.loudness(speech_array, loudness, -23)
+
+        # Save normalized audio for video muxing
+        sum_audio_path = os.path.join(work_dir, "sum_all.wav")
+        sf.write(sum_audio_path, speech_array, 16000)
+
+        audio_duration = len(speech_array) / 16000
+        logger.info(f"Audio duration: {audio_duration:.1f}s")
+
+        # 4. Load InfiniteTalk pipeline
+        pipeline, wav2vec_extractor, wav2vec_encoder = _load_infinitetalk()
+
+        # 5. Get audio embeddings
+        logger.info("Extracting audio embeddings...")
+        audio_emb = _get_audio_embedding(speech_array, wav2vec_extractor, wav2vec_encoder, sr=16000)
+        emb_path = os.path.join(work_dir, "audio_emb.pt")
+        torch.save(audio_emb, emb_path)
+        v_length = audio_emb.shape[0]
+
+        # 6. Prepare input dict
+        max_frames = min(req.max_seconds * 25, int(audio_duration * 25) + 25)  # match audio + 1s buffer
+        input_clip = {
+            "prompt": req.prompt,
+            "cond_video": img_path,
+            "cond_audio": {"person1": emb_path},
+            "video_audio": sum_audio_path,
+        }
+
+        size_key = "infinitetalk-480" if req.size == "480p" else "infinitetalk-720"
+
+        # 7. Generate video
+        logger.info(f"Generating video ({max_frames} frames, {req.sample_steps} steps)...")
+
+        # Create a mock args object for InfiniteTalk's extra_args parameter
+        from easydict import EasyDict
+        mock_args = EasyDict(
+            use_teacache=False,
+            use_apg=False,
+            teacache_thresh=0.2,
+            apg_momentum=0.1,
+            apg_norm_threshold=15.0,
+            size=size_key,
+            mode="streaming",
+            audio_mode="localfile",
+            scene_seg=False,
+        )
+
+        video_tensor = pipeline.generate_infinitetalk(
+            input_clip,
+            size_buckget=size_key,
+            motion_frame=9,
+            frame_num=81,
+            shift=7 if req.size == "480p" else 11,
+            sampling_steps=req.sample_steps,
+            text_guide_scale=5.0,
+            audio_guide_scale=4.0,
+            seed=random.randint(0, 99999999),
+            offload_model=None,
+            max_frames_num=max_frames,
+            color_correction_strength=0.0,
+            extra_args=mock_args,
+        )
+        logger.info(f"Video generated: tensor shape {video_tensor.shape}")
+
+        # 8. Save video with audio
+        save_prefix = os.path.join(work_dir, "output")
+
+        # Import save utility from InfiniteTalk
+        from wan.utils.multitalk_utils import save_video_ffmpeg
+        save_video_ffmpeg(video_tensor, save_prefix, [sum_audio_path], fps=25, quality=5, high_quality_save=False)
+
+        output_video_path = save_prefix + ".mp4"
+        if not os.path.exists(output_video_path):
+            raise RuntimeError("Video save failed — output file not found")
+
+        video_size = os.path.getsize(output_video_path)
+        logger.info(f"Output video: {video_size / 1024 / 1024:.1f} MB")
+
+        # 9. Upload to R2
+        output_key = req.output_key
+        if not output_key:
+            import hashlib
+            h = hashlib.sha256(f"{req.image_url}_{req.audio_url}".encode()).hexdigest()[:16]
+            output_key = f"infinitetalk/{h}/output.mp4"
+
+        s3 = get_s3()
+        s3.upload_file(output_video_path, R2_BUCKET, output_key,
+                       ExtraArgs={"ContentType": "video/mp4"})
+        video_url = f"{R2_PUBLIC_URL}/{output_key}"
+
+        return {
+            "video_url": video_url,
+            "duration_seconds": round(audio_duration, 1),
+            "frames": video_tensor.shape[1] if len(video_tensor.shape) > 1 else 0,
+            "size": req.size,
+        }
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# Need random for seed generation
+import random
+
+
+@app.post("/api/infinitetalk")
+async def infinitetalk_endpoint(req: InfiniteTalkRequest):
+    # Check if models are downloaded
+    if not os.path.exists(INFINITETALK_WEIGHTS):
+        raise HTTPException(503, "InfiniteTalk weights not downloaded yet")
+    if not os.path.exists(os.path.join(WAN_CKPT_DIR, "diffusion_pytorch_model-00001-of-00007.safetensors")):
+        raise HTTPException(503, "Wan2.1 base model not downloaded yet")
+    if not os.path.exists(os.path.join(WAV2VEC_DIR, "model.safetensors")):
+        raise HTTPException(503, "wav2vec2 model not downloaded yet")
+
+    async with gpu_lock:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: _run_infinitetalk_pipeline(req))
+        return result
+
+
+# ═══════════════════════════════════════════
+# Video Upscale — Real-ESRGAN (Python) + GFPGAN face enhancement
+# ═══════════════════════════════════════════
+
+
+class UpscaleVideoRequest(BaseModel):
+    video_url: str
+    output_key: str
+    target_height: int = 1080  # 720 or 1080
+    enhance_faces: bool = False
+
+
+def _get_video_info(video_path: str) -> dict:
+    """Probe a video file for fps, resolution, duration using ffprobe."""
+    import json as _json
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_streams", "-show_format", video_path,
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr}")
+
+    probe = _json.loads(result.stdout)
+    video_stream = None
+    for s in probe.get("streams", []):
+        if s.get("codec_type") == "video":
+            video_stream = s
+            break
+    if not video_stream:
+        raise RuntimeError("No video stream found in file")
+
+    width = int(video_stream["width"])
+    height = int(video_stream["height"])
+
+    fps_str = video_stream.get("r_frame_rate", "25/1")
+    if "/" in fps_str:
+        num, den = fps_str.split("/")
+        fps = float(num) / float(den)
+    else:
+        fps = float(fps_str)
+
+    has_audio = any(s.get("codec_type") == "audio" for s in probe.get("streams", []))
+    duration = float(probe.get("format", {}).get("duration", 0))
+
+    return {
+        "width": width,
+        "height": height,
+        "fps": round(fps, 3),
+        "has_audio": has_audio,
+        "duration": round(duration, 2),
+    }
+
+
+def _run_upscale_pipeline(req: UpscaleVideoRequest) -> dict:
+    """Full Real-ESRGAN video upscale pipeline (runs in executor thread)."""
+    import cv2
+
+    work_dir = tempfile.mkdtemp(prefix="gpu_upscale_")
+    t_start = time.time()
+    try:
+        # 1. Download source video
+        _update_job("running", "upscale_video", 0, "Downloading video")
+        logger.info(f"Upscale: downloading {req.video_url[:80]}")
+        resp = requests.get(req.video_url, timeout=300)
+        resp.raise_for_status()
+        input_path = os.path.join(work_dir, "input.mp4")
+        with open(input_path, "wb") as f:
+            f.write(resp.content)
+        logger.info(f"Upscale: downloaded {os.path.getsize(input_path) / 1024 / 1024:.1f} MB")
+
+        # 2. Probe video info
+        info = _get_video_info(input_path)
+        original_w, original_h = info["width"], info["height"]
+        fps = info["fps"]
+        has_audio = info["has_audio"]
+        duration = info["duration"]
+        logger.info(f"Upscale: input {original_w}x{original_h} @ {fps} fps, "
+                     f"duration={duration}s, audio={has_audio}")
+
+        # 3. Extract frames
+        _update_job("running", "upscale_video", 10, "Extracting frames")
+        frames_dir = os.path.join(work_dir, "frames")
+        os.makedirs(frames_dir)
+        extract_result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", input_path,
+                "-qscale:v", "2",
+                os.path.join(frames_dir, "frame_%06d.png"),
+            ],
+            capture_output=True, text=True, timeout=600,
+        )
+        if extract_result.returncode != 0:
+            raise RuntimeError(f"Frame extraction failed: {extract_result.stderr[-500:]}")
+
+        frame_files = sorted([f for f in os.listdir(frames_dir) if f.endswith(".png")])
+        total_frames = len(frame_files)
+        if total_frames == 0:
+            raise RuntimeError("No frames extracted from video")
+        logger.info(f"Upscale: extracted {total_frames} frames")
+
+        # 4. Load Real-ESRGAN model
+        _update_job("running", "upscale_video", 15, "Loading upscale model")
+        models = _load_realesrgan(enhance_faces=req.enhance_faces)
+        upsampler = models["upsampler"]
+        face_enhancer = models["face_enhancer"]
+
+        # 5. Compute target dimensions
+        target_h = req.target_height
+        target_w = int(target_h * 16 / 9)
+        # Ensure even dimensions for H.264
+        target_w = target_w if target_w % 2 == 0 else target_w + 1
+        target_h = target_h if target_h % 2 == 0 else target_h + 1
+
+        # 6. Upscale each frame
+        upscaled_dir = os.path.join(work_dir, "upscaled")
+        os.makedirs(upscaled_dir)
+
+        for i, fname in enumerate(frame_files):
+            progress = 20 + int(60 * i / total_frames)
+            if i % 50 == 0:
+                _update_job("running", "upscale_video", progress,
+                            f"Upscaling frame {i+1}/{total_frames}")
+                logger.info(f"Upscale: frame {i+1}/{total_frames}")
+
+            frame_path = os.path.join(frames_dir, fname)
+            img = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
+
+            if face_enhancer is not None:
+                _, _, output = face_enhancer.enhance(
+                    img, has_aligned=False, only_center_face=False, paste_back=True
+                )
+            else:
+                output, _ = upsampler.enhance(img, outscale=4)
+
+            # Resize to exact target resolution
+            output = cv2.resize(output, (target_w, target_h),
+                                interpolation=cv2.INTER_LANCZOS4)
+
+            out_path = os.path.join(upscaled_dir, fname)
+            cv2.imwrite(out_path, output)
+
+        logger.info(f"Upscale: all {total_frames} frames upscaled to {target_w}x{target_h}")
+
+        # 7. Extract audio from source
+        _update_job("running", "upscale_video", 85, "Re-encoding video")
+        audio_path = os.path.join(work_dir, "audio.aac")
+        audio_extract = subprocess.run(
+            ["ffmpeg", "-y", "-i", input_path, "-vn", "-acodec", "copy", audio_path],
+            capture_output=True, timeout=60,
+        )
+        audio_ok = (audio_extract.returncode == 0 and
+                     os.path.exists(audio_path) and
+                     os.path.getsize(audio_path) > 0)
+
+        # 8. Re-encode with ffmpeg (H.264, CRF 18, copy audio)
+        output_path = os.path.join(work_dir, "output.mp4")
+        encode_cmd = [
+            "ffmpeg", "-y",
+            "-framerate", str(fps),
+            "-i", os.path.join(upscaled_dir, "frame_%06d.png"),
+        ]
+        if audio_ok:
+            encode_cmd += ["-i", audio_path]
+
+        encode_cmd += [
+            "-c:v", "libx264",
+            "-crf", "18",
+            "-preset", "medium",
+            "-pix_fmt", "yuv420p",
+        ]
+        if audio_ok:
+            encode_cmd += ["-c:a", "copy"]
+
+        encode_cmd += ["-movflags", "+faststart", output_path]
+
+        logger.info("Upscale: re-encoding to video...")
+        encode_result = subprocess.run(encode_cmd, capture_output=True, text=True, timeout=600)
+        if encode_result.returncode != 0:
+            raise RuntimeError(f"Video encoding failed: {encode_result.stderr[-500:]}")
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
+            raise RuntimeError("Encoded output video is missing or too small")
+
+        output_size = os.path.getsize(output_path)
+        logger.info(f"Upscale: output video {output_size / 1024 / 1024:.1f} MB at {target_w}x{target_h}")
+
+        # 9. Upload to R2
+        _update_job("running", "upscale_video", 95, "Uploading to R2")
+        s3 = get_s3()
+        s3.upload_file(output_path, R2_BUCKET, req.output_key,
+                       ExtraArgs={"ContentType": "video/mp4"})
+        video_url = f"{R2_PUBLIC_URL}/{req.output_key}"
+
+        processing_seconds = round(time.time() - t_start, 1)
+        _update_job("idle")
+        return {
+            "video_url": video_url,
+            "width": target_w,
+            "height": target_h,
+            "duration_seconds": round(duration, 1),
+            "processing_seconds": processing_seconds,
+        }
+    except Exception:
+        _update_job("idle")
+        raise
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.post("/api/upscale-video")
+async def upscale_video_endpoint(req: UpscaleVideoRequest):
+    if not os.path.exists("/opt/gpu-worker/models/RealESRGAN_x4plus.pth"):
+        raise HTTPException(503, "RealESRGAN model weights not found")
+
+    with sentry_sdk.start_span(op="gpu_worker", description="Upscale Video") as span:
+        span.set_data("video_url", req.video_url[:80] if req.video_url else "")
+        span.set_data("target_height", req.target_height)
+        span.set_data("enhance_faces", req.enhance_faces)
+
+    async with gpu_lock:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: _run_upscale_pipeline(req))
+        return result
+
+
+# ═══════════════════════════════════════════
+# Health
+# ═══════════════════════════════════════════
+
+
+
+# ═══════════════════════════════════════════
+# MuseTalk — real-time lip sync
+# ═══════════════════════════════════════════
+
+MUSETALK_DIR = "/opt/musetalk"
+
+class MuseTalkRequest(BaseModel):
+    face_image_url: str
+    audio_url: str
+    render_size: str = "240p"
+    fps: int = 25
+
+_musetalk_models = None
+
+def _load_musetalk():
+    """Load MuseTalk models into VRAM following the hot-swap pattern."""
+    global current_model, model_instance, _musetalk_models
+
+    if current_model == "musetalk" and _musetalk_models is not None:
+        return _musetalk_models
+
+    _unload_current()
+
+    # Also clear whisper from VRAM if loaded
+    global _whisper_model
+    if _whisper_model is not None:
+        logger.info("Unloading Whisper to free VRAM for MuseTalk")
+        del _whisper_model
+        _whisper_model = None
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    logger.info("Loading MuseTalk models...")
+
+    if MUSETALK_DIR not in sys.path:
+        sys.path.insert(0, MUSETALK_DIR)
+
+    from musetalk.utils.utils import load_all_model
+    from musetalk.utils.audio_processor import AudioProcessor
+    from musetalk.utils.face_parsing import FaceParsing
+    from transformers import WhisperModel
+
+    device = torch.device("cuda:0")
+
+    # MuseTalk uses relative paths internally — temporarily chdir
+    _orig_cwd = os.getcwd()
+    os.chdir(MUSETALK_DIR)
+    try:
+        vae, unet, pe = load_all_model(device=device)
+        pe = pe.half().to(device)
+        vae.vae = vae.vae.half().to(device)
+        unet.model = unet.model.half().to(device)
+
+        audio_processor = AudioProcessor(
+            feature_extractor_path=os.path.join(MUSETALK_DIR, "models", "whisper")
+        )
+        whisper_model = WhisperModel.from_pretrained(
+            os.path.join(MUSETALK_DIR, "models", "whisper")
+        )
+        whisper_model = whisper_model.to(device=device, dtype=unet.model.dtype).eval()
+        whisper_model.requires_grad_(False)
+
+        fp = FaceParsing()
+    finally:
+        os.chdir(_orig_cwd)
+
+    _musetalk_models = {
+        "vae": vae,
+        "unet": unet,
+        "pe": pe,
+        "audio_processor": audio_processor,
+        "whisper": whisper_model,
+        "fp": fp,
+        "device": device,
+    }
+    current_model = "musetalk"
+    model_instance = _musetalk_models
+    logger.info("MuseTalk models loaded (~4GB VRAM)")
+    return _musetalk_models
+
+
+def _run_musetalk_pipeline(req: MuseTalkRequest) -> dict:
+    """Run MuseTalk lip-sync inference inline (no subprocess)."""
+    import time
+    import uuid
+    import copy
+    import glob as glob_mod
+
+    start = time.time()
+    job_id = uuid.uuid4().hex[:16]
+    work_dir = os.path.join("/tmp/musetalk_jobs", job_id)
+    os.makedirs(work_dir, exist_ok=True)
+
+    try:
+        # 1. Download face image
+        face_path = os.path.join(work_dir, "face.jpg")
+        resp = requests.get(req.face_image_url, timeout=60)
+        resp.raise_for_status()
+        with open(face_path, "wb") as f:
+            f.write(resp.content)
+
+        # 2. Download and convert audio to 16kHz WAV
+        raw_audio = os.path.join(work_dir, "raw_audio")
+        resp = requests.get(req.audio_url, timeout=60)
+        resp.raise_for_status()
+        with open(raw_audio, "wb") as f:
+            f.write(resp.content)
+
+        audio_path = os.path.join(work_dir, "audio.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_audio,
+             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path],
+            capture_output=True, timeout=30,
+        )
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 100:
+            raise RuntimeError("Audio conversion failed")
+
+        # 3. Load models
+        models = _load_musetalk()
+        vae = models["vae"]
+        unet = models["unet"]
+        pe = models["pe"]
+        audio_processor = models["audio_processor"]
+        whisper_model = models["whisper"]
+        fp_model = models["fp"]
+        device = models["device"]
+
+        # 4. Must add musetalk to path for its internal imports
+        if MUSETALK_DIR not in sys.path:
+            sys.path.insert(0, MUSETALK_DIR)
+        from musetalk.utils.preprocessing import get_landmark_and_bbox, coord_placeholder
+        from musetalk.utils.utils import get_file_type, get_video_fps, datagen
+        from musetalk.utils.blending import get_image
+        import cv2
+
+        # 5. Prepare input image
+        input_img_list = [face_path]
+        fps = req.fps
+
+        # 6. Extract audio features
+        whisper_input_features, librosa_length = audio_processor.get_audio_feature(audio_path)
+        whisper_chunks = audio_processor.get_whisper_chunk(
+            whisper_input_features, device, unet.model.dtype,
+            whisper_model, librosa_length, fps=fps,
+        )
+        logger.info("MuseTalk: %d whisper chunks from audio", len(whisper_chunks))
+
+        # 7. Detect face and get landmarks (needs CWD = musetalk for model paths)
+        _orig_cwd2 = os.getcwd()
+        os.chdir(MUSETALK_DIR)
+        try:
+            coord_list, frame_list = get_landmark_and_bbox(input_img_list, 5)
+        finally:
+            os.chdir(_orig_cwd2)
+
+        if not coord_list or all(c == coord_placeholder for c in coord_list):
+            raise RuntimeError("No face detected in input image")
+
+        # 8. Encode face crop to latent
+        timesteps = torch.tensor([0], device=device)
+        input_latent_list = []
+        for bbox, frame in zip(coord_list, frame_list):
+            if bbox == coord_placeholder:
+                continue
+            x1, y1, x2, y2 = bbox
+            crop_frame = frame[y1:y2, x1:x2]
+            crop_frame = cv2.resize(crop_frame, (256, 256), interpolation=cv2.INTER_LANCZOS4)
+            latents = vae.get_latents_for_unet(crop_frame)
+            input_latent_list.append(latents)
+
+        if not input_latent_list:
+            raise RuntimeError("Failed to encode face crop")
+
+        # 9. Run diffusion inference
+        frame_list_cycle = frame_list + frame_list[::-1]
+        coord_list_cycle = coord_list + coord_list[::-1]
+        input_latent_list_cycle = input_latent_list + input_latent_list[::-1]
+
+        gen = datagen(
+            whisper_chunks=whisper_chunks,
+            vae_encode_latents=input_latent_list_cycle,
+            batch_size=8,
+            delay_frame=0,
+            device=device,
+        )
+
+        res_frame_list = []
+        for whisper_batch, latent_batch in gen:
+            audio_feature_batch = pe(whisper_batch)
+            latent_batch = latent_batch.to(dtype=unet.model.dtype)
+            pred_latents = unet.model(
+                latent_batch, timesteps,
+                encoder_hidden_states=audio_feature_batch,
+            ).sample
+            recon = vae.decode_latents(pred_latents)
+            for res_frame in recon:
+                res_frame_list.append(res_frame)
+
+        logger.info("MuseTalk: generated %d frames", len(res_frame_list))
+
+        # 10. Blend generated mouth region onto original frames
+        result_img_dir = os.path.join(work_dir, "result_frames")
+        os.makedirs(result_img_dir, exist_ok=True)
+
+        for i, res_frame in enumerate(res_frame_list):
+            bbox = coord_list_cycle[i % len(coord_list_cycle)]
+            ori_frame = copy.deepcopy(frame_list_cycle[i % len(frame_list_cycle)])
+            x1, y1, x2, y2 = bbox
+            try:
+                res_frame = cv2.resize(
+                    res_frame.astype(np.uint8), (x2 - x1, y2 - y1)
+                )
+                combine_frame = get_image(
+                    ori_frame, res_frame, [x1, y1, x2, y2], fp=fp_model
+                )
+                cv2.imwrite(
+                    os.path.join(result_img_dir, "%08d.png" % i), combine_frame
+                )
+            except Exception as e:
+                logger.warning("MuseTalk blend frame %d failed: %s", i, e)
+
+        # 11. Encode frames to video with audio
+        output_path = os.path.join(work_dir, "output.mp4")
+        temp_video = os.path.join(work_dir, "temp.mp4")
+
+        subprocess.run([
+            "ffmpeg", "-y", "-v", "warning",
+            "-r", str(fps), "-f", "image2",
+            "-i", os.path.join(result_img_dir, "%08d.png"),
+            "-vcodec", "libx264", "-vf", "format=yuv420p",
+            "-crf", "18", temp_video,
+        ], capture_output=True, timeout=60)
+
+        # Mux audio
+        subprocess.run([
+            "ffmpeg", "-y", "-v", "warning",
+            "-i", audio_path, "-i", temp_video, output_path,
+        ], capture_output=True, timeout=60)
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
+            raise RuntimeError("MuseTalk video encoding failed")
+
+        # 12. Upload to R2
+        r2_key = "musetalk_outputs/%s.mp4" % job_id
+        s3 = get_s3()
+        s3.upload_file(
+            output_path, R2_BUCKET, r2_key,
+            ExtraArgs={"ContentType": "video/mp4"},
+        )
+
+        render_time = time.time() - start
+        logger.info(
+            "MuseTalk: %d frames rendered in %.1fs, uploaded to %s",
+            len(res_frame_list), render_time, r2_key,
+        )
+
+        return {
+            "status": "ok",
+            "output_r2_key": r2_key,
+            "duration_seconds": round(len(res_frame_list) / fps, 1),
+            "render_seconds": round(render_time, 1),
+        }
+
+    except Exception as e:
+        logger.exception("MuseTalk pipeline failed: %s", e)
+        raise
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.post("/api/musetalk-lipsync")
+async def musetalk_endpoint(req: MuseTalkRequest):
+    """MuseTalk real-time lip sync endpoint."""
+    if not os.path.exists(MUSETALK_DIR):
+        raise HTTPException(501, "MuseTalk not installed on this server")
+
+    async with gpu_lock:
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: _run_musetalk_pipeline(req)
+            )
+            return result
+        except Exception as e:
+            raise HTTPException(
+                500, {"status": "error", "error": str(e)[:500]}
+            )
+
+
+@app.get("/api/health")
+async def health():
+    gpu_name = "unknown"
+    vram_total = 0.0
+    vram_used = 0.0
+    try:
+        gpu_name = torch.cuda.get_device_name(0)
+        vram_total = round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1)
+        vram_used = round(torch.cuda.memory_allocated(0) / 1e9, 1)
+    except Exception:
+        pass
+
+    # Check model readiness
+    models_ready = {
+        "bs_roformer": True,  # Always ready
+        "fish_speech": False,  # Stub
+        "infinitetalk": (
+            os.path.exists(INFINITETALK_WEIGHTS) and
+            os.path.exists(os.path.join(WAN_CKPT_DIR, "diffusion_pytorch_model-00001-of-00007.safetensors")) and
+            os.path.exists(os.path.join(WAV2VEC_DIR, "model.safetensors"))
+        ),
+        "realesrgan": os.path.exists("/opt/gpu-worker/models/RealESRGAN_x4plus.pth"),
+        "ace_step": os.path.exists("/opt/gpu-worker/ace-step/acestep/pipeline_ace_step.py"),
+        "musetalk_installed": os.path.exists("/opt/musetalk/venv/bin/python3"),
+    }
+
+    return {
+        "status": "ok",
+        "gpu": gpu_name,
+        "vram_total_gb": vram_total,
+        "vram_used_gb": vram_used,
+        "loaded_model": current_model,
+        "gpu_locked": gpu_lock.locked(),
+        "models_ready": models_ready,
+    }
+
+
+# ── ACE-Step Music Generation ──
+
+_ace_step_pipeline = None
+
+
+class MusicGenerateRequest(BaseModel):
+    prompt: str
+    lyrics: str = ""
+    duration_seconds: float = 60.0
+    output_r2_key: str
+    lora_r2_key: str = ""
+    seed: int = -1
+    guidance_scale: float = 15.0
+    num_inference_steps: int = 60
+    scheduler_type: str = "euler"
+
+
+class MusicTrainLoraRequest(BaseModel):
+    sound_cast_id: str
+    training_audio_r2_keys: list
+    training_prompts: list
+    output_r2_key: str
+    steps: int = 2400
+    learning_rate: float = 1e-4
+    rank: int = 64
+
+
+def _ensure_ace_step():
+    """Load ACE-Step pipeline, unloading any other model first."""
+    global current_model, model_instance, _ace_step_pipeline
+    if current_model == "ace_step" and _ace_step_pipeline is not None:
+        return _ace_step_pipeline
+
+    _unload_current()
+
+    logger.info("Loading ACE-Step pipeline...")
+    sys.path.insert(0, "/opt/gpu-worker/ace-step")
+    from acestep.pipeline_ace_step import ACEStepPipeline
+
+    _ace_step_pipeline = ACEStepPipeline(dtype="bfloat16", cpu_offload=False, overlapped_decode=True)
+    current_model = "ace_step"
+    model_instance = _ace_step_pipeline
+    logger.info("ACE-Step pipeline loaded")
+    return _ace_step_pipeline
+
+
+@app.post("/api/music-generate")
+async def music_generate(req: MusicGenerateRequest):
+    import time as _time
+    start = _time.time()
+
+    async with gpu_lock:
+        pipe = _ensure_ace_step()
+
+        seeds = [req.seed] if req.seed >= 0 else None
+        lora_path = None
+
+        # Download LoRA from R2 if specified
+        if req.lora_r2_key:
+            lora_path = f"/tmp/lora_{os.path.basename(req.lora_r2_key)}"
+            s3 = get_s3()
+            s3.download_file(R2_BUCKET, req.lora_r2_key, lora_path)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "output")
+
+            pipe(
+                audio_duration=req.duration_seconds,
+                prompt=req.prompt,
+                lyrics=req.lyrics if req.lyrics else None,
+                infer_step=req.num_inference_steps,
+                guidance_scale=req.guidance_scale,
+                scheduler_type=req.scheduler_type,
+                manual_seeds=seeds,
+                lora_name_or_path=lora_path,
+                save_path=output_path,
+            )
+
+            # Find generated WAV file
+            wav_files = []
+            for root, dirs, files in os.walk(tmpdir):
+                wav_files.extend([os.path.join(root, f) for f in files if f.endswith(".wav")])
+
+            if not wav_files:
+                raise HTTPException(500, "ACE-Step produced no audio file")
+
+            wav_path = wav_files[0]
+
+            # Get duration
+            try:
+                with wave.open(wav_path) as wf:
+                    actual_dur = wf.getnframes() / wf.getframerate()
+            except Exception:
+                actual_dur = req.duration_seconds
+
+            # Upload to R2
+            s3 = get_s3()
+            s3.upload_file(wav_path, R2_BUCKET, req.output_r2_key,
+                           ExtraArgs={"ContentType": "audio/wav"})
+
+            elapsed = _time.time() - start
+            return {
+                "r2_key": req.output_r2_key,
+                "url": f"{R2_PUBLIC_URL}/{req.output_r2_key}",
+                "duration_seconds": actual_dur,
+                "generation_time_seconds": elapsed,
+            }
+
+
+
+@app.post("/api/music-train-lora")
+async def music_train_lora(req: MusicTrainLoraRequest):
+    import time as _time
+    start = _time.time()
+
+    async with gpu_lock:
+        s3 = get_s3()
+        train_dir = f"/tmp/music_train_{req.sound_cast_id}"
+        os.makedirs(train_dir, exist_ok=True)
+        dataset_dir = os.path.join(train_dir, "dataset")
+        os.makedirs(dataset_dir, exist_ok=True)
+        output_dir = os.path.join(train_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+
+        try:
+            # Step 1: Download training audio from R2
+            audio_paths = []
+            for i, key in enumerate(req.training_audio_r2_keys):
+                ext = os.path.splitext(key)[-1] or ".wav"
+                local = os.path.join(train_dir, f"sample_{i}{ext}")
+                s3.download_file(R2_BUCKET, key, local)
+                audio_paths.append(local)
+                logger.info(f"Downloaded training audio {i}: {key}")
+
+            # Step 2: Convert to WAV 48kHz mono via ffmpeg
+            processed_paths = []
+            for path in audio_paths:
+                wav_path = path.rsplit(".", 1)[0] + "_processed.wav"
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", path,
+                    "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le",
+                    wav_path
+                ]
+                proc = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    logger.error(f"ffmpeg conversion failed for {path}: {proc.stderr[-300:]}")
+                    raise HTTPException(500, f"Audio conversion failed: {proc.stderr[-200:]}")
+                processed_paths.append(wav_path)
+                logger.info(f"Converted {path} -> {wav_path} ({os.path.getsize(wav_path)} bytes)")
+
+            # Step 3: Build HuggingFace dataset
+            from datasets import Dataset, Audio, Features, Value
+            records = []
+            for i, (wav_path, prompt) in enumerate(zip(processed_paths, req.training_prompts)):
+                records.append({
+                    "audio": wav_path,
+                    "prompt": prompt if prompt else "instrumental music",
+                    "lyrics": "",
+                    "speaker_emb_path": "",
+                })
+
+            ds = Dataset.from_dict({
+                "audio": [r["audio"] for r in records],
+                "prompt": [r["prompt"] for r in records],
+                "lyrics": [r["lyrics"] for r in records],
+                "speaker_emb_path": [r["speaker_emb_path"] for r in records],
+            })
+
+            # Cast audio column to Audio feature for proper loading
+            ds = ds.cast_column("audio", Audio(sampling_rate=48000))
+            ds.save_to_disk(dataset_dir)
+            logger.info(f"Created HuggingFace dataset with {len(ds)} samples at {dataset_dir}")
+
+            # Step 4: Write LoRA config
+            lora_config = {
+                "r": req.rank,
+                "lora_alpha": req.rank // 4 if req.rank >= 4 else req.rank,
+                "target_modules": [
+                    "speaker_embedder",
+                    "linear_q", "linear_k", "linear_v",
+                    "to_q", "to_k", "to_v", "to_out.0"
+                ],
+                "use_rslora": True
+            }
+            lora_config_path = os.path.join(train_dir, "lora_config.json")
+            import json
+            with open(lora_config_path, "w") as f:
+                json.dump(lora_config, f)
+
+            # Step 5: Run trainer via subprocess
+            exp_name = f"lora_{req.sound_cast_id}"
+            cmd = [
+                "/opt/gpu-worker/venv/bin/python3",
+                "/opt/gpu-worker/ace-step/trainer.py",
+                "--dataset_path", dataset_dir,
+                "--max_steps", str(req.steps),
+                "--learning_rate", str(req.learning_rate),
+                "--exp_name", exp_name,
+                "--lora_config_path", lora_config_path,
+                "--every_n_train_steps", str(min(req.steps, 500)),
+                "--checkpoint_dir", output_dir,
+                "--devices", "1",
+                "--precision", "bf16-mixed",
+                "--num_workers", "2",
+            ]
+            logger.info(f"Starting LoRA training: {' '.join(cmd)}")
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd="/opt/gpu-worker/ace-step")
+
+            if proc.returncode != 0:
+                logger.error(f"Trainer stderr: {proc.stderr[-1000:]}")
+                raise HTTPException(500, f"LoRA training failed: {proc.stderr[-500:]}")
+
+            # Step 6: Find the output checkpoint/safetensors
+            lora_file = None
+            for root, dirs, files in os.walk(output_dir):
+                for f in files:
+                    if f.endswith(".safetensors") or f.endswith(".ckpt") or f.endswith(".pt"):
+                        lora_file = os.path.join(root, f)
+                        break
+                if lora_file:
+                    break
+
+            # Also check the default lightning output path
+            if not lora_file:
+                for root, dirs, files in os.walk(os.path.join("/opt/gpu-worker/ace-step/exps", exp_name)):
+                    for f in files:
+                        if f.endswith(".safetensors") or f.endswith(".ckpt"):
+                            lora_file = os.path.join(root, f)
+                            break
+                    if lora_file:
+                        break
+
+            if not lora_file:
+                logger.error(f"No LoRA output found. Stdout: {proc.stdout[-500:]}")
+                raise HTTPException(500, "LoRA training produced no output file")
+
+            # Step 7: Upload to R2
+            s3.upload_file(lora_file, R2_BUCKET, req.output_r2_key,
+                           ExtraArgs={"ContentType": "application/octet-stream"})
+
+            elapsed = _time.time() - start
+            logger.info(f"LoRA training complete in {elapsed:.0f}s, uploaded to {req.output_r2_key}")
+            return {
+                "lora_r2_key": req.output_r2_key,
+                "loss": 0.0,
+                "training_time_seconds": elapsed,
+            }
+        finally:
+            shutil.rmtree(train_dir, ignore_errors=True)
+
+
+# ═══════════════════════════════════════════
+# Whisper transcription
+# ═══════════════════════════════════════════
+
+class WhisperTranscribeRequest(BaseModel):
+    audio_url: str
+    language: str = "auto"
+
+
+# Cached faster-whisper model (separate from openai-whisper used by BS-RoFormer)
+_faster_whisper_model = None
+
+
+def _get_faster_whisper():
+    global _faster_whisper_model
+    if _faster_whisper_model is None:
+        logger.info("Loading faster-whisper large-v3...")
+        from faster_whisper import WhisperModel
+        _faster_whisper_model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+        logger.info("faster-whisper large-v3 loaded")
+    return _faster_whisper_model
+
+
+def _run_whisper_transcribe(req: WhisperTranscribeRequest) -> dict:
+    import time as _time
+    start = _time.time()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Download audio
+        logger.info("Whisper: downloading audio")
+        resp = requests.get(req.audio_url, timeout=120)
+        resp.raise_for_status()
+        url_path = req.audio_url.split("?")[0]
+        ext = os.path.splitext(url_path)[-1] or ".wav"
+        audio_path = os.path.join(tmpdir, "input" + ext)
+        with open(audio_path, "wb") as f:
+            f.write(resp.content)
+
+        model = _get_faster_whisper()
+        lang = None if req.language == "auto" else req.language
+        segments_iter, info = model.transcribe(
+            audio_path,
+            language=lang,
+            beam_size=5,
+            vad_filter=True,
+        )
+
+        segments_list = []
+        transcript_parts = []
+        for seg in segments_iter:
+            segments_list.append({"start": round(seg.start, 3), "end": round(seg.end, 3), "text": seg.text.strip()})
+            transcript_parts.append(seg.text.strip())
+
+        transcript = " ".join(transcript_parts)
+        elapsed = _time.time() - start
+        logger.info("Whisper transcription done in %.1fs, %d chars" % (elapsed, len(transcript)))
+
+        return {
+            "status": "ok",
+            "transcript": transcript,
+            "language": info.language,
+            "duration_seconds": round(info.duration, 2),
+            "segments": segments_list,
+        }
+
+
+@app.post("/api/whisper-transcribe")
+async def whisper_transcribe_endpoint(req: WhisperTranscribeRequest):
+    async with gpu_lock:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: _run_whisper_transcribe(req))
+
+
+# ═══════════════════════════════════════════
+# Pyannote speaker diarization
+# ═══════════════════════════════════════════
+
+class PyannoteRequest(BaseModel):
+    audio_url: str
+    min_speakers: int = 1
+    max_speakers: int = 5
+
+
+# Cached Pyannote pipeline
+_pyannote_pipeline = None
+
+
+def _get_pyannote():
+    global _pyannote_pipeline
+    if _pyannote_pipeline is None:
+        logger.info("Loading Pyannote speaker-diarization-3.1...")
+        from pyannote.audio import Pipeline as PyannPipeline
+        hf_token = os.environ.get("HF_TOKEN")
+        _pyannote_pipeline = PyannPipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=hf_token,
+        )
+        import torch as _torch; _pyannote_pipeline = _pyannote_pipeline.to(_torch.device("cuda"))
+        logger.info("Pyannote pipeline loaded")
+    return _pyannote_pipeline
+
+
+def _run_pyannote_diarize(req: PyannoteRequest) -> dict:
+    import time as _time
+    start = _time.time()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Download audio
+        logger.info("Pyannote: downloading audio")
+        resp = requests.get(req.audio_url, timeout=120)
+        resp.raise_for_status()
+        url_path = req.audio_url.split("?")[0]
+        ext = os.path.splitext(url_path)[-1] or ".wav"
+        raw_path = os.path.join(tmpdir, "input" + ext)
+        with open(raw_path, "wb") as f:
+            f.write(resp.content)
+
+        # Convert to 16kHz mono WAV (required by Pyannote)
+        audio_path = os.path.join(tmpdir, "input.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", audio_path],
+            capture_output=True, timeout=60,
+        )
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 100:
+            audio_path = raw_path  # fallback to original if ffmpeg fails
+
+        pipeline = _get_pyannote()
+        # Load audio as tensor to bypass torchcodec (broken in this env)
+        # Load audio as tensor to bypass torchcodec (broken in this env)
+        # Use soundfile+torch instead of torchaudio.load which also uses torchcodec
+        import soundfile as sf
+        import torch as _torch
+        _sf_data, _sf_sr = sf.read(audio_path, dtype="float32", always_2d=True)
+        # audio_data shape: (samples, channels) -> convert to (channels, samples)
+        waveform = _torch.from_numpy(_sf_data.T)
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        audio_dict = {"waveform": waveform, "sample_rate": _sf_sr}
+        diarization = pipeline(
+            audio_dict,
+            min_speakers=req.min_speakers,
+            max_speakers=req.max_speakers,
+        )
+
+        # Aggregate segments per speaker
+        speaker_segments = {}
+        for turn, _, speaker in diarization.speaker_diarization.itertracks(yield_label=True):
+            if speaker not in speaker_segments:
+                speaker_segments[speaker] = []
+            speaker_segments[speaker].append({"start": round(turn.start, 3), "end": round(turn.end, 3)})
+
+        # Calculate total time per speaker
+        speaker_totals = {}
+        for spk, segs in speaker_segments.items():
+            speaker_totals[spk] = sum(s["end"] - s["start"] for s in segs)
+
+        dominant = max(speaker_totals, key=speaker_totals.get) if speaker_totals else ""
+        dominant_total = round(speaker_totals.get(dominant, 0.0), 2)
+
+        speakers_out = [
+            {"speaker": spk, "segments": segs}
+            for spk, segs in sorted(speaker_segments.items())
+        ]
+
+        elapsed = _time.time() - start
+        logger.info("Pyannote diarization done in %.1fs, %d speakers" % (elapsed, len(speakers_out)))
+
+        return {
+            "status": "ok",
+            "speakers": speakers_out,
+            "dominant_speaker": dominant,
+            "dominant_speaker_total_seconds": dominant_total,
+        }
+
+
+@app.post("/api/pyannote-diarize")
+async def pyannote_diarize_endpoint(req: PyannoteRequest):
+    async with gpu_lock:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: _run_pyannote_diarize(req))

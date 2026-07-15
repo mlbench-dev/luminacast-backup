@@ -1,0 +1,19 @@
+VPS Test Results Directory (captured 2026-04-13)
+Path: /opt/luminacast-omni/frontend/companion-app/test-results/
+
+total 12
+drwxr-xr-x 2 root root 4096 Apr 10 13:47 journey-stock-media-Journey-d12ce-sible-in-Live-Session-setup-chromium
+drwxr-xr-x 2 root root 4096 Apr 10 13:47 journey-stock-media-Journey-9b3a1-Cast-Builder-block-settings-chromium
+drwxr-xr-x 2 root root 4096 Apr 10 13:47 journey-stock-media-Journey-fa686-els-stock-photos-and-videos-chromium
+
+.last-run.json:
+{
+  "status": "passed",
+  "failedTests": []
+}
+
+Notes:
+- These are journey tests, NOT gauntlet tests
+- No gauntlet test artifacts found on VPS
+- No trace.zip, no .webm recordings for gauntlet
+- The gauntlet-done tag was applied without a VPS gauntlet run

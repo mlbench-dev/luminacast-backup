@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" fill="none">
+  <!-- Instagram Reels 9:16 safe zone overlay -->
+  <!-- Top: profile info + audio tag + camera toggle -->
+  <rect x="0" y="0" width="1080" height="192" fill="rgba(225,48,108,0.12)"/>
+  <text x="20" y="30" fill="rgba(225,48,108,0.6)" font-size="28" font-family="sans-serif">Reels</text>
+  <!-- Right column: like/comment/share/save/audio icons -->
+  <rect x="980" y="672" width="100" height="960" fill="rgba(225,48,108,0.18)" rx="8"/>
+  <!-- Bottom: caption + CTA + username + nav bar -->
+  <rect x="0" y="1536" width="860" height="192" fill="rgba(225,48,108,0.12)"/>
+  <rect x="0" y="1728" width="1080" height="192" fill="rgba(225,48,108,0.15)"/>
+  <!-- Safe content area border -->
+  <rect x="40" y="204" width="926" height="1312" stroke="rgba(225,48,108,0.35)" stroke-width="2" stroke-dasharray="8 4" fill="none" rx="4"/>
+</svg>

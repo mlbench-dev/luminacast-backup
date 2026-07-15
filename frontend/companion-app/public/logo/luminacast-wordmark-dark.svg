@@ -1,0 +1,23 @@
+<svg viewBox="0 0 280 48" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="wml" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8B82C0"/>
+      <stop offset="100%" stop-color="#5EA88A"/>
+    </linearGradient>
+    <linearGradient id="wil" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8B82C0" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#A89FD4" stop-opacity="0.2"/>
+    </linearGradient>
+  </defs>
+  <!-- Icon -->
+  <g transform="translate(4,4) scale(0.33)">
+    <path d="M 72 38 Q 88 50 72 62" fill="none" stroke="url(#wml)" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+    <path d="M 78 30 Q 100 50 78 70" fill="none" stroke="url(#wml)" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+    <path d="M 84 22 Q 112 50 84 78" fill="none" stroke="url(#wml)" stroke-width="3" stroke-linecap="round" opacity="0.2"/>
+    <polygon points="30,25 70,50 30,75" fill="url(#wml)"/>
+    <polygon points="38,35 62,50 38,65" fill="url(#wil)" opacity="0.5"/>
+    <circle cx="70" cy="50" r="3.5" fill="#5EA88A" opacity="0.8"/>
+  </g>
+  <!-- Text: LUMINACAST (dark for light bg) -->
+  <text x="52" y="31" font-family="'DM Sans','Inter','Segoe UI',sans-serif" font-size="22" font-weight="800" fill="#1C1C28" letter-spacing="-0.3">LUMINACAST</text>
+</svg>

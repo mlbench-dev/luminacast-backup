@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" fill="none">
+  <!-- Twitter/X 16:9 safe zone overlay -->
+  <!-- Top: header bar with back, profile, follow -->
+  <rect x="0" y="0" width="1920" height="64" fill="rgba(29,155,240,0.12)"/>
+  <text x="20" y="28" fill="rgba(29,155,240,0.6)" font-size="24" font-family="sans-serif">Twitter / X</text>
+  <!-- Right: reply/retweet/like column -->
+  <rect x="1680" y="64" width="240" height="880" fill="rgba(29,155,240,0.08)"/>
+  <!-- Bottom: compose bar / related tweets -->
+  <rect x="0" y="1000" width="1920" height="80" fill="rgba(29,155,240,0.12)"/>
+  <!-- Safe content area border -->
+  <rect x="40" y="76" width="1620" height="912" stroke="rgba(29,155,240,0.35)" stroke-width="2" stroke-dasharray="8 4" fill="none" rx="4"/>
+</svg>

@@ -1,0 +1,10 @@
+[sources.docker]
+type = "docker_logs"
+
+[sinks.betterstack]
+type = "http"
+inputs = ["docker"]
+uri = "https://in.logs.betterstack.com"
+encoding.codec = "json"
+auth.strategy = "bearer"
+auth.token = "${BETTERSTACK_DOCKER_TOKEN}"

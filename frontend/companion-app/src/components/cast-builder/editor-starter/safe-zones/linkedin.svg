@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" fill="none">
+  <!-- LinkedIn 16:9 safe zone overlay -->
+  <!-- Top: minimal header -->
+  <rect x="0" y="0" width="1920" height="56" fill="rgba(10,102,194,0.10)"/>
+  <text x="20" y="28" fill="rgba(10,102,194,0.6)" font-size="24" font-family="sans-serif">LinkedIn</text>
+  <!-- Bottom: like / comment / repost / send bar -->
+  <rect x="0" y="980" width="1920" height="100" fill="rgba(10,102,194,0.15)"/>
+  <!-- Safe content area border -->
+  <rect x="40" y="68" width="1840" height="900" stroke="rgba(10,102,194,0.35)" stroke-width="2" stroke-dasharray="8 4" fill="none" rx="4"/>
+</svg>

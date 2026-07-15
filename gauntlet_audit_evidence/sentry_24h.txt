@@ -1,0 +1,28 @@
+Sentry Issues — last 24h (captured 2026-04-13 06:35 UTC)
+
+--- luminacast-orchestrator ---
+[LUMINACAST-ORCHESTRATOR-31] LoRA training failed: Server error '500 Internal Server Error' for url 'http://194.247.183.12:7860/a (15x, last: 2026-04-12T21:05:30)
+[LUMINACAST-ORCHESTRATOR-3N] Consecutive HTTP (6x, last: 2026-04-12T20:57:48)
+[LUMINACAST-ORCHESTRATOR-38] KeyError: 'lora_r2_key' (6x, last: 2026-04-12T19:50:25)
+[LUMINACAST-ORCHESTRATOR-3T] Error: Rendered more hooks than during the previous render. (1x, last: 2026-04-12T19:35:56)
+[LUMINACAST-ORCHESTRATOR-3S] Error: AbortError: The play() request was interrupted by a call to pause(). (1x, last: 2026-04-12T19:17:27)
+[LUMINACAST-ORCHESTRATOR-3R] Error: Rendered more hooks than during the previous render. (2x, last: 2026-04-12T18:51:58)
+[LUMINACAST-ORCHESTRATOR-3Q] Error: Rendered more hooks than during the previous render. (2x, last: 2026-04-12T18:27:29)
+[LUMINACAST-ORCHESTRATOR-3P] TypeError: Failed to set the 'playbackRate' property on 'HTMLMediaElement' (1x, last: 2026-04-12T17:55:50)
+[LUMINACAST-ORCHESTRATOR-3M] Error: Objects are not valid as a React child (found: object with keys {type, loc, msg, input}). (2x, last: 2026-04-11T20:52:49)
+[LUMINACAST-ORCHESTRATOR-3K] AxiosError: Request failed with status code 502 (3x, last: 2026-04-11T20:45:12)
+
+--- luminacast-gpu-worker ---
+[LUMINACAST-GPU-WORKER-3] [Errno 98] error while attempting to bind on address ('0.0.0.0', 7860): address already in use (4513x, last: 2026-04-12T21:44:09)
+[LUMINACAST-GPU-WORKER-7] HTTPException: Training failed (13x, last: 2026-04-12T21:38:19)
+[LUMINACAST-GPU-WORKER-6] Stdout tail (13x, last: 2026-04-12T21:38:19)
+[LUMINACAST-GPU-WORKER-K] Raw trainer failed (rc=1) (1x, last: 2026-04-12T21:38:19)
+[LUMINACAST-GPU-WORKER-J] Raw trainer failed (rc=1) (1x, last: 2026-04-12T21:30:59)
+[LUMINACAST-GPU-WORKER-H] Raw trainer failed (rc=1) (2x, last: 2026-04-12T21:24:23)
+[LUMINACAST-GPU-WORKER-G] Raw trainer failed (rc=1) (1x, last: 2026-04-12T21:18:47)
+[LUMINACAST-GPU-WORKER-F] Raw trainer failed (rc=1) (1x, last: 2026-04-12T21:14:41)
+[LUMINACAST-GPU-WORKER-E] Raw trainer failed (rc=1) (2x, last: 2026-04-12T21:09:28)
+[LUMINACAST-GPU-WORKER-4] AttributeError: 'torch._C._CudaDeviceProperties' object has no attribute 'total_mem' (9x, last: 2026-04-12T10:27:27)
+
+--- elumetra-backend ---
+[ELUMETRA-BACKEND-1] TypeError: Cannot read properties of undefined (reading 'errorHandler') (2x, last: 2026-03-24T20:27:28)

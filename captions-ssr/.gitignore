@@ -1,0 +1,7 @@
+node_modules/
+out/
+# Copied at build time (and by sync-frontend.sh) from the frontend — never
+# edited here, so never committed. Single source of truth lives in
+# frontend/companion-app/src.
+src/frontend-mirror/captionPresets.ts
+src/frontend-mirror/items/captions/caption-page.tsx

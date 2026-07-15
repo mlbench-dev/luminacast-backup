@@ -1,0 +1,405 @@
+/**
+ * ArrangePhase — Remotion Editor Starter timeline editor for the Cast Builder.
+ *
+ * Mounts <LuminacastEditor> with the cast's timeline data and an auto-save bridge
+ * that converts Editor Starter state → renderer-compatible bonded V1/A1 snapshot
+ * via editorStarterToLuminacastSnapshot(), then POSTs to castsApi.saveTimeline().
+ *
+ * The `twick_data` field name is kept for backward compat. Its content is now
+ * the OUTPUT of editorStarterToLuminacastSnapshot() — the renderer-format payload,
+ * NOT Editor Starter's native state. The backend's extract_bonded_blocks_from_timeline()
+ * is the source of truth for the shape.
+ */
+import { useEffect, useState, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
+import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { castsApi, avatarApi } from "@/lib/api";
+import {
+  castToEditorStarterTimeline,
+  editorStarterToLuminacastSnapshot,
+  computeBlockRegions,
+} from "@/lib/editorStarterMapping";
+import type { UndoableState } from "@/components/cast-builder/editor-starter/state/types";
+import { LuminacastEditor } from "@/components/cast-builder/editor-starter";
+import type { Cast } from "@/lib/types";
+import { Loader2, ExternalLink, RefreshCw } from "lucide-react";
+import { toast } from "@/hooks/useToast";
+
+interface ArrangePhaseProps {
+  cast: Cast;
+  onEditScript?: () => void;
+  onEdited?: () => void;
+}
+
+export interface ArrangePhaseHandle {
+  flushSave: () => Promise<void>;
+  getChangeCount: () => number;
+  getTimelineTracks: () => unknown[];
+}
+
+/** Auto-save debounce interval (ms) — matches the old Twick auto-save */
+const AUTO_SAVE_DEBOUNCE_MS = 1500;
+
+export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(function ArrangePhase({ cast, onEditScript, onEdited }, ref) {
+  const navigate = useNavigate();
+  const [initialState, setInitialState] = useState<UndoableState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const changeCountRef = useRef(0);
+  const latestStateRef = useRef<UndoableState | null>(null);
+
+  /** Build the save payload from current editor state */
+  const buildSavePayload = useCallback((state: UndoableState) => {
+    const snapshot = editorStarterToLuminacastSnapshot(state);
+    const blockRegions = computeBlockRegions(state);
+    // Serialize the native editor state for later restore
+    const editorState = {
+      tracks: state.tracks,
+      items: state.items,
+      assets: state.assets,
+      fps: state.fps,
+      compositionWidth: state.compositionWidth,
+      compositionHeight: state.compositionHeight,
+      deletedAssets: state.deletedAssets,
+    };
+    return {
+      variant_id: "default",
+      twick_data: snapshot,
+      block_regions: blockRegions,
+      editor_state: editorState,
+    };
+  }, []);
+
+  // Expose flushSave to parent via ref — clears pending debounce and saves immediately
+  useImperativeHandle(ref, () => ({
+    async flushSave() {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = undefined;
+      }
+      const state = latestStateRef.current;
+      // Always save when there's editor state. Previously this gated on
+      // changeCountRef.current > 1, but that meant Finalize-on-fresh-open
+      // (user enters editor and immediately clicks Render) wrote NO
+      // timeline_json — finalize then 400'd with "No timeline data".
+      // Saving the initial fresh state is cheap and idempotent.
+      if (state) {
+        await castsApi.saveTimeline(cast.id, buildSavePayload(state));
+      }
+    },
+    getChangeCount() {
+      return changeCountRef.current;
+    },
+    getTimelineTracks() {
+      const state = latestStateRef.current;
+      if (!state) return [];
+      const snapshot = editorStarterToLuminacastSnapshot(state);
+      return snapshot.tracks || [];
+    },
+  }), [cast.id, buildSavePayload]);
+
+  // Auto-save on navigate away / tab close
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (latestStateRef.current && cast?.id) {
+        const payload = buildSavePayload(latestStateRef.current);
+        navigator.sendBeacon(
+          "/api/casts/" + cast.id + "/timeline",
+          JSON.stringify(payload)
+        );
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    const handleVisChange = () => {
+      if (document.visibilityState === "hidden") handleBeforeUnload();
+    };
+    document.addEventListener("visibilitychange", handleVisChange);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisChange);
+      // Flush on unmount (navigating away within SPA)
+      handleBeforeUnload();
+    };
+  }, [cast?.id, buildSavePayload]);
+
+  // Phase 2.5.2 — Stale audio detection
+  const [staleDismissed, setStaleDismissed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Fetch siblings for the sibling banner
+  const { data: siblingsData } = useQuery({
+    queryKey: ["cast-siblings", cast.id],
+    queryFn: () => castsApi.getSiblings(cast.id),
+    enabled: !!cast.id,
+    staleTime: 30_000,
+  });
+
+  const siblings = siblingsData?.siblings ?? [];
+  const audioStaleSince = cast.audio_stale_since;
+
+  // Load saved editor state or build fresh timeline from cast blocks
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Always re-fetch cast so newly added blocks are included
+        const freshCast = await castsApi.get(cast.id);
+
+        // Try to restore previously saved editor state. We only restore if the
+        // saved state has an item for EVERY current active block. The previous
+        // check was a count comparison (savedItemCount >= currentBlockCount)
+        // which incorrectly accepts stale state when the user adds a new block
+        // (e.g. a PIP block) after saving — the new block is missing from the
+        // saved items but the count test passes because old blocks have
+        // multiple items. Result: editor showed an outdated timeline missing
+        // the new block.
+        let restoredState: UndoableState | null = null;
+        try {
+          const savedTimeline = await castsApi.getTimeline(cast.id, "default");
+          if (savedTimeline?.editor_state && savedTimeline.editor_state.tracks) {
+            const items: Record<string, any> = savedTimeline.editor_state.items || {};
+            // Collect block_ids that have at least one item bound to them.
+            const blockIdsInSaved = new Set<string>();
+            for (const item of Object.values(items)) {
+              const bid = item?.metadata?.block_id;
+              if (bid) blockIdsInSaved.add(bid);
+            }
+            const currentBlocks = (freshCast.blocks || [])
+              .filter((b: any) => b.is_active !== false && b.deleted_at == null);
+            const allCurrentInSaved = currentBlocks.every((b: any) => blockIdsInSaved.has(b.id));
+            if (allCurrentInSaved && currentBlocks.length > 0) {
+              restoredState = savedTimeline.editor_state as UndoableState;
+              console.log("RESTORED saved editor state:", {
+                savedItemCount: Object.keys(items).length,
+                currentBlockCount: currentBlocks.length,
+                savedAt: savedTimeline.saved_at,
+              });
+            } else {
+              const missing = currentBlocks.filter((b: any) => !blockIdsInSaved.has(b.id)).map((b: any) => b.id);
+              console.log("Saved editor state stale — rebuilding. Missing block_ids:", missing);
+            }
+          }
+        } catch (err) {
+          console.warn("Could not load saved timeline, building fresh:", err);
+        }
+
+        if (restoredState && !cancelled) {
+          setInitialState(restoredState);
+          setLoading(false);
+          return;
+        }
+
+        // No saved state or outdated — build fresh from blocks
+        let avatarFaceKey: string | undefined;
+        let avatarName: string | undefined;
+        const avatarId = freshCast.avatar_id || cast.avatar_id;
+        if (avatarId) {
+          try {
+            const avatar = await avatarApi.status(avatarId);
+            avatarFaceKey = avatar?.face_ref_key ?? undefined;
+            avatarName = avatar?.name ?? undefined;
+          } catch (err) {
+            console.warn("Failed to fetch avatar face_ref_key:", err);
+          }
+        }
+
+        console.log("BRIDGE INPUT (fresh build):", { avatarFaceKey, avatarName, castId: freshCast.id, blockCount: freshCast.blocks?.length });
+        const { state } = castToEditorStarterTimeline(freshCast, {
+          avatarFaceKey,
+          avatarName,
+          fps: 30,
+        });
+
+        if (!cancelled) {
+          setInitialState(state);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error("Failed to build initial timeline:", err);
+        // Fallback: build from prop cast data
+        let avatarFaceKey: string | undefined;
+        let avatarName: string | undefined;
+        if (cast.avatar_id) {
+          try {
+            const avatar = await avatarApi.status(cast.avatar_id);
+            avatarFaceKey = avatar?.face_ref_key ?? undefined;
+            avatarName = avatar?.name ?? undefined;
+          } catch { /* ignore */ }
+        }
+        const { state } = castToEditorStarterTimeline(cast, { avatarFaceKey, avatarName, fps: 30 });
+        if (!cancelled) {
+          setInitialState(state);
+          setLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [cast.id, cast.avatar_id]);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, []);
+
+  // Phase 2.5.3 — Poll for sibling cascade updates while user is editing.
+  // If audio becomes stale mid-session, show a non-blocking toast instead
+  // of disrupting the user's editing session.
+  useEffect(() => {
+    if (!cast.id || !siblings.length) return;
+    const interval = setInterval(async () => {
+      try {
+        const refreshed = await castsApi.get(cast.id);
+        const stale = refreshed.audio_stale_since;
+        if (stale && !staleDismissed) {
+          toast({
+            title: "Audio updated by sibling",
+            description: `The ${siblings[0]?.format_family || "other"} version updated audio. Click Refresh in the banner to apply.`,
+          });
+          // Clear interval after first notification to avoid spam
+          clearInterval(interval);
+        }
+      } catch { /* silent — polling failure is non-critical */ }
+    }, 30_000); // poll every 30s
+    return () => clearInterval(interval);
+  }, [cast.id, siblings.length, staleDismissed]);
+
+  /**
+   * Auto-save bridge: debounced callback fired by ContextProvider when
+   * undoableState changes. Converts to renderer format and POSTs.
+   */
+  const handleStateChange = useCallback((undoableState: UndoableState) => {
+    // Track latest state for flushSave
+    latestStateRef.current = undoableState;
+
+    // Skip the initial state load (changeCount=0 means first render)
+    changeCountRef.current += 1;
+    if (changeCountRef.current <= 1) return;
+    onEdited?.();  // Notify parent that edits were made (invalidates render status)
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        await castsApi.saveTimeline(cast.id, buildSavePayload(undoableState));
+        console.log("AUTO-SAVE OK", new Date().toISOString());
+      } catch (e) {
+        console.error("Auto-save failed:", e);
+      }
+    }, AUTO_SAVE_DEBOUNCE_MS);
+  }, [cast.id, buildSavePayload]);
+
+  // Phase 2.5.2 — Refresh timeline from sibling cascade
+  const handleRefreshTimeline = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      // Re-fetch the cast to get updated variants from sibling cascade
+      const refreshed = await castsApi.get(cast.id);
+      // Rebuild the editor state with updated cast data
+      let avatarFaceKey: string | undefined;
+      let avatarName: string | undefined;
+      if (cast.avatar_id) {
+        try {
+          const avatar = await avatarApi.status(cast.avatar_id);
+          avatarFaceKey = avatar?.face_ref_key ?? undefined;
+          avatarName = avatar?.name ?? undefined;
+        } catch { /* ignore */ }
+      }
+      console.log("BRIDGE INPUT:", { avatarFaceKey, avatarName, castId: refreshed.id, blockCount: refreshed.blocks?.length });
+      const { state } = castToEditorStarterTimeline(refreshed, {
+        avatarFaceKey,
+        avatarName,
+        fps: 30,
+      });
+      setInitialState(state);
+      changeCountRef.current = 0; // Reset change counter to avoid immediate auto-save
+      setStaleDismissed(true);
+      // Clear stale flag on backend
+      await castsApi.patch(cast.id, { clear_audio_stale: true } as any);
+      toast({ title: "Timeline refreshed", description: "Updated audio from sibling cast applied." });
+    } catch (err: any) {
+      toast({
+        title: "Refresh failed",
+        description: err?.response?.data?.detail || err.message || "Could not refresh timeline",
+        variant: "destructive",
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [cast.id, cast.avatar_id]);
+
+  if (loading || !initialState) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-[#0a0a0a]">
+        <div className="flex items-center gap-2 text-white/50">
+          <Loader2 className="w-5 h-5 animate-spin" />
+          Loading editor...
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Phase 2.5.2 — Stale audio notification banner */}
+      {audioStaleSince && !staleDismissed && (
+        <div className="flex items-center gap-3 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-sm text-amber-200 shrink-0">
+          <span>
+            Audio was updated in{" "}
+            {siblings.length > 0 ? (
+              <>the <strong>{siblings[0].format_family}</strong> version</>
+            ) : (
+              "a sibling cast"
+            )}
+            .
+          </span>
+          <button
+            onClick={handleRefreshTimeline}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1 text-amber-300 hover:text-amber-100 underline underline-offset-2 disabled:opacity-50"
+          >
+            {refreshing ? (
+              <><Loader2 className="w-3 h-3 animate-spin" /> Refreshing...</>
+            ) : (
+              <><RefreshCw className="w-3 h-3" /> Refresh timeline</>
+            )}
+          </button>
+          <button
+            onClick={() => setStaleDismissed(true)}
+            className="ml-auto text-amber-400/60 hover:text-amber-300 text-xs"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {/* Sibling banner — Phase 2.4.5 */}
+      {siblings.length > 0 && (
+        <div className="flex items-center gap-3 bg-purple-500/10 border-b border-purple-500/20 px-4 py-2 text-sm text-purple-200 shrink-0">
+          <span>
+            This cast has a{" "}
+            <strong>{siblings[0].format_family}</strong> version:{" "}
+            <em>{siblings[0].name || "Untitled"}</em>
+          </span>
+          <button
+            onClick={() => navigate(`/cast-builder/${siblings[0].cast_id}`)}
+            className="inline-flex items-center gap-1 text-purple-300 hover:text-purple-100 underline underline-offset-2"
+          >
+            Open <ExternalLink className="w-3 h-3" />
+          </button>
+          {siblings.length > 1 && (
+            <span className="text-purple-400/60 text-xs">
+              +{siblings.length - 1} more
+            </span>
+          )}
+        </div>
+      )}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <LuminacastEditor
+          cast={cast}
+          initialUndoableState={initialState}
+          onUndoableStateChange={handleStateChange}
+        />
+      </div>
+    </div>
+  );
+});

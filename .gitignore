@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+test-results/
+playwright-report/
+
+# Cache
+.cache/
+/tmp/stream_cache/
+
+# Sentry
+.sentryclirc
+.env
+
+# Editor Starter source (read-only reference clone)
+external/
+
+# TypeScript build info
+*.tsbuildinfo
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

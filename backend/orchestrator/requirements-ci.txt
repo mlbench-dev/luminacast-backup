@@ -1,0 +1,45 @@
+# CI-only requirements — excludes heavy VPS-only deps (pyannote-audio, torch)
+# For production, use requirements.txt
+
+# FastAPI
+fastapi==0.115.0
+uvicorn[standard]==0.31.0
+python-multipart==0.0.9
+
+# Database
+sqlalchemy[asyncio]==2.0.35
+asyncpg==0.30.0
+psycopg2-binary==2.9.9
+alembic==1.13.2
+
+# Task Queue
+celery[redis]==5.4.0
+redis==5.1.1
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+pydantic[email]==2.9.2
+pydantic-settings==2.5.2
+
+# External Services
+httpx==0.27.2
+boto3==1.35.36
+stripe==10.12.0
+
+# Monitoring
+sentry-sdk[fastapi,celery,sqlalchemy]==2.14.0
+
+# Video Processing & Face Extraction
+ffmpeg-python==0.2.0
+opencv-python-headless==4.10.0.84
+mediapipe==0.10.33
+
+# fal.ai (FLUX Kontext)
+fal-client
+
+# Utilities
+psutil==6.0.0
+python-dotenv==1.0.1
+jsonschema==4.23.0

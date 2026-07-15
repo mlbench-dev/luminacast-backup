@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" fill="none">
+  <!-- TikTok 9:16 safe zone overlay -->
+  <!-- Top: status bar + back button -->
+  <rect x="0" y="0" width="1080" height="288" fill="rgba(255,0,100,0.12)"/>
+  <text x="20" y="30" fill="rgba(255,0,100,0.6)" font-size="28" font-family="sans-serif">TikTok</text>
+  <!-- Right column: like/comment/share/bookmark icons -->
+  <rect x="994" y="768" width="86" height="864" fill="rgba(255,0,100,0.18)" rx="8"/>
+  <!-- Bottom: caption area + username + hashtags + nav bar -->
+  <rect x="0" y="1440" width="756" height="288" fill="rgba(255,0,100,0.12)"/>
+  <rect x="0" y="1728" width="1080" height="192" fill="rgba(255,0,100,0.15)"/>
+  <!-- Safe content area border -->
+  <rect x="40" y="300" width="940" height="1120" stroke="rgba(255,0,100,0.35)" stroke-width="2" stroke-dasharray="8 4" fill="none" rx="4"/>
+</svg>

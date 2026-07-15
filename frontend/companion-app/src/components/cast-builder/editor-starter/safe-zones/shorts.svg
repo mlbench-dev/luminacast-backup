@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" fill="none">
+  <!-- YouTube Shorts 9:16 safe zone overlay -->
+  <!-- Top: status bar + search + notification icons -->
+  <rect x="0" y="0" width="1080" height="230" fill="rgba(255,0,0,0.12)"/>
+  <text x="20" y="30" fill="rgba(255,0,0,0.6)" font-size="28" font-family="sans-serif">Shorts</text>
+  <!-- Right column: minimal — like/dislike/comment/share -->
+  <rect x="1000" y="960" width="80" height="576" fill="rgba(255,0,0,0.15)" rx="8"/>
+  <!-- Bottom: description + subscribe bar + like/dislike/comment/share + nav -->
+  <rect x="0" y="1498" width="900" height="230" fill="rgba(255,0,0,0.12)"/>
+  <rect x="0" y="1728" width="1080" height="192" fill="rgba(255,0,0,0.18)"/>
+  <!-- Safe content area border -->
+  <rect x="40" y="244" width="946" height="1234" stroke="rgba(255,0,0,0.35)" stroke-width="2" stroke-dasharray="8 4" fill="none" rx="4"/>
+</svg>

@@ -1,0 +1,225 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+    volumes:
+      - neo4j_data:/data
+    ports:
+      - "127.0.0.1:7687:7687"
+      - "127.0.0.1:7474:7474"
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  orchestrator:
+    build: ./backend/orchestrator
+    env_file: .env
+    environment:
+      # Cloud-fallback render providers. All optional — providers whose key
+      # is unset report is_available()=False and are skipped at chain time.
+      - WAVESPEED_API_KEY=${WAVESPEED_API_KEY:-}
+      - FISH_AUDIO_API_KEY=${FISH_AUDIO_API_KEY:-}
+      - FAL_KEY=${FAL_KEY:-}
+      - CAST_RENDER_HOSTKEY_DISABLED=${CAST_RENDER_HOSTKEY_DISABLED:-}
+      # Step 12 — SSR caption overlay. The composer POSTs to captions-ssr and
+      # reads the rendered PNG sequence back via the shared captions_ssr_out
+      # volume mounted below at the same path the SSR service writes to.
+      - CAPTIONS_SSR_ENABLED=${CAPTIONS_SSR_ENABLED:-true}
+      - CAPTIONS_SSR_URL=${CAPTIONS_SSR_URL:-http://captions-ssr:3030}
+      - CAPTIONS_SSR_TIMEOUT_S=${CAPTIONS_SSR_TIMEOUT_S:-180}
+      - CAPTIONS_SSR_FORMAT=${CAPTIONS_SSR_FORMAT:-png-sequence}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - stream_cache:/tmp/stream_cache
+      - hls_data:/tmp/hls
+      # SSR caption overlays — written by captions-ssr, read here (ro).
+      - captions_ssr_out:/tmp/captions_ssr:ro
+    restart: always
+    command: >
+      sh -c "alembic upgrade heads || true &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  celery-worker:
+    build: ./backend/orchestrator
+    env_file: .env
+    environment:
+      - PYTHONPATH=/app
+      - WAVESPEED_API_KEY=${WAVESPEED_API_KEY:-}
+      - FISH_AUDIO_API_KEY=${FISH_AUDIO_API_KEY:-}
+      - FAL_KEY=${FAL_KEY:-}
+      - CAST_RENDER_HOSTKEY_DISABLED=${CAST_RENDER_HOSTKEY_DISABLED:-}
+      # Step 12 — SSR caption overlay (see orchestrator above).
+      - CAPTIONS_SSR_ENABLED=${CAPTIONS_SSR_ENABLED:-true}
+      - CAPTIONS_SSR_URL=${CAPTIONS_SSR_URL:-http://captions-ssr:3030}
+      - CAPTIONS_SSR_TIMEOUT_S=${CAPTIONS_SSR_TIMEOUT_S:-180}
+      - CAPTIONS_SSR_FORMAT=${CAPTIONS_SSR_FORMAT:-png-sequence}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - stream_cache:/tmp/stream_cache
+      - hls_data:/tmp/hls
+      # SSR caption overlays — written by captions-ssr, read here (ro).
+      - captions_ssr_out:/tmp/captions_ssr:ro
+    restart: always
+    command: celery -A tasks worker -l info --concurrency=2 --queues=default --hostname=default-worker@%h --prefetch-multiplier=1
+
+  celery-render-worker:
+    build: ./backend/orchestrator
+    env_file: .env
+    environment:
+      - PYTHONPATH=/app
+      - WAVESPEED_API_KEY=${WAVESPEED_API_KEY:-}
+      - FISH_AUDIO_API_KEY=${FISH_AUDIO_API_KEY:-}
+      - FAL_KEY=${FAL_KEY:-}
+      - CAST_RENDER_HOSTKEY_DISABLED=${CAST_RENDER_HOSTKEY_DISABLED:-}
+      # Step 12 — SSR caption overlay (see orchestrator above). The render
+      # queue is where the composer runs, so this worker MUST see the volume.
+      - CAPTIONS_SSR_ENABLED=${CAPTIONS_SSR_ENABLED:-true}
+      - CAPTIONS_SSR_URL=${CAPTIONS_SSR_URL:-http://captions-ssr:3030}
+      - CAPTIONS_SSR_TIMEOUT_S=${CAPTIONS_SSR_TIMEOUT_S:-180}
+      - CAPTIONS_SSR_FORMAT=${CAPTIONS_SSR_FORMAT:-png-sequence}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - stream_cache:/tmp/stream_cache
+      - hls_data:/tmp/hls
+      # SSR caption overlays — written by captions-ssr, read here (ro).
+      - captions_ssr_out:/tmp/captions_ssr:ro
+    restart: unless-stopped
+    command: celery -A tasks worker -l info --concurrency=2 --queues=renders --hostname=render-worker@%h --prefetch-multiplier=1
+
+  celery-beat:
+    build: ./backend/orchestrator
+    env_file: .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    command: celery -A tasks beat -l info
+
+  chat-monitor:
+    build: ./backend/chat-monitor
+    env_file: .env
+    depends_on:
+      - orchestrator
+    restart: always
+
+  # Remotion SSR caption-render service (Step 11 scaffold). Renders the
+  # caption track to a transparent overlay (PNG sequence / alpha video) using
+  # the SAME captionPresets.ts + caption-page.tsx the editor preview uses, so
+  # burnt captions match the animated preview. NOT yet wired into the
+  # composer — that is Step 12. Build context is the repo root so the image
+  # can copy the frontend caption sources at build time (single source of
+  # truth). Internal-only on the worker network; no host port published.
+  captions-ssr:
+    build:
+      context: .
+      dockerfile: captions-ssr/Dockerfile
+    environment:
+      - CAPTIONS_SSR_PORT=${CAPTIONS_SSR_PORT:-3030}
+      - CAPTIONS_SSR_FORMAT=${CAPTIONS_SSR_FORMAT:-png-sequence}
+      - CAPTIONS_SSR_OUTPUT_DIR=/tmp/captions_ssr
+    volumes:
+      - captions_ssr_out:/tmp/captions_ssr
+    restart: always
+
+  frontend:
+    build: ./frontend/companion-app
+    ports:
+      - "127.0.0.1:3000:80"
+    restart: always
+
+  log-collector:
+    image: timberio/vector:latest-alpine
+    command: ["--config", "/etc/vector/vector.toml"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./infra/vector/vector.toml:/etc/vector/vector.toml:ro
+    environment:
+      - BETTERSTACK_DOCKER_TOKEN=${BETTERSTACK_DOCKER_TOKEN}
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/luminacast.conf:/etc/nginx/conf.d/default.conf
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot
+      - hls_data:/tmp/hls:ro
+    depends_on:
+      - orchestrator
+      - frontend
+    restart: always
+
+  # SRS — RTMP relay for the Go-Live feature.
+  # The orchestrator's compositor pushes to rtmp://srs:1935/live/<key>; the
+  # user's machine (or OBS browser source) pulls from rtmp://<vps>:1935/live/<key>
+  # or http://<vps>:8085/live/<key>.m3u8 (HLS).
+  # Port 1985 is the SRS HTTP API (handy for status checks). 1935 must be
+  # exposed on the VPS firewall (`ufw allow 1935/tcp`) for users to pull.
+  srs:
+    image: ossrs/srs:5
+    command: ./objs/srs -c conf/docker.conf
+    ports:
+      - "1935:1935"   # RTMP
+      - "1985:1985"   # HTTP API
+      - "8085:8080"   # HLS / HTTP-FLV (mapped off 8080 to avoid clashes)
+    restart: always
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  stream_cache:
+  certbot_certs:
+  certbot_www:
+  hls_data:
+  captions_ssr_out:

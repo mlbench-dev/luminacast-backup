@@ -1,0 +1,21 @@
+Avatar Status Distribution (captured 2026-04-13)
+
+SELECT status, COUNT(*) FROM avatars GROUP BY status ORDER BY count DESC;
+
+        status         | count
+-----------------------+-------
+ FAILED                |    57
+ FACE_CANDIDATES_READY |    19
+ READY                 |    16
+ APPROVED              |    16
+
+No failure_reason column exists. progress_step field contains failure info.
+ALL 57 failed avatars have: progress_step = "Generation timed out — please retry"
+
+Recent failed avatars (all from 2026-04-12):
+        id        |   name    | status |            progress_step            | created_at
+------------------+-----------+--------+-------------------------------------+------------
+ avt_893603f52484 | AI Avatar | FAILED | Generation timed out — please retry | 2026-04-12
+ avt_77c42e97ff78 | AI Avatar | FAILED | Generation timed out — please retry | 2026-04-12
+ avt_79381f4a92e1 | AI Avatar | FAILED | Generation timed out — please retry | 2026-04-12
+ ... (12 more identical entries)

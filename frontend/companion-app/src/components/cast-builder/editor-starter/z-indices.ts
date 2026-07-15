@@ -1,0 +1,10 @@
+export const Z_INDEX_PLAYHEAD = 1;
+export const Z_INDEX_TICKS = 10;
+export const Z_TIMELINE_UNDERLAY_PREVIEWS = 5;
+export const Z_INDEX_SIDE_PANEL = 20;
+export const Z_INDEX_TIMELINE_RESIZER = 30;
+export const Z_INDEX_FADE_TOOLTIP = 50;
+export const Z_INDEX_VOLUME_TOOLTIP = 50;
+export const Z_INDEX_FORCE_SPECIFIC_CURSOR = 100;
+export const Z_INDEX_DRAG_OVERLAY = 9999;
+export const Z_INDEX_TIMELINE_SNAP_INDICATOR = 10000;

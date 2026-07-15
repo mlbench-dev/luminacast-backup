@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: luminacast_test
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  neo4j-test:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/test
+    ports:
+      - "7688:7687"
+    tmpfs:
+      - /data
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"

@@ -1,0 +1,30 @@
+{
+  "name": "captions-ssr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Remotion server-side render service that burns the caption track to a transparent overlay (PNG sequence or alpha video) so burnt captions match the animated editor preview exactly.",
+  "type": "module",
+  "scripts": {
+    "server": "node --loader tsx ./src/server.ts",
+    "smoke": "node --loader tsx --test ./src/composition.smoke.test.ts",
+    "test": "node --loader tsx --test ./src/composition.smoke.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.433",
+    "@remotion/captions": "4.0.433",
+    "@remotion/layout-utils": "4.0.433",
+    "@remotion/renderer": "4.0.433",
+    "express": "^4.21.2",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "remotion": "4.0.433"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.19.0",
+    "@types/react": "^19.2.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3"
+  }
+}
