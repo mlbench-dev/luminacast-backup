@@ -16,6 +16,8 @@ from models.avatar_look import AvatarLook
 from models.voice_corpus import VoiceCorpusEntry
 from routers.auth import get_current_user
 from services import audit_log
+from services.r2_storage import get_r2_storage_service
+from services.fish_audio import get_fish_audio_service
 from services.creative_models import (
     CREATIVE_DESCRIPTION_MODEL,
     log_creative_model_use,
@@ -781,14 +783,27 @@ async def reclone_voice(
     if avatar.status not in (AvatarStatus.READY, AvatarStatus.FACE_CANDIDATES_READY, AvatarStatus.APPROVED):
         raise HTTPException(status_code=400, detail="Avatar must be in ready or approved status to re-clone voice")
 
-    if not avatar.video_ref_key:
-        raise HTTPException(status_code=400, detail="No video reference found for this avatar. Cannot re-clone voice.")
+    if not avatar.video_ref_key and not avatar.voice_sample_key:
+        raise HTTPException(status_code=400, detail="No voice reference found for this avatar. Cannot re-clone voice.")
 
+    if avatar.video_ref_key:
+        from tasks.generate_avatar import process_voice_pipeline_task
+        process_voice_pipeline_task.delay(avatar_id, user.id, avatar.video_ref_key, segment_start, segment_end)
+    else:
+        # audio-sample path — reuse the same clone helper used by /clone-voice
+        r2 = get_r2_storage_service()
+        fish = get_fish_audio_service()
+
+        voice_url = r2.get_public_url(avatar.voice_sample_key)
+        voice_id = await fish.clone_voice(voice_url, name=f"Re-clone for {avatar.name or avatar.id}")
+        avatar.voice_id = voice_id
+        avatar.voice_clone_progress = 100
+        avatar.progress_step = "Voice re-cloned"
+        await db.commit()
     # Get segment info from persona_profile
     segment_start = (avatar.persona_profile or {}).get("segment_start", 0)
     segment_end = (avatar.persona_profile or {}).get("segment_end", 60)
 
-    # Reset voice progress
     avatar.voice_clone_progress = 0
     avatar.progress_step = "Re-cloning voice..."
     await db.commit()
@@ -3123,6 +3138,12 @@ async def approve_voice(
             os.unlink(tmp_path)
         except OSError:
             pass
+
+    try:
+        await el.delete_voice(voice_id_el)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        logger.warning(f"Failed to delete ElevenLabs voice {voice_id_el} after Fish Audio clone: {e}")
 
     # Step 4: Store on avatar
     avatar.voice_id = voice_id

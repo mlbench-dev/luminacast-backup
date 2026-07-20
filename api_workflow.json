@@ -231,7 +231,7 @@
       "colormatch": "disabled",
       "mode": "infinitetalk",
       "length": 81,
-      "motion_frame": 9,
+      "motion_frame": 3,
       "frame_window_size": 81,
       "force_offload": true
     }

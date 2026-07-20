@@ -136,6 +136,16 @@ class ElevenLabsService:
         logger.info(f"ElevenLabs generated {len(previews)} voice previews (requested {count})")
         return previews
 
+    async def delete_voice(self, voice_id: str) -> None:
+        """Delete a permanent ElevenLabs voice. Best-effort — log and swallow
+        errors so a delete failure never blocks the avatar pipeline."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.delete(
+                f"{ELEVENLABS_BASE}/voices/{voice_id}",
+                headers={"xi-api-key": self.api_key},
+            )
+            resp.raise_for_status()
+
     async def create_voice_from_preview(self, generated_voice_id: str, voice_name: str, voice_description: str) -> str:
         """Convert a preview voice to a permanent ElevenLabs voice.
         Must be called before using the voice for TTS.
@@ -255,8 +265,10 @@ class ElevenLabsService:
 _instance = None
 
 
+
 def get_elevenlabs_service() -> ElevenLabsService:
     global _instance
     if _instance is None:
         _instance = ElevenLabsService()
     return _instance
+

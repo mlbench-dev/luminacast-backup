@@ -59,22 +59,24 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
     ?? entries.filter((e) => e.status === "ready").reduce((sum, e) => sum + (e.duration_seconds || 0), 0);
   const readyCount = entries.filter((e) => e.status === "ready").length;
 
+
+
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
       const ensuredId = avatarId || await ensureAvatarId();
       return voiceCorpusApi.upload(ensuredId, file);
     },
     onMutate: () => {
-      setUploadingCount((c) => c + 1);   // NEW — fires the instant mutate() is called
+      setUploadingCount((c) => c + 1);
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["voice-corpus", avatarId] });
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["voice-corpus", avatarId] });   // ← await this now
       toast({ title: "Processing voice example..." });
     },
     onError: (err: any) =>
       toast({ title: "Upload failed", description: err?.response?.data?.detail || "Try again", variant: "destructive" }),
     onSettled: () => {
-      setUploadingCount((c) => Math.max(0, c - 1));   // NEW
+      setUploadingCount((c) => Math.max(0, c - 1));   // now fires only after the list has actually refreshed
     },
   });
 
@@ -209,13 +211,13 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
     return () => stopMonitoringAudioLevel();
   }, [stopMonitoringAudioLevel]);
 
-  if (isLoading && !!avatarId) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-5 w-5 animate-spin text-accent" />
-      </div>
-    );
-  }
+  // if (isLoading && !!avatarId) {
+  //   return (
+  //     <div className="flex items-center justify-center py-12">
+  //       <Loader2 className="h-5 w-5 animate-spin text-accent" />
+  //     </div>
+  //   );
+  // }
 
 
 
@@ -273,6 +275,7 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
             <Upload className="h-3 w-3" /> Upload
           </button>
         </div>
+
         {corpusTab === "record" ? (
           <div className="rounded-lg border border-border bg-surface p-4 text-center space-y-3">
             {!isRecording && !recordedBlob && (
@@ -314,22 +317,32 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
             onDragOver={(e) => e.preventDefault()}
             onDrop={handleDrop}
           >
-            <Upload className="h-5 w-5 mx-auto text-text-muted mb-1" />
-            <p className="text-xs text-text-muted">Drop audio/video files or click to upload</p>
-            <p className="text-[10px] text-text-muted mt-1">Accepts .mp3, .wav, .m4a, .mp4, .mov, .webm</p>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.webm,.mkv"
-              multiple
-              className="hidden"
-              onChange={(e) => handleFiles(e.target.files)}
-            />
+            {uploadingCount > 0 ? (
+              <div className="flex justify-center items-center gap-2 text-xs text-text-muted py-1">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                Uploading...
+              </div>
+            ) : (
+              <>
+                <Upload className="h-5 w-5 mx-auto text-text-muted mb-1" />
+                <p className="text-xs text-text-muted">Drop audio/video files or click to upload</p>
+                <p className="text-[10px] text-text-muted mt-1">Accepts .mp3, .wav, .m4a, .mp4, .mov, .webm</p>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.webm,.mkv"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => handleFiles(e.target.files)}
+                />
+              </>
+            )}
+
           </div>
         )}
         {/* Recorded/uploaded examples — select which to train on */}
         {entries.length > 0 && (
-          <div className="space-y-1.5" data-testid="voice-corpus-list-compact">
+          <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1" data-testid="voice-corpus-list-compact">
             {[...entries].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map((entry) => (
               <div key={entry.id} className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1.5" data-testid={`corpus-entry-${entry.id}`}>
                 {entry.status === "ready" ? (

@@ -465,7 +465,7 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
               {avatar.type === AvatarType.CLONE && (
                 <Button
                   size="sm" variant="outline"
-                  className="w-full text-[10px] text-purple-600 border-purple-200 hover:bg-purple-50"
+                  className="w-full text-[10px] text-purple-300 border-purple-500/30 hover:bg-purple-500/10"
                   disabled={isRecloning}
                   onClick={() => {
                     setIsRecloning(true);

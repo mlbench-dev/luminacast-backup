@@ -7,7 +7,7 @@
  */
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Loader2,
   CheckCircle,
@@ -502,6 +502,7 @@ function CloneUploadSubPhase({
   onFaceReady?: (candidates: FaceCandidate[], ensuredAvatarId?: string) => void;
   existingFace?: FaceCandidate | null;   // NEW
 }) {
+  const qc = useQueryClient();
   // Face state
   const [faceCandidates, setFaceCandidates] = useState<FaceCandidate[]>(
     existingFace ? [existingFace] : []
@@ -601,7 +602,7 @@ function CloneUploadSubPhase({
       });
     }
   }, [avatarId, ensureAvatarId, onComplete, onFaceReady]);
-
+ 
   // Voice upload handler (separate)
   const handleVoiceUpload = useCallback(async (file: File) => {
     setVoiceStatus("uploading");
@@ -610,6 +611,7 @@ function CloneUploadSubPhase({
       setVoiceStatus("processing");
       const ensuredAvatarId = avatarId || await ensureAvatarId();
       await avatarApi.cloneUploadVoice(ensuredAvatarId, file);
+      await qc.invalidateQueries({ queryKey: ["voice-corpus", ensuredAvatarId] }); 
     } catch (err: any) {
       setVoiceStatus("idle");
       setVoiceFile(null);
@@ -619,7 +621,7 @@ function CloneUploadSubPhase({
         variant: "destructive",
       });
     }
-  }, [avatarId, ensureAvatarId]);
+  }, [avatarId, ensureAvatarId, qc]);
 
   // Continue
   const voiceReady = voiceStatus === "ready";
@@ -785,12 +787,12 @@ function CloneUploadSubPhase({
               <div className="flex items-center gap-2">
                 <CheckCircle className="h-4 w-4 text-green-400" />
                 <span className="text-xs text-green-400">Voice ready</span>
-                <button
+                {/* <button
                   onClick={() => voiceInputRef.current?.click()}
                   className="text-xs text-accent hover:underline ml-auto"
                 >
                   Add more
-                </button>
+                </button> */}
               </div>
               {voiceFile && (
                 <div className="flex items-center gap-2 text-[10px] text-text-muted">
