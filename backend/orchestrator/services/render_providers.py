@@ -2408,8 +2408,12 @@ class FalWhisperProvider:
         word_timestamps: bool = True,
         **_kwargs,
     ) -> dict:
-        if os.environ.get("FAL_KEY") is None and os.environ.get("FAL_API_KEY"):
-            os.environ["FAL_KEY"] = os.environ["FAL_API_KEY"]
+        if os.environ.get("FAL_KEY") is None:
+            from config import settings as _settings
+            if os.environ.get("FAL_API_KEY"):
+                os.environ["FAL_KEY"] = os.environ["FAL_API_KEY"]
+            elif _settings.FAL_API_KEY:
+                os.environ["FAL_KEY"] = _settings.FAL_API_KEY
         import fal_client
 
         arguments = {

@@ -177,26 +177,27 @@ export function AvatarBackgrounds({ avatarId }: { avatarId: string }) {
 
       {/* Generate modal */}
       {showGenModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-surface border border-border rounded-lg p-4 w-80">
-            <h4 className="text-sm font-semibold text-text mb-2">Generate Scene</h4>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-surface border-2 border-border rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <h4 className="text-lg font-semibold text-text mb-1">Generate Scene</h4>
+            <p className="text-xs text-text-muted mb-4">Describe the background you want for this avatar.</p>
             <Input
               value={genPrompt}
               onChange={(e) => setGenPrompt(e.target.value)}
               placeholder="e.g., minimalist studio, warm wood"
-              className="mb-3 text-xs"
+              autoFocus
+              className="mb-5 text-sm h-12 border-border focus:border-accent"
               onKeyDown={(e) => e.key === "Enter" && genPrompt.trim() && generateMutation.mutate(genPrompt)}
             />
             <div className="flex gap-2 justify-end">
-              <Button size="sm" variant="outline" onClick={() => setShowGenModal(false)}>
+              <Button variant="outline" onClick={() => setShowGenModal(false)}>
                 Cancel
               </Button>
               <Button
-                size="sm"
                 disabled={!genPrompt.trim() || generateMutation.isPending}
                 onClick={() => generateMutation.mutate(genPrompt)}
               >
-                {generateMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Wand2 className="h-3 w-3 mr-1" />}
+                {generateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <Wand2 className="h-4 w-4 mr-1.5" />}
                 Generate
               </Button>
             </div>

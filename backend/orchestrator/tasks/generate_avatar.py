@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from tasks import celery_app
 from services import sentry
 import sentry_sdk
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -1014,162 +1015,48 @@ async def _generate_from_selection_pipeline(avatar_id: str, user_id: str):
         avatar_id=avatar_id,
     )
 
-    # ── InfiniteTalk: HOSTKEY first, RunPod fallback ──
-    # The RunPod `triazevwb6a8ap` template started failing fast (<60s) with
-    # "비디오를 찾을 수 없습니다." ("Video not found") around early May 2026,
-    # blocking every preview render. HOSTKEY runs the same InfiniteTalk model
-    # at /api/infinitetalk-render and is already used by render_dispatcher
-    # for cast block renders, so we try it first and only fall back to RunPod
-    # if HOSTKEY is unreachable or returns no video.
-    video_uploaded = False
-    hostkey_error: str | None = None
-    runpod_error: str | None = None
+    # ── InfiniteTalk: HOSTKEY -> Modal -> RunPod (shared 3-tier cascade) ──
+    from services.render_dispatcher import RenderDispatcher
 
-    import httpx
-    import subprocess
+    dispatcher = RenderDispatcher()
+    tts_duration = len(script_to_speak.split()) / 2.5
+    logger.info(
+        f"InfiniteTalk TTS duration estimate: {tts_duration:.1f}s from "
+        f"{len(script_to_speak.split())} words"
+    )
 
-    # Try HOSTKEY first — same endpoint and payload schema render_dispatcher uses.
     try:
-        from services.render_dispatcher import (
-            HOSTKEY_URL,
-            HOSTKEY_RENDER_ENABLED,
-            HOSTKEY_TIMEOUT,
+        result = await dispatcher.submit_and_wait(
+            image_url=face_url,
+            audio_url=audio_url,
+            prompt="A person talking naturally to the camera on a live stream",
+            size="480p",
+            audio_duration_s=tts_duration,
         )
-        if HOSTKEY_RENDER_ENABLED:
-            logger.info("Preview render: trying HOSTKEY InfiniteTalk first")
-            async with httpx.AsyncClient(timeout=HOSTKEY_TIMEOUT) as client:
-                resp = await client.post(
-                    f"{HOSTKEY_URL}/api/infinitetalk-render",
-                    json={
-                        "image_url": face_url,
-                        "wav_url": audio_url,
-                        "prompt": "A person talking naturally to the camera on a live stream",
-                        "width": 480,
-                        "height": 854,
-                    },
-                )
-                if resp.status_code == 503:
-                    raise RuntimeError("HOSTKEY GPU busy (503)")
-                resp.raise_for_status()
-                hostkey_result = resp.json()
-            # HOSTKEY contract (see render_dispatcher._render_on_hostkey):
-            # response is JSON {"video": <base64-encoded mp4>}.
-            video_b64 = hostkey_result.get("video") if isinstance(hostkey_result, dict) else None
-            if video_b64:
-                video_data = video_b64
-                if video_data.startswith("data:"):
-                    video_data = video_data.split(",", 1)[1]
-                video_bytes = base64.b64decode(video_data)
-                await r2.upload_bytes(video_bytes, test_video_key, "video/mp4")
-                video_uploaded = True
-                logger.info(
-                    "Preview render: HOSTKEY success (~%d bytes)", len(video_bytes)
-                )
-            else:
-                hostkey_error = f"HOSTKEY returned no video field: {str(hostkey_result)[:200]}"
-                logger.warning("Preview render: %s", hostkey_error)
-        else:
-            hostkey_error = "HOSTKEY_RENDER_ENABLED=false"
-            logger.info("Preview render: HOSTKEY disabled, going straight to RunPod")
     except Exception as e:
         sentry_sdk.capture_exception(e)
-        hostkey_error = f"HOSTKEY failed: {e!s}"
-        logger.warning("Preview render: HOSTKEY failed, falling back to RunPod: %s", e)
+        raise RuntimeError(f"Preview render failed on all engines: {e!s}")
 
-    # Fall back to RunPod only if HOSTKEY didn't produce a video.
-    if not video_uploaded:
-        logger.info(
-            "Preview render: falling back to RunPod (HOSTKEY error: %s)", hostkey_error
-        )
-        try:
-            job_id = await runpod.submit_video_job(
-                image_url=face_url,
-                audio_url=audio_url,
-                prompt="A person talking naturally to the camera on a live stream",
-                size="480p",
-            )
+    output = result.get("output")
+    video_url = output.get("video_url") if isinstance(output, dict) else None
+    video_b64 = output.get("video") if isinstance(output, dict) else None
 
-            await _update_progress(avatar_id, "Rendering video...", 90)
+    if video_url:
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            video_resp = await client.get(video_url)
+            video_resp.raise_for_status()
+        await r2.upload_bytes(video_resp.content, test_video_key, "video/mp4")
+    elif video_b64:
+        video_data = video_b64
+        if video_data.startswith("data:"):
+            video_data = video_data.split(",", 1)[1]
+        video_bytes = base64.b64decode(video_data)
+        await r2.upload_bytes(video_bytes, test_video_key, "video/mp4")
+    else:
+        raise RuntimeError(f"No video data in render output: {str(output)[:200]}")
 
-            # Estimate TTS output duration from script length. State-machine drives
-            # stall detection; Celery task_time_limit is the only outer timeout.
-            tts_duration = len(script_to_speak.split()) / 2.5
-            logger.info(f"InfiniteTalk TTS duration estimate: {tts_duration:.1f}s from {len(script_to_speak.split())} words")
-            result = await runpod.wait_for_completion(
-                job_id,
-                poll_interval=5,
-                audio_duration_s=tts_duration,
-                quality="480p",
-            )
-            output = result.get("output")
-
-            # Download generated video and upload to R2
-            if output and isinstance(output, dict):
-                video_download_url = output.get("result") or output.get("video_url") or output.get("video_path")
-                video_base64 = output.get("video")
-
-                if video_download_url and video_download_url.startswith("http"):
-                    logger.info(f"Downloading clone video from {video_download_url[:80]}...")
-                    # NOTE: do NOT re-import tempfile locally here. There's an earlier
-                    # use of tempfile.gettempdir() inside the body-angle-extraction
-                    # block in this same function (~line 766). A local `import
-                    # tempfile` makes tempfile a function-scoped name, so the earlier
-                    # reference fails with `cannot access local variable 'tempfile'`.
-                    # Use the module-level imports (tempfile is imported at the top
-                    # of this file).
-                    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-                        video_resp = await client.get(video_download_url)
-                        video_resp.raise_for_status()
-                        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as raw_f:
-                            raw_f.write(video_resp.content)
-                            raw_path = raw_f.name
-                        fast_path = raw_path.replace(".mp4", "_fast.mp4")
-                        try:
-                            subprocess.run(
-                                ["ffmpeg", "-y", "-i", raw_path, "-c", "copy", "-movflags", "+faststart", fast_path],
-                                capture_output=True, timeout=30
-                            )
-                            with open(fast_path, "rb") as f:
-                                fast_bytes = f.read()
-                            await r2.upload_bytes(fast_bytes, test_video_key, "video/mp4")
-                            logger.info(f"Clone video (faststart) uploaded: {test_video_key} ({len(fast_bytes)} bytes)")
-                        except Exception as e:
-                            sentry_sdk.capture_exception(e)
-                            logger.warning(f"ffmpeg faststart failed ({e}), uploading raw")
-                            await r2.upload_bytes(video_resp.content, test_video_key, "video/mp4")
-                        finally:
-                            for p in [raw_path, fast_path]:
-                                try:
-                                    os.unlink(p)
-                                except OSError:
-                                    pass
-                        video_uploaded = True
-                elif video_base64:
-                    video_data = video_base64
-                    if video_data.startswith("data:"):
-                        video_data = video_data.split(",", 1)[1]
-                    video_bytes = base64.b64decode(video_data)
-                    await r2.upload_bytes(video_bytes, test_video_key, "video/mp4")
-                    video_uploaded = True
-
-            if not video_uploaded:
-                runpod_error = f"No video data in RunPod output: {str(output)[:200]}"
-                logger.warning(
-                    f"No video data in InfiniteTalk output for clone {avatar_id}. Output: {str(output)[:200]}"
-                )
-        except Exception as e:
-            sentry_sdk.capture_exception(e)
-            runpod_error = f"RunPod failed: {e!s}"
-            logger.warning("Preview render: RunPod fallback also failed: %s", e)
-
-    if not video_uploaded:
-        # Both engines failed — surface a single clear error. RunPod's Korean
-        # text was already translated by services.runpod.normalize_error_message
-        # before the RuntimeError reached us.
-        raise RuntimeError(
-            f"Preview render failed on both engines. HOSTKEY: {hostkey_error}. RunPod: {runpod_error}"
-        )
-
+    logger.info(f"Preview render complete via {result.get('backend', 'unknown')} backend")
+    video_uploaded = True
     async with factory() as session:
         avatar = await session.get(Avatar, avatar_id)
         if video_uploaded:

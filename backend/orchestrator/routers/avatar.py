@@ -801,18 +801,18 @@ async def reclone_voice(
         avatar.progress_step = "Voice re-cloned"
         await db.commit()
     # Get segment info from persona_profile
-    segment_start = (avatar.persona_profile or {}).get("segment_start", 0)
-    segment_end = (avatar.persona_profile or {}).get("segment_end", 60)
+    # segment_start = (avatar.persona_profile or {}).get("segment_start", 0)
+    # segment_end = (avatar.persona_profile or {}).get("segment_end", 60)
 
-    avatar.voice_clone_progress = 0
-    avatar.progress_step = "Re-cloning voice..."
-    await db.commit()
+    # avatar.voice_clone_progress = 0
+    # avatar.progress_step = "Re-cloning voice..."
+    # await db.commit()
 
-    from tasks.generate_avatar import process_voice_pipeline_task
-    process_voice_pipeline_task.delay(
-        avatar_id, user.id,
-        avatar.video_ref_key, segment_start, segment_end,
-    )
+    # from tasks.generate_avatar import process_voice_pipeline_task
+    # process_voice_pipeline_task.delay(
+    #     avatar_id, user.id,
+    #     avatar.video_ref_key, segment_start, segment_end,
+    # )
 
     return {"status": "ok", "message": "Voice re-clone started"}
 
@@ -3095,16 +3095,16 @@ async def approve_voice(
             raise HTTPException(status_code=500, detail=f"Voice creation from preview failed: {str(e)[:200]}")
 
     # Step 0: Convert preview to permanent voice
-    try:
-        voice_id_el = await el.create_voice_from_preview(
-            req.preview_id,
-            avatar.name or "AI Avatar",
-            avatar.description or "AI generated voice",
-        )
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-        logger.error(f"ElevenLabs create voice from preview failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Voice creation from preview failed: {str(e)[:200]}")
+    # try:
+    #     voice_id_el = await el.create_voice_from_preview(
+    #         req.preview_id,
+    #         avatar.name or "AI Avatar",
+    #         avatar.description or "AI generated voice",
+    #     )
+    # except Exception as e:
+    #     sentry_sdk.capture_exception(e)
+    #     logger.error(f"ElevenLabs create voice from preview failed: {e}")
+    #     raise HTTPException(status_code=500, detail=f"Voice creation from preview failed: {str(e)[:200]}")
 
     # Step 1: Generate 45-second training sample with the permanent voice
     try:
@@ -4060,6 +4060,14 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
 
         if not front_shot_key:
             await _mark_failed("Failed to generate front body shot")
+            return
+
+        missing_angles = [a for a in ANGLES if a not in angles_dict]
+        if missing_angles:
+            await _mark_failed(
+                f"Failed to generate {len(missing_angles)}/{len(ANGLES)} angle(s): "
+                f"{', '.join(missing_angles)}"
+            )
             return
 
         # ── Stage 3: Gemini Vision Validation ──

@@ -237,6 +237,8 @@ function SetupPhase({
   // the backend on mount. Adding a custom interest here makes it appear
   // as a clickable preset on every future avatar this user sets up.
   const [userInterests, setUserInterests] = useState<string[]>([]);
+  const identityDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const identityReqIdRef = useRef(0);
   useEffect(() => {
     let cancelled = false;
     userApi.getInterests().then((list) => {
@@ -335,7 +337,7 @@ function SetupPhase({
         ageMin = Number(ageRange.replace("+", ""));
         ageMax = 100;
       }
-      
+
       const data = await avatarApi.aiRewriteAudienceDescription({
         age_min: ageMin,
         age_max: ageMax,
@@ -349,9 +351,9 @@ function SetupPhase({
       setAudienceDesc(data.description);
       setAudienceDescOverridden(false);
       // Cascade: re-generate avatar identity if gender is set
-      if (gender && !nameOverridden && !descriptionOverridden) {
-        triggerIdentityGeneration(data.description, gender, selectedPresets, selectedChips);
-      }
+      // if (gender && !nameOverridden && !descriptionOverridden) {
+      //   triggerIdentityGeneration(data.description, gender, selectedPresets, selectedChips);
+      // }
     } catch {
       setAudienceDesc(`${ageRange} audience interested in ${interests.join(", ")}`);
     } finally {
@@ -361,7 +363,7 @@ function SetupPhase({
 
   // Single LLM call: returns name + description + body_description
   const triggerIdentityGeneration = async (
-    audDesc: string, gen: string, presets: string[], chips: string[]
+    audDesc: string, gen: string, presets: string[], chips: string[], reqId?: number
   ) => {
     if (!audDesc.trim() || !gen) return;
     setIsGeneratingIdentity(true);
@@ -372,11 +374,14 @@ function SetupPhase({
         presets,
         imperfections: chips,
       });
+      if (reqId !== undefined && reqId !== identityReqIdRef.current) return; // stale — a newer call superseded this one
       if (!nameOverridden) setAvatarName(data.name);
       if (!descriptionOverridden) setBaseDescription(data.description);
       if (!bodyDescOverridden && data.body_description) setBodyDescription(data.body_description);
-    } catch {
+    } catch (err: any) {
       // Keep current values on failure
+      console.error("triggerIdentityGeneration failed:", err);
+      toast({ title: "Couldn't generate avatar details", description: err?.response?.data?.detail || "Try again", variant: "destructive" });
     } finally {
       setIsGeneratingIdentity(false);
     }
@@ -388,16 +393,21 @@ function SetupPhase({
     setNameOverridden(false);
     setDescriptionOverridden(false);
     setBodyDescOverridden(false);
-    if (audienceDesc.trim()) {
-      triggerIdentityGeneration(audienceDesc, newGender, selectedPresets, selectedChips);
-    }
+    // if (audienceDesc.trim()) {
+    //   triggerIdentityGeneration(audienceDesc, newGender, selectedPresets, selectedChips);
+    // }
   };
 
   // Preset/chip toggle -> regenerate description
-  useEffect(() => {
-    if (!audienceDesc.trim() || !gender || (descriptionOverridden && bodyDescOverridden)) return;
-    triggerIdentityGeneration(audienceDesc, gender, selectedPresets, selectedChips);
-  }, [selectedPresets.join(","), selectedChips.join(",")]);
+  // useEffect(() => {
+  //   if (!audienceDesc.trim() || !gender || (descriptionOverridden && bodyDescOverridden)) return;
+  //   if (identityDebounceRef.current) clearTimeout(identityDebounceRef.current);
+  //   const reqId = ++identityReqIdRef.current;
+  //   identityDebounceRef.current = setTimeout(() => {
+  //     triggerIdentityGeneration(audienceDesc, gender, selectedPresets, selectedChips, reqId);
+  //   }, 600);
+  //   return () => { if (identityDebounceRef.current) clearTimeout(identityDebounceRef.current); };
+  // }, [gender, selectedPresets.join(","), selectedChips.join(",")]);
 
   // Inspire Me — randomize
   const handleInspireMe = async () => {
@@ -758,11 +768,12 @@ function SetupPhase({
 
         {/* Action buttons */}
         <div className="flex gap-2">
-          <Button variant="outline" onClick={handleInspireMe} disabled={isGeneratingIdentity}>
+          <Button variant="outline" onClick={handleInspireMe} disabled={isGeneratingIdentity} className="cursor-pointer">
             {isGeneratingIdentity ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Shuffle className="h-4 w-4 mr-2" />}
             Inspire Me
           </Button>
           <Button
+            className="cursor-pointer"
             variant="outline"
             onClick={() => {
               setNameOverridden(false);
@@ -770,10 +781,11 @@ function SetupPhase({
               setBodyDescOverridden(false);
               triggerIdentityGeneration(audienceDesc, gender, selectedPresets, selectedChips);
             }}
-            disabled={isGeneratingIdentity || !gender}
+            disabled={isGeneratingIdentity || !gender || !audienceDesc.trim()}
+            title={!gender ? "Pick a gender first" : !audienceDesc.trim() ? "Describe your audience first" : undefined}
           >
-            <RefreshCw className={cn("h-4 w-4 mr-2", isGeneratingIdentity && "animate-spin")} />
-            Regenerate
+            <Wand2 className={cn("h-4 w-4 mr-2", isGeneratingIdentity && "animate-spin")} />
+            {baseDescription.trim() ? "Regenerate" : "Generate"}
           </Button>
         </div>
       </div>
@@ -881,7 +893,7 @@ function FacePhase({
     try {
       await avatarApi.aiSelectFace(avatarId, { face_url: faceUrl });
       queryClient.invalidateQueries({ queryKey: ["avatar-identity", avatarId] });
-    } catch {}
+    } catch { }
 
     onContinueToVoice(faceUrl);
   };
@@ -910,222 +922,222 @@ function FacePhase({
         </div>
       )}
       <div className="flex-1 min-w-0 space-y-5">
-      {/* Generation prompt: editable so the user can refine the description
+        {/* Generation prompt: editable so the user can refine the description
           BEFORE clicking Regenerate. Edits persist back to the parent state
           (and to the avatar record on Regenerate). The textarea autosizes
           up to ~5 lines so a long description is comfortable to edit. */}
-      <div className="flex items-start gap-3 rounded-lg border border-border bg-bg/50 p-3">
-        <div className="flex-1 min-w-0 space-y-1">
-          <p className="text-[10px] text-text-muted uppercase tracking-wide">
-            Description for {avatarName || "your avatar"}
-          </p>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Describe the avatar's appearance — the model uses this to generate the 8 faces below."
-            rows={3}
-            className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0 self-start mt-5"
-          onClick={handleGenerateFaces}
-          disabled={isGeneratingFaces || !description.trim()}
-          title={!description.trim() ? "Add a description first" : "Generate 8 new faces from this description"}
-        >
-          <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingFaces && "animate-spin")} /> Regenerate
-        </Button>
-      </div>
-
-      {isGeneratingFaces && (
-        <div className="flex flex-col items-center justify-center py-12 space-y-3">
-          <Loader2 className="h-8 w-8 animate-spin text-accent" />
-          <span className="text-text-muted">Generating 8 faces...</span>
-        </div>
-      )}
-
-      {!isGeneratingFaces && faces.length > 0 && (
-        <>
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-text">Pick your avatar's face</h2>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-text-muted">{faces.length} faces generated</span>
-              {/* F4: explicit regenerate of the whole face grid. Confirms before
-                  wiping current selections + edit history. */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={async () => {
-                  if (await confirmAction({
-                    title: "Regenerate all 8 faces?",
-                    text: "Current selections will be replaced.",
-                    confirmButtonText: "Regenerate",
-                  })) {
-                    handleGenerateFaces();
-                  }
-                }}
-                disabled={isGeneratingFaces || !description.trim()}
-                title="Generate a fresh batch of 8 faces from the current description"
-                data-testid="regenerate-faces-grid"
-              >
-                <Sparkles className={cn("mr-1 h-3 w-3", isGeneratingFaces && "animate-spin")} /> Regenerate faces
-              </Button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-4 gap-3">
-            {faces.map((url, i) => (
-              <button
-                key={i}
-                onClick={() => {
-                  // F5: re-selecting the already-selected tile re-focuses the
-                  // edit panel (scrolls into view) and resets the prompt input
-                  // so the user can keep iterating; do NOT clear edit history
-                  // — the Versions strip stays so the user has full control.
-                  if (selectedFaceIdx === i) {
-                    setEditPrompt("");
-                    requestAnimationFrame(() => {
-                      document.querySelector('[data-testid="face-edit-panel"]')?.scrollIntoView({ behavior: "smooth", block: "center" });
-                    });
-                  } else {
-                    setModalFaceIdx(i);
-                  }
-                }}
-                className={cn(
-                  "group relative rounded-xl overflow-hidden border-2 transition-all",
-                  selectedFaceIdx === i ? "border-accent ring-2 ring-accent/30 scale-[1.02]" : "border-border hover:border-accent/40",
-                )}
-                style={{ aspectRatio: "3/4", minHeight: 180 }}
-                data-testid={`face-candidate-${i}`}
-                data-selected={selectedFaceIdx === i ? "true" : undefined}
-              >
-                {!loadedFaces.has(i) && (
-                  <div className="absolute inset-0 bg-border/30 animate-pulse" />
-                )}
-                {/* F1: slow zoom-out on hover. After ~300ms hover delay the
-                    image scales from 1.0 to ~0.92 over ~3s ease-out so the
-                    user can see the full frame comfortably. transition-delay
-                    only applies on hover-in; on hover-out it snaps back. */}
-                <img
-                  src={url}
-                  alt={`Face ${i + 1}`}
-                  className={cn(
-                    "w-full h-full object-cover transition-opacity duration-500",
-                    loadedFaces.has(i) ? "opacity-100" : "opacity-0",
-                    "transform group-hover:scale-[0.92] [transition:transform_3000ms_cubic-bezier(0.22,1,0.36,1)_300ms,opacity_500ms_ease]",
-                  )}
-                  onLoad={() => setLoadedFaces((prev) => new Set(prev).add(i))}
-                />
-                {selectedFaceIdx === i && (
-                  <div className="absolute top-1.5 right-1.5">
-                    <CheckCircle className="h-5 w-5 text-white drop-shadow-lg" />
-                  </div>
-                )}
-                <div className="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
-                  #{i + 1}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {modalFaceIdx !== null && faces[modalFaceIdx] && (
-            <FacePreviewModal
-              faces={faces}
-              currentIdx={modalFaceIdx}
-              onClose={() => setModalFaceIdx(null)}
-              onSelect={(idx) => { setSelectedFaceIdx(idx); setEditVersions([]); setSelectedVersion(null); }}
-              onNavigate={setModalFaceIdx}
+        <div className="flex items-start gap-3 rounded-lg border border-border bg-bg/50 p-3">
+          <div className="flex-1 min-w-0 space-y-1">
+            <p className="text-[10px] text-text-muted uppercase tracking-wide">
+              Description for {avatarName || "your avatar"}
+            </p>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Describe the avatar's appearance — the model uses this to generate the 8 faces below."
+              rows={3}
+              className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40"
             />
-          )}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 self-start mt-5"
+            onClick={handleGenerateFaces}
+            disabled={isGeneratingFaces || !description.trim()}
+            title={!description.trim() ? "Add a description first" : "Generate 8 new faces from this description"}
+          >
+            <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingFaces && "animate-spin")} /> Regenerate
+          </Button>
+        </div>
 
-          {selectedFaceIdx !== null && faces[selectedFaceIdx] && (
-            <div className="rounded-xl border border-border bg-surface p-5 space-y-4" data-testid="face-edit-panel">
-              <div className="flex gap-5">
-                <div className="shrink-0 group">
-                  {/* F1: slow zoom-out on hover for the main selected preview. */}
-                  <img
-                    src={selectedVersion !== null ? editVersions[selectedVersion] : faces[selectedFaceIdx]}
-                    alt="Selected"
-                    className="rounded-xl object-cover border-2 border-accent transform group-hover:scale-[0.92] [transition:transform_3000ms_cubic-bezier(0.22,1,0.36,1)_300ms]"
-                    style={{ width: 256, height: 340, minWidth: 256, minHeight: 256 }}
-                  />
-                  {editVersions.length > 0 && selectedVersion !== null && (
-                    <p className="mt-1.5 text-center text-[10px] text-accent">Edited</p>
-                  )}
-                </div>
+        {isGeneratingFaces && (
+          <div className="flex flex-col items-center justify-center py-12 space-y-3">
+            <Loader2 className="h-8 w-8 animate-spin text-accent" />
+            <span className="text-text-muted">Generating 8 faces...</span>
+          </div>
+        )}
 
-                <div className="flex-1 space-y-4">
-                  <div>
-                    <p className="text-xs font-medium text-text mb-2">Edit this face</p>
-                    <div className="flex gap-2">
-                      <Input
-                        placeholder="add glasses, change hair to blonde..."
-                        value={editPrompt}
-                        onChange={(e) => setEditPrompt(e.target.value)}
-                        className="text-xs"
-                        onKeyDown={(e) => e.key === "Enter" && handleEditFace()}
-                      />
-                      <Button size="sm" disabled={isEditing || !editPrompt.trim()} onClick={handleEditFace}>
-                        {isEditing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {editVersions.length > 0 && (
-                    <div>
-                      <p className="text-[10px] text-text-muted mb-1.5">Versions</p>
-                      <div className="flex gap-2 overflow-x-auto">
-                        <button
-                          onClick={() => setSelectedVersion(null)}
-                          className={cn(
-                            "shrink-0 rounded-lg overflow-hidden border-2 w-14 h-18",
-                            selectedVersion === null ? "border-accent" : "border-border hover:border-accent/40",
-                          )}
-                        >
-                          <img src={faces[selectedFaceIdx]} alt="Original" className="w-full h-full object-cover" />
-                        </button>
-                        {editVersions.map((url, i) => (
-                          <button
-                            key={i}
-                            onClick={() => setSelectedVersion(i)}
-                            className={cn(
-                              "shrink-0 rounded-lg overflow-hidden border-2 w-14 h-18",
-                              selectedVersion === i ? "border-accent" : "border-border hover:border-accent/40",
-                            )}
-                          >
-                            <img src={url} alt={`Edit ${i + 1}`} className="w-full h-full object-cover" />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <Button onClick={handleContinue} className="flex-1">
-                  Continue to voice <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+        {!isGeneratingFaces && faces.length > 0 && (
+          <>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-text">Pick your avatar's face</h2>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-text-muted">{faces.length} faces generated</span>
+                {/* F4: explicit regenerate of the whole face grid. Confirms before
+                  wiping current selections + edit history. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    if (await confirmAction({
+                      title: "Regenerate all 8 faces?",
+                      text: "Current selections will be replaced.",
+                      confirmButtonText: "Regenerate",
+                    })) {
+                      handleGenerateFaces();
+                    }
+                  }}
+                  disabled={isGeneratingFaces || !description.trim()}
+                  title="Generate a fresh batch of 8 faces from the current description"
+                  data-testid="regenerate-faces-grid"
+                >
+                  <Sparkles className={cn("mr-1 h-3 w-3", isGeneratingFaces && "animate-spin")} /> Regenerate faces
                 </Button>
               </div>
             </div>
-          )}
 
-          {/* F2: name-able background photos. Each tile shows the image, has an
+            <div className="grid grid-cols-4 gap-3">
+              {faces.map((url, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    // F5: re-selecting the already-selected tile re-focuses the
+                    // edit panel (scrolls into view) and resets the prompt input
+                    // so the user can keep iterating; do NOT clear edit history
+                    // — the Versions strip stays so the user has full control.
+                    if (selectedFaceIdx === i) {
+                      setEditPrompt("");
+                      requestAnimationFrame(() => {
+                        document.querySelector('[data-testid="face-edit-panel"]')?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      });
+                    } else {
+                      setModalFaceIdx(i);
+                    }
+                  }}
+                  className={cn(
+                    "group relative rounded-xl overflow-hidden border-2 transition-all",
+                    selectedFaceIdx === i ? "border-accent ring-2 ring-accent/30 scale-[1.02]" : "border-border hover:border-accent/40",
+                  )}
+                  style={{ aspectRatio: "3/4", minHeight: 180 }}
+                  data-testid={`face-candidate-${i}`}
+                  data-selected={selectedFaceIdx === i ? "true" : undefined}
+                >
+                  {!loadedFaces.has(i) && (
+                    <div className="absolute inset-0 bg-border/30 animate-pulse" />
+                  )}
+                  {/* F1: slow zoom-out on hover. After ~300ms hover delay the
+                    image scales from 1.0 to ~0.92 over ~3s ease-out so the
+                    user can see the full frame comfortably. transition-delay
+                    only applies on hover-in; on hover-out it snaps back. */}
+                  <img
+                    src={url}
+                    alt={`Face ${i + 1}`}
+                    className={cn(
+                      "w-full h-full object-cover transition-opacity duration-500",
+                      loadedFaces.has(i) ? "opacity-100" : "opacity-0",
+                      "transform group-hover:scale-[0.92] [transition:transform_3000ms_cubic-bezier(0.22,1,0.36,1)_300ms,opacity_500ms_ease]",
+                    )}
+                    onLoad={() => setLoadedFaces((prev) => new Set(prev).add(i))}
+                  />
+                  {selectedFaceIdx === i && (
+                    <div className="absolute top-1.5 right-1.5">
+                      <CheckCircle className="h-5 w-5 text-white drop-shadow-lg" />
+                    </div>
+                  )}
+                  <div className="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
+                    #{i + 1}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {modalFaceIdx !== null && faces[modalFaceIdx] && (
+              <FacePreviewModal
+                faces={faces}
+                currentIdx={modalFaceIdx}
+                onClose={() => setModalFaceIdx(null)}
+                onSelect={(idx) => { setSelectedFaceIdx(idx); setEditVersions([]); setSelectedVersion(null); }}
+                onNavigate={setModalFaceIdx}
+              />
+            )}
+
+            {selectedFaceIdx !== null && faces[selectedFaceIdx] && (
+              <div className="rounded-xl border border-border bg-surface p-5 space-y-4" data-testid="face-edit-panel">
+                <div className="flex gap-5">
+                  <div className="shrink-0 group">
+                    {/* F1: slow zoom-out on hover for the main selected preview. */}
+                    <img
+                      src={selectedVersion !== null ? editVersions[selectedVersion] : faces[selectedFaceIdx]}
+                      alt="Selected"
+                      className="rounded-xl object-cover border-2 border-accent transform group-hover:scale-[0.92] [transition:transform_3000ms_cubic-bezier(0.22,1,0.36,1)_300ms]"
+                      style={{ width: 256, height: 340, minWidth: 256, minHeight: 256 }}
+                    />
+                    {editVersions.length > 0 && selectedVersion !== null && (
+                      <p className="mt-1.5 text-center text-[10px] text-accent">Edited</p>
+                    )}
+                  </div>
+
+                  <div className="flex-1 space-y-4">
+                    <div>
+                      <p className="text-xs font-medium text-text mb-2">Edit this face</p>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="add glasses, change hair to blonde..."
+                          value={editPrompt}
+                          onChange={(e) => setEditPrompt(e.target.value)}
+                          className="text-xs"
+                          onKeyDown={(e) => e.key === "Enter" && handleEditFace()}
+                        />
+                        <Button size="sm" disabled={isEditing || !editPrompt.trim()} onClick={handleEditFace}>
+                          {isEditing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {editVersions.length > 0 && (
+                      <div>
+                        <p className="text-[10px] text-text-muted mb-1.5">Versions</p>
+                        <div className="flex gap-2 overflow-x-auto">
+                          <button
+                            onClick={() => setSelectedVersion(null)}
+                            className={cn(
+                              "shrink-0 rounded-lg overflow-hidden border-2 w-14 h-18",
+                              selectedVersion === null ? "border-accent" : "border-border hover:border-accent/40",
+                            )}
+                          >
+                            <img src={faces[selectedFaceIdx]} alt="Original" className="w-full h-full object-cover" />
+                          </button>
+                          {editVersions.map((url, i) => (
+                            <button
+                              key={i}
+                              onClick={() => setSelectedVersion(i)}
+                              className={cn(
+                                "shrink-0 rounded-lg overflow-hidden border-2 w-14 h-18",
+                                selectedVersion === i ? "border-accent" : "border-border hover:border-accent/40",
+                              )}
+                            >
+                              <img src={url} alt={`Edit ${i + 1}`} className="w-full h-full object-cover" />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button onClick={handleContinue} className="flex-1">
+                    Continue to voice <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* F2: name-able background photos. Each tile shows the image, has an
               inline-editable name (click to rename, blur or Enter to save),
               and supports upload + AI-generation. The backend already exposes
               GET/POST/PATCH/DELETE on /avatars/{id}/backgrounds. */}
-          {avatarId && (
-            <div className="rounded-xl border border-border bg-surface p-5">
-              <p className="text-xs text-text-muted mb-2">
-                Optional: upload or generate scene photos for this avatar. Click a name to rename it (max 80 chars).
-              </p>
-              <AvatarBackgrounds avatarId={avatarId} />
-            </div>
-          )}
-        </>
-      )}
+            {avatarId && (
+              <div className="rounded-xl border border-border bg-surface p-5">
+                <p className="text-xs text-text-muted mb-2">
+                  Optional: upload or generate scene photos for this avatar. Click a name to rename it (max 80 chars).
+                </p>
+                <AvatarBackgrounds avatarId={avatarId} />
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -1299,273 +1311,274 @@ function VoicePhase({
         </div>
       )}
       <div className="flex-1 min-w-0">
-      {/* Voice description screen */}
-      {voiceScreen === "description" && (
-        <div className="rounded-xl border border-border bg-surface p-6 space-y-5">
-          <div className="space-y-1">
-            <h2 className="text-base font-semibold text-text flex items-center gap-2">
-              <Mic className="h-4 w-4 text-accent" /> Voice profile for {avatarName || "your avatar"}
-            </h2>
-            <p className="text-xs text-text-muted">Describe how {avatarName || "they"} should sound.</p>
-          </div>
-
-          <ShimmerField isLoading={isGeneratingVoiceDesc} className="min-h-[120px]">
-            <div className="space-y-2">
-              <textarea
-                value={voiceDescription}
-                onChange={(e) => { setVoiceDescription(e.target.value); setVoiceDescOverridden(true); }}
-                placeholder="Warm, energetic, youthful voice with..."
-                className="w-full rounded-md border border-border bg-bg p-3 text-sm text-text resize-none focus:border-accent focus:outline-hidden"
-                rows={4}
-              />
-              <div className="flex justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => { setVoiceDescOverridden(false); handleGenerateDescription(); }}
-                  disabled={isGeneratingVoiceDesc}
-                  title="Regenerate the description so it reflects the gender, language, and accent picked below"
-                  data-testid="regenerate-voice-description"
-                >
-                  <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingVoiceDesc && "animate-spin")} /> Regenerate description
-                </Button>
-              </div>
+        {/* Voice description screen */}
+        {voiceScreen === "description" && (
+          <div className="rounded-xl border border-border bg-surface p-6 space-y-5">
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-text flex items-center gap-2">
+                <Mic className="h-4 w-4 text-accent" /> Voice profile for {avatarName || "your avatar"}
+              </h2>
+              <p className="text-xs text-text-muted">Describe how {avatarName || "they"} should sound.</p>
             </div>
-          </ShimmerField>
 
-          {/* Clip-mic vs phone-mic toggle. Default OFF = phone mic. The
+            <ShimmerField isLoading={isGeneratingVoiceDesc} className="min-h-[120px]">
+              <div className="space-y-2">
+                <textarea
+                  value={voiceDescription}
+                  onChange={(e) => { setVoiceDescription(e.target.value); setVoiceDescOverridden(true); }}
+                  placeholder="Warm, energetic, youthful voice with..."
+                  className="w-full rounded-md border border-border bg-bg p-3 text-sm text-text resize-none focus:border-accent focus:outline-hidden"
+                  rows={4}
+                />
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setVoiceDescOverridden(false); handleGenerateDescription(); }}
+                    disabled={isGeneratingVoiceDesc}
+                    title="Regenerate the description so it reflects the gender, language, and accent picked below"
+                    data-testid="regenerate-voice-description"
+                  >
+                    <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingVoiceDesc && "animate-spin")} /> Regenerate description
+                  </Button>
+                </div>
+              </div>
+            </ShimmerField>
+
+            {/* Clip-mic vs phone-mic toggle. Default OFF = phone mic. The
               backend appends a mic-style suffix to the voice description
               AND switches the TTS post-process EQ profile to match. */}
-          <ClipMicToggle
-            avatarId={avatarId}
-            initialEnabled={!!(avatar as any)?.clip_mic_enabled}
-          />
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Gender</label>
-              <div className="flex gap-1.5">
-                {GENDER_OPTIONS.map((g) => (
-                  <button
-                    key={g.value}
-                    onClick={() => setGender(g.value)}
-                    className={cn(
-                      "flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition",
-                      gender === g.value
-                        ? "text-white"
-                        : "bg-surface border border-border text-text-muted hover:border-accent/40",
-                    )}
-                    style={gender === g.value ? { backgroundColor: "var(--accent-active)" } : undefined}
-                  >
-                    <span className="text-xs">{g.icon}</span> {g.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Language</label>
-              <select
-                value={language}
-                onChange={(e) => { setLanguage(e.target.value); setAccent(LANGUAGES_WITH_ACCENTS[e.target.value]?.accents[0]?.value || ""); }}
-                className="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text"
-              >
-                {LANGUAGE_OPTIONS.map((l) => (
-                  <option key={l} value={l}>{LANGUAGES_WITH_ACCENTS[l].label}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {LANGUAGES_WITH_ACCENTS[language]?.accents.length > 1 && (
-            <div>
-              <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Accent</label>
-              <div className="flex flex-wrap gap-1.5">
-                {LANGUAGES_WITH_ACCENTS[language].accents.map((a) => (
-                  <button
-                    key={a.value}
-                    onClick={() => setAccent(a.value)}
-                    className={cn(
-                      "rounded-full px-3 py-1 text-xs font-medium transition",
-                      accent === a.value
-                        ? "text-white"
-                        : "bg-surface border border-border text-text-muted hover:border-accent/40",
-                    )}
-                    style={accent === a.value ? { backgroundColor: "var(--accent-active)" } : undefined}
-                  >
-                    {a.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div>
-            <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Test speech</label>
-            <textarea
-              value={testSpeech}
-              onChange={(e) => setTestSpeech(e.target.value)}
-              placeholder={`Hi everyone! I'm ${avatarName}...`}
-              className="w-full rounded-md border border-border bg-bg p-3 text-sm text-text resize-none focus:border-accent focus:outline-hidden"
-              rows={3}
-            />
-          </div>
-
-          <div className="flex gap-2 flex-wrap">
-            <Button onClick={handleGenerateVoicePreviews} disabled={isGeneratingVoicePreviews || !voiceDescription.trim()} className="flex-1">
-              {isGeneratingVoicePreviews ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Generating voices...</>
-              ) : (
-                <><Mic className="mr-2 h-4 w-4" /> Generate voice options</>
-              )}
-            </Button>
-            <Button variant="outline" onClick={() => setShowVoiceBrowser(true)}>
-              Browse voice library
-            </Button>
-          </div>
-
-          <VoiceCorpusTab
-            avatarId={avatarId}
-            compact
-            onTrained={() => {
-              toast({ title: "Voice trained!", description: "Your custom voice is locked in." });
-              onLockVoice(testSpeech.trim());
-            }}
-          />
-
-          <div className="mt-4">
-            <LiveReferenceCard
+            <ClipMicToggle
               avatarId={avatarId}
-              title="Live Voice"
-              subtitle="Upload past live sessions to teach this avatar your selling style."
+              initialEnabled={!!(avatar as any)?.clip_mic_enabled}
             />
-          </div>
 
-          {showVoiceBrowser && (
-            <div className="mt-4 rounded-xl border border-border bg-bg p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-text">Voice Library</h3>
-                <button onClick={() => setShowVoiceBrowser(false)} className="text-text-muted hover:text-text"><X className="h-4 w-4" /></button>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Gender</label>
+                <div className="flex gap-1.5">
+                  {GENDER_OPTIONS.map((g) => (
+                    <button
+                      key={g.value}
+                      onClick={() => setGender(g.value)}
+                      className={cn(
+                        "flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition",
+                        gender === g.value
+                          ? "text-white"
+                          : "bg-surface border border-border text-text-muted hover:border-accent/40",
+                      )}
+                      style={gender === g.value ? { backgroundColor: "var(--accent-active)" } : undefined}
+                    >
+                      <span className="text-xs">{g.icon}</span> {g.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <VoiceBrowser avatarId={avatarId} onSelectVoice={(voiceId: string) => {
-                avatarApi.aiSelectVoice(avatarId, { voice_id: voiceId }).then(() => {
-                  onLockVoice(testSpeech.trim());
-                  toast({ title: "Voice selected and locked!" });
-                }).catch(() => toast({ title: "Failed to select voice", variant: "destructive" }));
-              }} onClose={() => setShowVoiceBrowser(false)} />
+              <div>
+                <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Language</label>
+                <select
+                  value={language}
+                  onChange={(e) => { setLanguage(e.target.value); setAccent(LANGUAGES_WITH_ACCENTS[e.target.value]?.accents[0]?.value || ""); }}
+                  className="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text"
+                >
+                  {LANGUAGE_OPTIONS.map((l) => (
+                    <option key={l} value={l}>{LANGUAGES_WITH_ACCENTS[l].label}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-          )}
-        </div>
-      )}
 
-      {/* Voice previews screen */}
-      {voiceScreen === "previews" && (
-        <div className="rounded-xl border border-border bg-surface p-6 space-y-5">
-          <div className="space-y-1">
-            <h2 className="text-base font-semibold text-text flex items-center gap-2">
-              <Volume2 className="h-4 w-4 text-accent" /> Pick {avatarName || "your avatar"}'s voice
-            </h2>
-            <p className="text-xs text-text-muted">Listen to each option and select the best match.</p>
+            {LANGUAGES_WITH_ACCENTS[language]?.accents.length > 1 && (
+              <div>
+                <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Accent</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {LANGUAGES_WITH_ACCENTS[language].accents.map((a) => (
+                    <button
+                      key={a.value}
+                      onClick={() => setAccent(a.value)}
+                      className={cn(
+                        "rounded-full px-3 py-1 text-xs font-medium transition",
+                        accent === a.value
+                          ? "text-white"
+                          : "bg-surface border border-border text-text-muted hover:border-accent/40",
+                      )}
+                      style={accent === a.value ? { backgroundColor: "var(--accent-active)" } : undefined}
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Test speech</label>
+              <textarea
+                value={testSpeech}
+                onChange={(e) => setTestSpeech(e.target.value)}
+                placeholder={`Hi everyone! I'm ${avatarName}...`}
+                className="w-full rounded-md border border-border bg-bg p-3 text-sm text-text resize-none focus:border-accent focus:outline-hidden"
+                rows={3}
+              />
+            </div>
+
+            <div className="flex gap-2 flex-wrap">
+              <Button onClick={handleGenerateVoicePreviews} disabled={isGeneratingVoicePreviews || !voiceDescription.trim()} className="flex-1">
+                {isGeneratingVoicePreviews ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Generating voices...</>
+                ) : (
+                  <><Mic className="mr-2 h-4 w-4" /> Generate voice options</>
+                )}
+              </Button>
+              <Button variant="outline" onClick={() => setShowVoiceBrowser(true)}>
+                Browse voice library
+              </Button>
+            </div>
+
+            <VoiceCorpusTab
+              avatarId={avatarId}
+              ensureAvatarId={async () => avatarId}
+              compact
+              onTrained={() => {
+                toast({ title: "Voice trained!", description: "Your custom voice is locked in." });
+                onLockVoice(testSpeech.trim());
+              }}
+            />
+
+            <div className="mt-4">
+              <LiveReferenceCard
+                avatarId={avatarId}
+                title="Live Voice"
+                subtitle="Upload past live sessions to teach this avatar your selling style."
+              />
+            </div>
+
+            {showVoiceBrowser && (
+              <div className="mt-4 rounded-xl border border-border bg-bg p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-text">Voice Library</h3>
+                  <button onClick={() => setShowVoiceBrowser(false)} className="text-text-muted hover:text-text"><X className="h-4 w-4" /></button>
+                </div>
+                <VoiceBrowser avatarId={avatarId} onSelectVoice={(voiceId: string) => {
+                  avatarApi.aiSelectVoice(avatarId, { voice_id: voiceId }).then(() => {
+                    onLockVoice(testSpeech.trim());
+                    toast({ title: "Voice selected and locked!" });
+                  }).catch(() => toast({ title: "Failed to select voice", variant: "destructive" }));
+                }} onClose={() => setShowVoiceBrowser(false)} />
+              </div>
+            )}
           </div>
+        )}
 
-          {/* Editable voice description with Regenerate — surfaced here so the
+        {/* Voice previews screen */}
+        {voiceScreen === "previews" && (
+          <div className="rounded-xl border border-border bg-surface p-6 space-y-5">
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-text flex items-center gap-2">
+                <Volume2 className="h-4 w-4 text-accent" /> Pick {avatarName || "your avatar"}'s voice
+              </h2>
+              <p className="text-xs text-text-muted">Listen to each option and select the best match.</p>
+            </div>
+
+            {/* Editable voice description with Regenerate — surfaced here so the
               user can refine the prompt and re-roll the 4 options without
               clicking Back to the description screen. Same Regenerate handler
               as the description screen so the gender/language/accent filters
               and current testSpeech are reused. */}
-          <div className="flex items-start gap-3 rounded-lg border border-border bg-bg/50 p-3">
-            <div className="flex-1 min-w-0 space-y-1">
-              <p className="text-[10px] text-text-muted uppercase tracking-wide">
-                Voice description
-              </p>
-              <textarea
-                value={voiceDescription}
-                onChange={(e) => { setVoiceDescription(e.target.value); setVoiceDescOverridden(true); }}
-                placeholder="Warm, energetic, youthful voice with..."
-                rows={3}
-                disabled={isGeneratingVoicePreviews}
-                className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40 disabled:opacity-60"
-                data-testid="voice-description-edit"
-              />
+            <div className="flex items-start gap-3 rounded-lg border border-border bg-bg/50 p-3">
+              <div className="flex-1 min-w-0 space-y-1">
+                <p className="text-[10px] text-text-muted uppercase tracking-wide">
+                  Voice description
+                </p>
+                <textarea
+                  value={voiceDescription}
+                  onChange={(e) => { setVoiceDescription(e.target.value); setVoiceDescOverridden(true); }}
+                  placeholder="Warm, energetic, youthful voice with..."
+                  rows={3}
+                  disabled={isGeneratingVoicePreviews}
+                  className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40 disabled:opacity-60"
+                  data-testid="voice-description-edit"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 self-start mt-5"
+                onClick={handleGenerateVoicePreviews}
+                disabled={isGeneratingVoicePreviews || !voiceDescription.trim()}
+                title={
+                  !voiceDescription.trim()
+                    ? "Add a voice description first"
+                    : isGeneratingVoicePreviews
+                      ? "Generation in progress"
+                      : "Regenerate the 4 voice options from this description"
+                }
+                data-testid="regenerate-voice-previews"
+              >
+                <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingVoicePreviews && "animate-spin")} /> Regenerate
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 self-start mt-5"
-              onClick={handleGenerateVoicePreviews}
-              disabled={isGeneratingVoicePreviews || !voiceDescription.trim()}
-              title={
-                !voiceDescription.trim()
-                  ? "Add a voice description first"
-                  : isGeneratingVoicePreviews
-                    ? "Generation in progress"
-                    : "Regenerate the 4 voice options from this description"
-              }
-              data-testid="regenerate-voice-previews"
-            >
-              <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingVoicePreviews && "animate-spin")} /> Regenerate
-            </Button>
-          </div>
 
-          {isGeneratingVoicePreviews ? (
-            <div className="flex flex-col items-center py-8 gap-3">
-              <Loader2 className="h-8 w-8 animate-spin text-accent" />
-              <p className="text-text-muted text-sm">Generating 4 voice options...</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
-              {voicePreviews.map((preview, idx) => (
-                <div
-                  key={preview.preview_id}
-                  className={cn(
-                    "rounded-xl border-2 p-4 flex flex-col gap-3 cursor-pointer transition-all",
-                    selectedPreviewIdx === idx ? "ring-1 ring-accent/30" : "border-border hover:border-accent/40",
-                  )}
-                  style={selectedPreviewIdx === idx ? { borderColor: "var(--accent-active)", backgroundColor: "var(--accent-active-muted)" } : undefined}
-                  onClick={() => setSelectedPreviewIdx(idx)}
-                >
-                  <p className="text-sm font-medium text-text">Voice {idx + 1}</p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); playPreview(idx); }}
-                      className="h-10 w-10 rounded-full bg-accent/20 flex items-center justify-center hover:bg-accent/30 transition"
-                    >
-                      {playingIdx === idx ? <Pause className="h-4 w-4 text-accent" /> : <Play className="h-4 w-4 text-accent ml-0.5" />}
-                    </button>
-                    <div className="flex-1 h-2 bg-border rounded-full overflow-hidden">
-                      <div className={cn("h-full bg-accent rounded-full transition-all", playingIdx === idx ? "w-1/2 animate-pulse" : "w-0")} />
+            {isGeneratingVoicePreviews ? (
+              <div className="flex flex-col items-center py-8 gap-3">
+                <Loader2 className="h-8 w-8 animate-spin text-accent" />
+                <p className="text-text-muted text-sm">Generating 4 voice options...</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {voicePreviews.map((preview, idx) => (
+                  <div
+                    key={preview.preview_id}
+                    className={cn(
+                      "rounded-xl border-2 p-4 flex flex-col gap-3 cursor-pointer transition-all",
+                      selectedPreviewIdx === idx ? "ring-1 ring-accent/30" : "border-border hover:border-accent/40",
+                    )}
+                    style={selectedPreviewIdx === idx ? { borderColor: "var(--accent-active)", backgroundColor: "var(--accent-active-muted)" } : undefined}
+                    onClick={() => setSelectedPreviewIdx(idx)}
+                  >
+                    <p className="text-sm font-medium text-text">Voice {idx + 1}</p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); playPreview(idx); }}
+                        className="h-10 w-10 rounded-full bg-accent/20 flex items-center justify-center hover:bg-accent/30 transition"
+                      >
+                        {playingIdx === idx ? <Pause className="h-4 w-4 text-accent" /> : <Play className="h-4 w-4 text-accent ml-0.5" />}
+                      </button>
+                      <div className="flex-1 h-2 bg-border rounded-full overflow-hidden">
+                        <div className={cn("h-full bg-accent rounded-full transition-all", playingIdx === idx ? "w-1/2 animate-pulse" : "w-0")} />
+                      </div>
+                      <audio
+                        ref={(el) => { audioRefs.current[idx] = el; }}
+                        src={preview.audio_url}
+                        onEnded={() => setPlayingIdx(null)}
+                      />
                     </div>
-                    <audio
-                      ref={(el) => { audioRefs.current[idx] = el; }}
-                      src={preview.audio_url}
-                      onEnded={() => setPlayingIdx(null)}
-                    />
+                    <p className="text-xs text-text-muted">
+                      {selectedPreviewIdx === idx ? "Selected" : "Click to select"}
+                    </p>
                   </div>
-                  <p className="text-xs text-text-muted">
-                    {selectedPreviewIdx === idx ? "Selected" : "Click to select"}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
 
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setVoiceScreen("description")}>
-              <ArrowLeft className="mr-1.5 h-3.5 w-3.5" /> Back
-            </Button>
-            <Button
-              onClick={handleLockVoice}
-              disabled={selectedPreviewIdx === null || isApprovingVoice}
-              className="flex-1"
-            >
-              {isApprovingVoice ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Training voice...</>
-              ) : (
-                <><Lock className="mr-2 h-4 w-4" /> Lock this voice & continue</>
-              )}
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setVoiceScreen("description")}>
+                <ArrowLeft className="mr-1.5 h-3.5 w-3.5" /> Back
+              </Button>
+              <Button
+                onClick={handleLockVoice}
+                disabled={selectedPreviewIdx === null || isApprovingVoice}
+                className="flex-1"
+              >
+                {isApprovingVoice ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Training voice...</>
+                ) : (
+                  <><Lock className="mr-2 h-4 w-4" /> Lock this voice & continue</>
+                )}
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
       </div>
     </div>
   );
@@ -1702,10 +1715,10 @@ function BodyShotsPhase({
   // we only call aiGenerateBodyShots when the avatar has never run this
   // pipeline before. Explicit Regenerate is still wired through
   // handleRegenerateAll → startBodyShotJob.
-  const initialMountRef = useRef(false);
+  // const initialMountRef = useRef(false);
   useEffect(() => {
-    if (initialMountRef.current) return;
-    initialMountRef.current = true;
+    // if (initialMountRef.current) return;
+    // initialMountRef.current = true;
 
     let cancelled = false;
     let pollHandle: ReturnType<typeof setTimeout> | null = null;
@@ -1858,137 +1871,137 @@ function BodyShotsPhase({
         </div>
       )}
       <div className="flex-1 min-w-0 space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold text-text mb-2">Body Shots</h3>
-        <p className="text-sm text-text-muted">6 angle shots generated from a full-body reference. Approve all to continue.</p>
-      </div>
+        <div>
+          <h3 className="text-lg font-semibold text-text mb-2">Body Shots</h3>
+          <p className="text-sm text-text-muted">6 angle shots generated from a full-body reference. Approve all to continue.</p>
+        </div>
 
-      {/* Editable body description — same pattern as the Face step. The user
+        {/* Editable body description — same pattern as the Face step. The user
           can refine the prompt and hit Regenerate to kick off a fresh job
           using the updated text. Disabled while a job is in flight to avoid
           stacking concurrent pipelines. */}
-      <div className="flex items-start gap-3 rounded-lg border border-border bg-bg/50 p-3">
-        <div className="flex-1 min-w-0 space-y-1">
-          <p className="text-[10px] text-text-muted uppercase tracking-wide">
-            Body description for {avatarName || "your avatar"}
-          </p>
-          <textarea
-            value={bodyDescription}
-            onChange={(e) => setBodyDescription(e.target.value)}
-            placeholder="Describe the avatar's full body — build, posture, clothing, accessories. The pipeline uses this to generate the 6 angle shots below."
-            rows={3}
-            disabled={isGenerating}
-            className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40 disabled:opacity-60"
-            data-testid="body-description-edit"
-          />
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0 self-start mt-5"
-          onClick={handleRegenerateAll}
-          disabled={isGenerating || !bodyDescription.trim()}
-          title={
-            !bodyDescription.trim()
-              ? "Add a body description first"
-              : isGenerating
-                ? "Generation in progress"
-                : "Regenerate all 6 angles from this description"
-          }
-          data-testid="regenerate-all-body-shots"
-        >
-          <RefreshCw className={cn("mr-1 h-3 w-3", isGenerating && "animate-spin")} /> Regenerate
-        </Button>
-      </div>
-
-      {isGenerating ? (
-        <div className="flex flex-col items-center justify-center py-12 space-y-3">
-          <Loader2 className="h-8 w-8 animate-spin text-accent" />
-          <span className="text-text-muted">Generating 6 body shots... this takes about 90 seconds</span>
-          <Progress value={30} className="w-48" />
-        </div>
-      ) : error ? (
-        <div className="text-center py-8">
-          <p className="text-red-500 mb-4">{error}</p>
-          <Button onClick={onBack} variant="outline">
-            <ArrowLeft className="h-4 w-4 mr-2" /> Back
+        <div className="flex items-start gap-3 rounded-lg border border-border bg-bg/50 p-3">
+          <div className="flex-1 min-w-0 space-y-1">
+            <p className="text-[10px] text-text-muted uppercase tracking-wide">
+              Body description for {avatarName || "your avatar"}
+            </p>
+            <textarea
+              value={bodyDescription}
+              onChange={(e) => setBodyDescription(e.target.value)}
+              placeholder="Describe the avatar's full body — build, posture, clothing, accessories. The pipeline uses this to generate the 6 angle shots below."
+              rows={3}
+              disabled={isGenerating}
+              className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40 disabled:opacity-60"
+              data-testid="body-description-edit"
+            />
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 self-start mt-5"
+            onClick={handleRegenerateAll}
+            disabled={isGenerating || !bodyDescription.trim()}
+            title={
+              !bodyDescription.trim()
+                ? "Add a body description first"
+                : isGenerating
+                  ? "Generation in progress"
+                  : "Regenerate all 6 angles from this description"
+            }
+            data-testid="regenerate-all-body-shots"
+          >
+            <RefreshCw className={cn("mr-1 h-3 w-3", isGenerating && "animate-spin")} /> Regenerate
           </Button>
         </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-3 gap-3">
-            {ANGLE_ORDER.map((angle) => {
-              const angleMismatch = validation[angle] && !validation[angle].match;
-              return (
-                <div key={angle} className="space-y-1" style={{ minWidth: 280 }}>
-                  <div className="relative group">
-                    {angles[angle] ? (
-                      <>
-                        <img
-                          src={angles[angle]}
-                          alt={ANGLE_LABELS[angle]}
-                          className={`w-full rounded-lg border ${angleMismatch ? "border-yellow-500 border-2" : "border-border"}`}
-                          style={{ aspectRatio: "9/16", objectFit: "cover", minWidth: 280 }}
-                          data-testid={`body-shot-${angle}`}
-                        />
-                        {angleMismatch && (
-                          <div className="absolute bottom-12 left-2 right-2">
-                            <div className="bg-yellow-500/90 text-black text-xs font-medium px-2 py-1.5 rounded-md flex items-center justify-between gap-1">
-                              <span>Angle looks wrong</span>
-                              <button
-                                onClick={() => regenerateAngle(angle)}
-                                className="underline font-semibold whitespace-nowrap"
-                                data-testid={`regen-warning-${angle}`}
-                              >
-                                Regenerate
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                        {regeneratingAngle === angle ? (
-                          <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center">
-                            <Loader2 className="h-6 w-6 animate-spin text-white" />
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => regenerateAngle(angle)}
-                            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5"
-                            title={`Regenerate ${ANGLE_LABELS[angle]}`}
-                            data-testid={`regenerate-${angle}`}
-                          >
-                            <RefreshCw className="h-4 w-4" />
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <div className="w-full rounded-lg border border-border bg-surface flex items-center justify-center" style={{ aspectRatio: "9/16", minWidth: 280 }}>
-                        <Loader2 className="h-6 w-6 animate-spin text-accent/50" />
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-xs text-text-muted text-center">{ANGLE_LABELS[angle]}</p>
-                </div>
-              );
-            })}
-          </div>
 
-          <div className="flex gap-2">
-            <Button onClick={onBack} variant="ghost">
+        {isGenerating ? (
+          <div className="flex flex-col items-center justify-center py-12 space-y-3">
+            <Loader2 className="h-8 w-8 animate-spin text-accent" />
+            <span className="text-text-muted">Generating 6 body shots... this takes about 90 seconds</span>
+            <Progress value={30} className="w-48" />
+          </div>
+        ) : error ? (
+          <div className="text-center py-8">
+            <p className="text-red-500 mb-4">{error}</p>
+            <Button onClick={onBack} variant="outline">
               <ArrowLeft className="h-4 w-4 mr-2" /> Back
             </Button>
-            <Button
-              onClick={onContinue}
-              disabled={Object.keys(angles).length < 1}
-              className="ml-auto"
-              size="lg"
-              data-testid="approve-body-shots-btn"
-            >
-              Approve All & Continue
-              <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
           </div>
-        </>
-      )}
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-3">
+              {ANGLE_ORDER.map((angle) => {
+                const angleMismatch = validation[angle] && !validation[angle].match;
+                return (
+                  <div key={angle} className="space-y-1" style={{ minWidth: 280 }}>
+                    <div className="relative group">
+                      {angles[angle] ? (
+                        <>
+                          <img
+                            src={angles[angle]}
+                            alt={ANGLE_LABELS[angle]}
+                            className={`w-full rounded-lg border ${angleMismatch ? "border-yellow-500 border-2" : "border-border"}`}
+                            style={{ aspectRatio: "9/16", objectFit: "cover", minWidth: 280 }}
+                            data-testid={`body-shot-${angle}`}
+                          />
+                          {angleMismatch && (
+                            <div className="absolute bottom-12 left-2 right-2">
+                              <div className="bg-yellow-500/90 text-black text-xs font-medium px-2 py-1.5 rounded-md flex items-center justify-between gap-1">
+                                <span>Angle looks wrong</span>
+                                <button
+                                  onClick={() => regenerateAngle(angle)}
+                                  className="underline font-semibold whitespace-nowrap"
+                                  data-testid={`regen-warning-${angle}`}
+                                >
+                                  Regenerate
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {regeneratingAngle === angle ? (
+                            <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center">
+                              <Loader2 className="h-6 w-6 animate-spin text-white" />
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => regenerateAngle(angle)}
+                              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 hover:bg-black/80 text-white rounded-lg p-1.5"
+                              title={`Regenerate ${ANGLE_LABELS[angle]}`}
+                              data-testid={`regenerate-${angle}`}
+                            >
+                              <RefreshCw className="h-4 w-4" />
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <div className="w-full rounded-lg border border-border bg-surface flex items-center justify-center" style={{ aspectRatio: "9/16", minWidth: 280 }}>
+                          <Loader2 className="h-6 w-6 animate-spin text-accent/50" />
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-text-muted text-center">{ANGLE_LABELS[angle]}</p>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2">
+              <Button onClick={onBack} variant="ghost">
+                <ArrowLeft className="h-4 w-4 mr-2" /> Back
+              </Button>
+              <Button
+                onClick={onContinue}
+                disabled={Object.keys(angles).length < 1}
+                className="ml-auto"
+                size="lg"
+                data-testid="approve-body-shots-btn"
+              >
+                Approve All & Continue
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2065,113 +2078,113 @@ function PreviewPhase({
         </div>
       )}
       <div className="flex-1 min-w-0 space-y-5">
-      <h2 className="text-base font-semibold text-text">Preview your avatar</h2>
+        <h2 className="text-base font-semibold text-text">Preview your avatar</h2>
 
-      <div className="text-sm text-text-muted">
-        Generating preview using your selected voice and the introduction text from the previous step.
-      </div>
-
-      {!isGeneratingPreview && (!avatarStatus || (avatarStatus.status !== AvatarStatus.READY && avatarStatus.status !== AvatarStatus.APPROVED && avatarStatus.status !== AvatarStatus.FAILED)) && (
-        <Button onClick={generatePreview} className="w-full">
-          Generate Preview
-        </Button>
-      )}
-
-      {isGeneratingPreview && (
-        <div className="space-y-3 py-4">
-          <EstimatedProgressBar
-            estimatedSeconds={120}
-            isComplete={false}
-            label={avatarStatus?.progress_step || "Generating preview..."}
-          />
-          {avatarStatus?.render_status && (
-            <RenderStatusBanner
-              state={avatarStatus.render_status.state || "QUEUED"}
-              position={avatarStatus.render_status.position}
-              etaSeconds={avatarStatus.render_status.eta}
-              confidence={avatarStatus.render_status.confidence}
-              errorMessage={avatarStatus.render_status.error_message}
-              elapsedSeconds={avatarStatus.render_status.elapsed_seconds}
-            />
-          )}
+        <div className="text-sm text-text-muted">
+          Generating preview using your selected voice and the introduction text from the previous step.
         </div>
-      )}
 
-      {(avatarStatus?.status === AvatarStatus.READY || avatarStatus?.status === AvatarStatus.APPROVED) && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500" />
-            <span className="text-sm text-green-500">
-              {avatarStatus.status === AvatarStatus.APPROVED ? "Avatar approved!" : "Preview ready!"}
-            </span>
-          </div>
-          {avatarStatus.test_video_url && (
-            <div className="mx-auto" style={{ maxWidth: 340 }}>
-              <video
-                src={avatarStatus.test_video_url}
-                controls
-                playsInline
-                preload="auto"
-                className="w-full rounded-xl border border-border bg-black"
-                onClick={() => avatarStatus?.test_video_url && setFullscreenVideo(avatarStatus.test_video_url)}
-                style={{ aspectRatio: "9/16" }}
-                data-testid="preview-video"
+        {!isGeneratingPreview && (!avatarStatus || (avatarStatus.status !== AvatarStatus.READY && avatarStatus.status !== AvatarStatus.APPROVED && avatarStatus.status !== AvatarStatus.FAILED)) && (
+          <Button onClick={generatePreview} className="w-full">
+            Generate Preview
+          </Button>
+        )}
+
+        {isGeneratingPreview && (
+          <div className="space-y-3 py-4">
+            <EstimatedProgressBar
+              estimatedSeconds={120}
+              isComplete={false}
+              label={avatarStatus?.progress_step || "Generating preview..."}
+            />
+            {avatarStatus?.render_status && (
+              <RenderStatusBanner
+                state={avatarStatus.render_status.state || "QUEUED"}
+                position={avatarStatus.render_status.position}
+                etaSeconds={avatarStatus.render_status.eta}
+                confidence={avatarStatus.render_status.confidence}
+                errorMessage={avatarStatus.render_status.error_message}
+                elapsedSeconds={avatarStatus.render_status.elapsed_seconds}
               />
-            </div>
-          )}
-
-          <Button variant="outline" onClick={onBackToFace} data-testid="re-edit-generate-btn">
-            <RotateCcw className="w-4 h-4 mr-2" />
-            Re-edit & generate
-          </Button>
-
-          {avatarStatus.status === AvatarStatus.READY && (
-            <Button
-              onClick={() => approveMutation.mutate()}
-              disabled={approveMutation.isPending}
-              className="w-full"
-              data-testid="approve-avatar-btn"
-            >
-              {approveMutation.isPending ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Approving...</>
-              ) : (
-                <><CheckCircle className="mr-2 h-4 w-4" /> Approve avatar</>
-              )}
-            </Button>
-          )}
-        </div>
-      )}
-
-      {avatarStatus?.status === AvatarStatus.FAILED && (
-        <div className="space-y-3 text-center py-4">
-          <p className="text-sm text-red-500">{avatarStatus.progress_step || "Generation failed"}</p>
-          <Button size="sm" onClick={generatePreview}>
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry
-          </Button>
-        </div>
-      )}
-
-      {fullscreenVideo && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
-          onClick={() => setFullscreenVideo(null)}
-        >
-          <div className="relative max-w-sm w-full mx-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-            <video
-              src={fullscreenVideo}
-              controls autoPlay playsInline
-              className="w-full rounded-xl"
-              style={{ aspectRatio: "9/16" }}
-            />
-            <button
-              onClick={() => setFullscreenVideo(null)}
-              className="absolute top-2 right-2 rounded-full bg-black/50 p-1.5 text-white/70 hover:text-white transition"
-            >
-              <X className="h-5 w-5" />
-            </button>
+            )}
           </div>
-        </div>
-      )}
+        )}
+
+        {(avatarStatus?.status === AvatarStatus.READY || avatarStatus?.status === AvatarStatus.APPROVED) && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="h-4 w-4 text-green-500" />
+              <span className="text-sm text-green-500">
+                {avatarStatus.status === AvatarStatus.APPROVED ? "Avatar approved!" : "Preview ready!"}
+              </span>
+            </div>
+            {avatarStatus.test_video_url && (
+              <div className="mx-auto" style={{ maxWidth: 340 }}>
+                <video
+                  src={avatarStatus.test_video_url}
+                  controls
+                  playsInline
+                  preload="auto"
+                  className="w-full rounded-xl border border-border bg-black"
+                  // onClick={() => avatarStatus?.test_video_url && setFullscreenVideo(avatarStatus.test_video_url)}
+                  style={{ aspectRatio: "9/16" }}
+                  data-testid="preview-video"
+                />
+              </div>
+            )}
+
+            <Button variant="outline" onClick={onBackToFace} data-testid="re-edit-generate-btn">
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Re-edit & generate
+            </Button>
+
+            {avatarStatus.status === AvatarStatus.READY && (
+              <Button
+                onClick={() => approveMutation.mutate()}
+                disabled={approveMutation.isPending}
+                className="w-full"
+                data-testid="approve-avatar-btn"
+              >
+                {approveMutation.isPending ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Approving...</>
+                ) : (
+                  <><CheckCircle className="mr-2 h-4 w-4" /> Approve avatar</>
+                )}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {avatarStatus?.status === AvatarStatus.FAILED && (
+          <div className="space-y-3 text-center py-4">
+            <p className="text-sm text-red-500">{avatarStatus.progress_step || "Generation failed"}</p>
+            <Button size="sm" onClick={generatePreview}>
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry
+            </Button>
+          </div>
+        )}
+
+        {fullscreenVideo && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+            onClick={() => setFullscreenVideo(null)}
+          >
+            <div className="relative max-w-sm w-full mx-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+              <video
+                src={fullscreenVideo}
+                controls autoPlay playsInline
+                className="w-full rounded-xl"
+                style={{ aspectRatio: "9/16" }}
+              />
+              <button
+                onClick={() => setFullscreenVideo(null)}
+                className="absolute top-2 right-2 rounded-full bg-black/50 p-1.5 text-white/70 hover:text-white transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2197,6 +2210,8 @@ export function AIAvatarSetupPage() {
   const [audienceDescription, setAudienceDescription] = useState("");
   const [bodyDescription, setBodyDescription] = useState("");
   const [testScript, setTestScript] = useState("");
+  const didCreateRef = useRef(false);
+
 
   // Avatar query — used to populate AvatarIdentityPanel in Face/Voice/Shots/Preview
   const { data: avatarData } = useQuery({
@@ -2299,10 +2314,13 @@ export function AIAvatarSetupPage() {
         navigate("/my-avatar");
       });
     } else {
+      if (didCreateRef.current) return;   // ← add this guard
+      didCreateRef.current = true;         // ← set synchronously, before the async call
       avatarApi.createAIAvatar({ name: "AI Avatar" }).then((data) => {
         setAvatarId(data.avatar_id);
         navigate(`/my-avatar/ai/${data.avatar_id}/setup`, { replace: true });
       }).catch(() => {
+        didCreateRef.current = false;   // allow retry if creation actually failed
         toast({ title: "Failed to create avatar", variant: "destructive" });
       });
     }
@@ -2320,7 +2338,7 @@ export function AIAvatarSetupPage() {
           style_preset: data.style_preset || undefined,
         });
         if (data.name) setAvatarName(data.name);
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }, [phase, avatarId]);
 
@@ -2328,7 +2346,7 @@ export function AIAvatarSetupPage() {
   const setPhaseAndSave = useCallback((newPhase: Phase) => {
     setPhase(newPhase);
     if (avatarId) {
-      avatarApi.updateAvatar(avatarId, { wizard_step: newPhase }).catch(() => {});
+      avatarApi.updateAvatar(avatarId, { wizard_step: newPhase }).catch(() => { });
       navigate(`/my-avatar/ai/${avatarId}/${newPhase}`, { replace: false });
     }
   }, [avatarId, navigate]);
@@ -2352,7 +2370,7 @@ export function AIAvatarSetupPage() {
     setCompletedPhases((prev) => [...prev.filter((p) => p !== "voice"), "voice"]);
     if (testSpeechText) setTestScript(testSpeechText);
     if (avatarId && testSpeechText) {
-      avatarApi.aiLockTestScript(avatarId, testSpeechText).catch(() => {});
+      avatarApi.aiLockTestScript(avatarId, testSpeechText).catch(() => { });
     }
     setPhaseAndSave("body_shots");
   }, [avatarId, setPhaseAndSave]);
@@ -2378,124 +2396,124 @@ export function AIAvatarSetupPage() {
           <p className="text-sm text-text-muted">Resuming your avatar...</p>
         </div>
       ) : (<Fragment key={phase}>
-      {/* F3 / V3: Back + Forward navigation row. Forward is enabled when a
+        {/* F3 / V3: Back + Forward navigation row. Forward is enabled when a
           downstream step has previously been completed (i.e. the user
           progressed past `phase` and came back) so they can re-enter that
           step without losing state. */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={() => {
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => {
+              const idx = PHASE_ORDER.indexOf(phase);
+              if (idx <= 0) navigate("/my-avatar");
+              else setPhaseAndSave(PHASE_ORDER[idx - 1]);
+            }}
+            className="flex items-center gap-1 text-xs text-text-muted hover:text-text transition"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {phase === "setup" ? "Back to My Avatar" : "Back"}
+          </button>
+          {(() => {
             const idx = PHASE_ORDER.indexOf(phase);
-            if (idx <= 0) navigate("/my-avatar");
-            else setPhaseAndSave(PHASE_ORDER[idx - 1]);
-          }}
-          className="flex items-center gap-1 text-xs text-text-muted hover:text-text transition"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          {phase === "setup" ? "Back to My Avatar" : "Back"}
-        </button>
-        {(() => {
-          const idx = PHASE_ORDER.indexOf(phase);
-          const next = idx >= 0 && idx < PHASE_ORDER.length - 1 ? PHASE_ORDER[idx + 1] : null;
-          const canGoForward = !!next && completedPhases.includes(phase as Phase);
-          return (
-            <button
-              onClick={() => { if (canGoForward && next) setPhaseAndSave(next); }}
-              disabled={!canGoForward}
-              className={cn(
-                "flex items-center gap-1 text-xs transition",
-                canGoForward ? "text-text-muted hover:text-text" : "text-text-muted/30 cursor-not-allowed",
-              )}
-              title={canGoForward ? `Forward to ${next}` : "Complete this step first"}
-              data-testid="wizard-forward"
-            >
-              Forward
-              <ArrowRight className="h-3.5 w-3.5" />
-            </button>
-          );
-        })()}
-      </div>
-
-      <h1 className="text-xl font-bold text-text">Create your AI avatar</h1>
-
-      {/* Phase indicator */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {PHASE_STEPS.map((step, i) => {
-          const isActive = phase === step.key;
-          const isComplete = completedPhases.includes(step.key as Phase);
-          return (
-            <div key={step.key} className="flex items-center gap-2">
-              {i > 0 && <div className={cn("h-px w-8", isComplete || isActive ? "bg-accent" : "bg-border")} />}
+            const next = idx >= 0 && idx < PHASE_ORDER.length - 1 ? PHASE_ORDER[idx + 1] : null;
+            const canGoForward = !!next && completedPhases.includes(phase as Phase);
+            return (
               <button
-                onClick={() => isComplete ? setPhaseAndSave(step.key as Phase) : undefined}
+                onClick={() => { if (canGoForward && next) setPhaseAndSave(next); }}
+                disabled={!canGoForward}
                 className={cn(
-                  "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all",
-                  isActive ? "text-white" : isComplete ? "text-accent cursor-pointer" : "bg-surface text-text-muted",
+                  "flex items-center gap-1 text-xs transition",
+                  canGoForward ? "text-text-muted hover:text-text" : "text-text-muted/30 cursor-not-allowed",
                 )}
-                style={isActive ? { backgroundColor: "var(--accent-active)" } : isComplete ? { backgroundColor: "var(--accent-active-muted)" } : undefined}
+                title={canGoForward ? `Forward to ${next}` : "Complete this step first"}
+                data-testid="wizard-forward"
               >
-                {isComplete ? <CheckCircle className="h-3 w-3" /> : <span>{step.num}</span>}
-                {step.label}
+                Forward
+                <ArrowRight className="h-3.5 w-3.5" />
               </button>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })()}
+        </div>
 
-      {/* Phase rendering — single expression to prevent React #310 hook mismatch */}
-      {phase === "setup" ? (
-        <SetupPhase
-          key="setup"
-          avatarId={avatarId}
-          avatarName={avatarName}
-          setAvatarName={setAvatarName}
-          onContinue={handleSetupContinue}
-          initialData={setupInitialData}
-        />
-      ) : phase === "face" ? (
-        <FacePhase
-          key="face"
-          avatarId={avatarId}
-          avatarName={avatarName}
-          description={description}
-          setDescription={setDescription}
-          avatar={avatarData}
-          onContinueToVoice={handleContinueToVoice}
-        />
-      ) : phase === "voice" && avatarId ? (
-        <VoicePhase
-          key="voice"
-          avatarId={avatarId}
-          avatarName={avatarName}
-          description={description}
-          lockedFaceUrl={lockedFaceUrl}
-          avatar={avatarData}
-          onLockVoice={handleLockVoice}
-          onBackToFace={handleBackToFaceFromVoice}
-        />
-      ) : phase === "body_shots" && avatarId ? (
-        <BodyShotsPhase
-          key="body_shots"
-          avatarId={avatarId}
-          avatarName={avatarName}
-          lockedFaceUrl={lockedFaceUrl}
-          avatar={avatarData}
-          onContinue={handleBodyShotsContinue}
-          onBack={() => setPhaseAndSave("voice")}
-        />
-      ) : phase === "preview" && avatarId ? (
-        <PreviewPhase
-          key="preview"
-          avatarId={avatarId}
-          avatarName={avatarName}
-          description={description}
-          lockedFaceUrl={lockedFaceUrl}
-          avatar={avatarData}
-          testScript={testScript}
-          onBackToFace={handleBackToFaceFromPreview}
-        />
-      ) : null}
-    </Fragment>)}
+        <h1 className="text-xl font-bold text-text">Create your AI avatar</h1>
+
+        {/* Phase indicator */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {PHASE_STEPS.map((step, i) => {
+            const isActive = phase === step.key;
+            const isComplete = completedPhases.includes(step.key as Phase);
+            return (
+              <div key={step.key} className="flex items-center gap-2">
+                {i > 0 && <div className={cn("h-px w-8", isComplete || isActive ? "bg-accent" : "bg-border")} />}
+                <button
+                  onClick={() => isComplete ? setPhaseAndSave(step.key as Phase) : undefined}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all",
+                    isActive ? "text-white" : isComplete ? "text-accent cursor-pointer" : "bg-surface text-text-muted",
+                  )}
+                  style={isActive ? { backgroundColor: "var(--accent-active)" } : isComplete ? { backgroundColor: "var(--accent-active-muted)" } : undefined}
+                >
+                  {isComplete ? <CheckCircle className="h-3 w-3" /> : <span>{step.num}</span>}
+                  {step.label}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Phase rendering — single expression to prevent React #310 hook mismatch */}
+        {phase === "setup" ? (
+          <SetupPhase
+            key="setup"
+            avatarId={avatarId}
+            avatarName={avatarName}
+            setAvatarName={setAvatarName}
+            onContinue={handleSetupContinue}
+            initialData={setupInitialData}
+          />
+        ) : phase === "face" ? (
+          <FacePhase
+            key="face"
+            avatarId={avatarId}
+            avatarName={avatarName}
+            description={description}
+            setDescription={setDescription}
+            avatar={avatarData}
+            onContinueToVoice={handleContinueToVoice}
+          />
+        ) : phase === "voice" && avatarId ? (
+          <VoicePhase
+            key="voice"
+            avatarId={avatarId}
+            avatarName={avatarName}
+            description={description}
+            lockedFaceUrl={lockedFaceUrl}
+            avatar={avatarData}
+            onLockVoice={handleLockVoice}
+            onBackToFace={handleBackToFaceFromVoice}
+          />
+        ) : phase === "body_shots" && avatarId ? (
+          <BodyShotsPhase
+            key="body_shots"
+            avatarId={avatarId}
+            avatarName={avatarName}
+            lockedFaceUrl={lockedFaceUrl}
+            avatar={avatarData}
+            onContinue={handleBodyShotsContinue}
+            onBack={() => setPhaseAndSave("voice")}
+          />
+        ) : phase === "preview" && avatarId ? (
+          <PreviewPhase
+            key="preview"
+            avatarId={avatarId}
+            avatarName={avatarName}
+            description={description}
+            lockedFaceUrl={lockedFaceUrl}
+            avatar={avatarData}
+            testScript={testScript}
+            onBackToFace={handleBackToFaceFromPreview}
+          />
+        ) : null}
+      </Fragment>)}
     </div>
   );
 }

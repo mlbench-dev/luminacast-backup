@@ -38,7 +38,7 @@ HOSTKEY_TIMEOUT = 1800  # 30 min max for a single render
 HOSTKEY_QUEUE_WAIT_S = int(os.environ.get("HOSTKEY_QUEUE_WAIT_S", "30"))
 
 # Modal (Tier 2)
-MODAL_ENDPOINT_URL = os.environ.get("MODAL_ENDPOINT_URL", "")
+# modal_endpoint_url = os.environ.get("modal_endpoint_url", "")
 MODAL_TOKEN_ID = os.environ.get("MODAL_TOKEN_ID", "")
 MODAL_TOKEN_SECRET = os.environ.get("MODAL_TOKEN_SECRET", "")
 MODAL_TIMEOUT = 1800
@@ -151,6 +151,24 @@ def _get_loop_semaphore() -> asyncio.Semaphore | None:
         _hostkey_loop_semaphores[key] = sem
     return sem
 
+def _ensure_modal_url() -> str:
+    """Same problem, same fix, for Modal: modal_endpoint_url was only ever
+    pulled into Settings via `.env`, never exported to os.environ — so the
+    frozen module-level constant below always saw "" even after `.env` was
+    updated and the process restarted.
+    """
+    url = os.environ.get("modal_endpoint_url", "")
+    if url:
+        return url
+    try:
+        from config import settings
+        url = getattr(settings, "modal_endpoint_url", "") or ""
+    except Exception:
+        url = ""
+    if url:
+        os.environ["modal_endpoint_url"] = url
+        logger.info("Seeded modal_endpoint_url from settings for render dispatcher")
+    return url
 
 class RenderDispatcher:
     """Routes InfiniteTalk jobs through HOSTKEY -> Modal -> RunPod cascade."""
@@ -183,9 +201,10 @@ class RenderDispatcher:
         """
         _ensure_fal_key()
         _ensure_wavespeed_key()
+        modal_endpoint_url = _ensure_modal_url()
         w, h = {"480p": (480, 848), "720p": (720, 1280), "1080p": (1080, 1920)}.get(size, (480, 848))
         # #region debug-point A:dispatcher-entry
-        try: import json as _dj, urllib.request as _du, time as _dt; _p='.dbg/avatar-lipsync-missing.env'; _u='http://127.0.0.1:7777/event'; _s='avatar-lipsync-missing'; exec("try:\n c=open(_p).read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept: pass"); _du.urlopen(_du.Request(_u, data=_dj.dumps({'sessionId':_s,'runId':'pre-fix','hypothesisId':'A','location':'render_dispatcher.submit_and_wait','msg':'[DEBUG] Dispatcher entry','data':{'size':size,'audio_duration_s':audio_duration_s,'is_pip':is_pip,'block_id':block_id,'hostkey_enabled':HOSTKEY_RENDER_ENABLED,'modal_enabled':bool(MODAL_ENDPOINT_URL),'musetalk_enabled':MUSETALK_ENABLED,'image_url_suffix':image_url[-120:],'audio_url_suffix':audio_url[-120:]},'ts':int(_dt.time()*1000)}).encode(), headers={'Content-Type':'application/json'}), timeout=1).read()
+        try: import json as _dj, urllib.request as _du, time as _dt; _p='.dbg/avatar-lipsync-missing.env'; _u='http://127.0.0.1:7777/event'; _s='avatar-lipsync-missing'; exec("try:\n c=open(_p).read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept: pass"); _du.urlopen(_du.Request(_u, data=_dj.dumps({'sessionId':_s,'runId':'pre-fix','hypothesisId':'A','location':'render_dispatcher.submit_and_wait','msg':'[DEBUG] Dispatcher entry','data':{'size':size,'audio_duration_s':audio_duration_s,'is_pip':is_pip,'block_id':block_id,'hostkey_enabled':HOSTKEY_RENDER_ENABLED,'modal_enabled':bool(modal_endpoint_url),'musetalk_enabled':MUSETALK_ENABLED,'image_url_suffix':image_url[-120:],'audio_url_suffix':audio_url[-120:]},'ts':int(_dt.time()*1000)}).encode(), headers={'Content-Type':'application/json'}), timeout=1).read()
         except Exception: pass
         # #endregion
 
@@ -195,9 +214,9 @@ class RenderDispatcher:
         # this we couldn't tell HOSTKEY_RENDER_ENABLED was false on prod.)
         logger.info(
             "Dispatch decision: HOSTKEY_RENDER_ENABLED=%s, MUSETALK_ENABLED=%s, "
-            "is_pip=%s, hostkey_locked=%s, MODAL_ENDPOINT_URL=%s",
+            "is_pip=%s, hostkey_locked=%s, modal_endpoint_url=%s",
             HOSTKEY_RENDER_ENABLED, MUSETALK_ENABLED, is_pip,
-            sem.locked() if sem is not None else "no-loop", bool(MODAL_ENDPOINT_URL),
+            sem.locked() if sem is not None else "no-loop", bool(modal_endpoint_url),
         )
 
         # ── PIP path: try MuseTalk first ──
@@ -321,9 +340,9 @@ class RenderDispatcher:
         # We do NOT cascade through fal.ai Wan I2V (no audio input — lips
         # would be desynced) or fal.ai Kling (synthesises its own voice).
         # Modal previously sat between HOSTKEY and RunPod; the env var
-        # MODAL_ENDPOINT_URL is empty in production so the if-block below
+        # modal_endpoint_url is empty in production so the if-block below
         # is a no-op today, kept for the day we re-enable Modal.
-        if MODAL_ENDPOINT_URL:
+        if modal_endpoint_url:
             try:
                 logger.info("Dispatching to Modal (Tier 2)")
                 result = await self._render_on_modal(image_url, audio_url, prompt, w, h)
@@ -666,7 +685,7 @@ class RenderDispatcher:
         async with httpx.AsyncClient(timeout=per_request_timeout, follow_redirects=False) as client:
             # 1. Submit
             resp = await client.post(
-                MODAL_ENDPOINT_URL,
+                modal_endpoint_url,
                 json={
                     "image_url": image_url,
                     "audio_url": audio_url,
@@ -692,7 +711,7 @@ class RenderDispatcher:
                 # Resolve relative URLs against the original endpoint.
                 if next_url.startswith("/"):
                     from urllib.parse import urlparse
-                    p = urlparse(MODAL_ENDPOINT_URL)
+                    p = urlparse(modal_endpoint_url)
                     next_url = f"{p.scheme}://{p.netloc}{next_url}"
                 logger.info("Modal 303 — polling function call at %s", next_url)
                 resp = await client.get(next_url, headers=headers)
