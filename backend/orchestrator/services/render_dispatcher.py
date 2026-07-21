@@ -38,7 +38,7 @@ HOSTKEY_TIMEOUT = 1800  # 30 min max for a single render
 HOSTKEY_QUEUE_WAIT_S = int(os.environ.get("HOSTKEY_QUEUE_WAIT_S", "30"))
 
 # Modal (Tier 2)
-# modal_endpoint_url = os.environ.get("modal_endpoint_url", "")
+MODAL_ENDPOINT_URL = os.environ.get("modal_endpoint_url", "")
 MODAL_TOKEN_ID = os.environ.get("MODAL_TOKEN_ID", "")
 MODAL_TOKEN_SECRET = os.environ.get("MODAL_TOKEN_SECRET", "")
 MODAL_TIMEOUT = 1800
