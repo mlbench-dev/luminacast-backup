@@ -122,6 +122,19 @@ export interface RegisterRequest {
   tiktok_handle?: string;
 }
 
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+export interface ResetPasswordRequest {
+  token: string;
+  password: string;
+}
+
+export interface MessageResponse {
+  message: string;
+}
+
 // ── Products ──
 
 export interface Product {

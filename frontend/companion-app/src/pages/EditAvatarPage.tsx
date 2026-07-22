@@ -429,7 +429,7 @@ export function EditAvatarPage() {
 
               {/* Gallery / Voice Corpus */}
               {activeTab === "voice" ? (
-                <VoiceCorpusTab avatarId={avatarId!} />
+                <VoiceCorpusTab avatarId={avatarId!} ensureAvatarId={() => Promise.resolve(avatarId!)} />
               ) : looksLoading ? (
                 <div className="flex items-center gap-2 py-6 justify-center text-text-muted text-sm">
                   <Loader2 className="h-4 w-4 animate-spin" /> Loading looks...

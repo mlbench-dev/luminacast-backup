@@ -9,6 +9,8 @@ import { ProtectedRoute } from "@/components/layout/ProtectedRoute";
 import { useAuthStore } from "@/stores/authStore";
 import { LoginPage } from "@/pages/Login";
 import { SignupPage } from "@/pages/Signup";
+import { ForgotPasswordPage } from "@/pages/ForgotPassword";
+import { ResetPasswordPage } from "@/pages/ResetPassword";
 import { CastBuilderPage } from "@/pages/CastBuilder";
 import { MyCastsPage } from "@/pages/MyCasts";
 import { CastDetailPage } from "@/pages/CastDetail";
@@ -51,6 +53,8 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/register" element={<Navigate to="/signup" replace />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/integrations/zernio/callback" element={<ZernioCallback />} />
 
             {/* Protected routes with sidebar layout */}

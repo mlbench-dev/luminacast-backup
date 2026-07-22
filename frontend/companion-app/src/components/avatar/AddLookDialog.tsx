@@ -133,7 +133,7 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
 
     return (
       <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
-        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col bg-background text-text border-border">
+        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col bg-black text-text border-border">
           <DialogHeader>
             <DialogTitle>Generate Try-On Look</DialogTitle>
           </DialogHeader>
@@ -242,7 +242,7 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
-      <DialogContent className="max-w-2xl bg-background text-text border-border">
+      <DialogContent className="max-w-2xl bg-black text-text border-border">
         <DialogHeader>
           <DialogTitle>
             {lookType === "body_motion" ? "Add body motion pose" : "Add a new look"}

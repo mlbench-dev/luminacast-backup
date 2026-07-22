@@ -155,6 +155,20 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str = "3gorka72@gmail.com"
     ADMIN_PASSWORD: str = "Polaroid-017"
 
+    # Frontend (used to build links embedded in transactional emails)
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    # SMTP (transactional email — password reset, etc.). Leave SMTP_HOST
+    # empty to disable sending; emails are logged instead so local dev
+    # still works without real credentials.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
+    SMTP_FROM_EMAIL: str = "no-reply@luminacast.com"
+    SMTP_FROM_NAME: str = "Luminacast"
+
     @computed_field
     @property
     def database_url(self) -> str:

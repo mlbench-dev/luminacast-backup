@@ -76,16 +76,21 @@ export function LoginPage() {
                 </div>
               </div>
 
-              <label className="flex items-center gap-2 text-sm text-text-dim cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="h-4 w-4 rounded border-border bg-transparent accent-accent"
-                  data-testid="remember-me"
-                />
-                Remember me
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-sm text-text-dim cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    className="h-4 w-4 rounded border-border bg-transparent accent-accent"
+                    data-testid="remember-me"
+                  />
+                  Remember me
+                </label>
+                <Link to="/forgot-password" className="text-sm text-accent hover:underline" data-testid="forgot-password-link">
+                  Forgot password?
+                </Link>
+              </div>
 
               <Button
                 type="submit"

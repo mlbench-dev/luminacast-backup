@@ -5,6 +5,9 @@ import type {
   TokenResponse,
   LoginRequest,
   RegisterRequest,
+  ForgotPasswordRequest,
+  ResetPasswordRequest,
+  MessageResponse,
   User,
   Cast,
   CastCreate,
@@ -160,6 +163,10 @@ export const authApi = {
   register: (data: RegisterRequest) =>
     api.post<TokenResponse>("/auth/register", data).then((r) => r.data),
   me: () => api.get<User>("/auth/me").then((r) => r.data),
+  forgotPassword: (data: ForgotPasswordRequest) =>
+    api.post<MessageResponse>("/auth/forgot-password", data).then((r) => r.data),
+  resetPassword: (data: ResetPasswordRequest) =>
+    api.post<MessageResponse>("/auth/reset-password", data).then((r) => r.data),
 };
 
 // ── User profile (custom interests, etc) ──

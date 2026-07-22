@@ -72,6 +72,22 @@ BODY_MOTION_PROMPTS = {
     ),
 }
 
+# Numeric rotation angles for the fal.ai Qwen "multiple-angles" LoRA — MUST
+# stay in sync with FAL_QWEN_ANGLES in routers/avatar.py (generate-body-shots).
+# Plain FLUX Kontext text prompts alone reliably under-rotate the subject —
+# the model preserves the reference image's pose too strongly — which is why
+# "3/4 Left" and "3/4 Right" (and the profile pair) used to render as nearly
+# identical photos here. Qwen's explicit numeric horizontal_angle is what
+# actually forces a visible rotation; FLUX Kontext (BODY_MOTION_PROMPTS
+# above) is now only the fallback tier for when Qwen errors out.
+FAL_QWEN_BODY_MOTION_ANGLES = {
+    "three_quarter_left":  {"horizontal_angle": 55,  "vertical_angle": 0},
+    "three_quarter_right": {"horizontal_angle": 315, "vertical_angle": 0},
+    "profile_left":        {"horizontal_angle": 90,  "vertical_angle": 0},
+    "profile_right":       {"horizontal_angle": 270, "vertical_angle": 0},
+    "back":                {"horizontal_angle": 180, "vertical_angle": 0},
+}
+
 
 @celery_app.task(name="tasks.avatar_looks.generate", bind=True, max_retries=1)
 def generate_avatar_look_task(self, look_id: str):
@@ -768,6 +784,26 @@ async def _generate_look_async(
             else:
                 # Download parent avatar face image
                 face_url = r2.get_public_url(avatar.face_ref_key)
+
+                # Body-motion poses other than "front" rotate an existing
+                # full-body photo rather than a face closeup — if the avatar
+                # already has a ready "front" body motion look, use that as
+                # the reference so Kontext/Qwen has an actual body to rotate
+                # instead of hallucinating one from a headshot.
+                if look_type == "body_motion" and (look.pose_angle or "front") != "front":
+                    from sqlalchemy import select as sa_select
+                    front_look_result = await session.execute(
+                        sa_select(AvatarLook).where(
+                            AvatarLook.avatar_id == avatar.id,
+                            AvatarLook.look_type == "body_motion",
+                            AvatarLook.pose_angle == "front",
+                            AvatarLook.status == "ready",
+                        ).limit(1)
+                    )
+                    front_look = front_look_result.scalars().first()
+                    if front_look and front_look.face_ref_key:
+                        face_url = r2.get_public_url(front_look.face_ref_key)
+
                 face_path = os.path.join(tmpdir, "face.jpg")
 
                 async with httpx.AsyncClient(timeout=60) as client:
@@ -839,54 +875,93 @@ async def _generate_look_async(
                             f"Photorealistic, professional studio quality, high detail."
                         )
 
-                # Upload source image and run FLUX Kontext
-                if look_type == "body_motion":
-                    flux_guidance = 5.0
-                elif use_product_ref:
-                    flux_guidance = 4.0
-                else:
-                    flux_guidance = 3.5
+                # Body-motion poses that require an actual rotation (i.e. not
+                # "front") try Qwen's numeric-angle tier first — see
+                # FAL_QWEN_BODY_MOTION_ANGLES comment above for why plain FLUX
+                # Kontext text prompts alone aren't reliable for this.
+                output_path = None
+                if look_type == "body_motion" and pose in FAL_QWEN_BODY_MOTION_ANGLES:
+                    try:
+                        qwen_angle_params = FAL_QWEN_BODY_MOTION_ANGLES[pose]
+                        fal_result = await fal_client.run_async(
+                            "fal-ai/qwen-image-edit-2511-multiple-angles",
+                            arguments={
+                                "image_urls": [face_url],
+                                "horizontal_angle": qwen_angle_params["horizontal_angle"],
+                                "vertical_angle": qwen_angle_params["vertical_angle"],
+                                "num_inference_steps": 40,
+                                "guidance_scale": 5.0,
+                                "output_format": "jpeg",
+                            },
+                        )
+                        async with httpx.AsyncClient(timeout=60) as client:
+                            qwen_resp = await client.get(fal_result["images"][0]["url"])
+                            qwen_resp.raise_for_status()
+                            output_path = os.path.join(tmpdir, "look.jpg")
+                            with open(output_path, "wb") as f:
+                                f.write(qwen_resp.content)
+                        logger.info(
+                            "Body motion pose %s (look %s) generated via Qwen multiple-angles",
+                            pose, look_id,
+                        )
+                    except Exception as e:
+                        sentry_sdk.capture_exception(e)
+                        logger.warning(
+                            "Qwen multiple-angles failed for body motion pose %s (look %s), "
+                            "falling back to FLUX Kontext: %s",
+                            pose, look_id, e,
+                        )
+                        output_path = None
 
-                def call_flux():
-                    source_url = fal_client.upload_file(face_path)
-                    arguments = {
-                        "image_url": source_url,
-                        "prompt": full_prompt,
-                        "guidance_scale": flux_guidance,
-                        "num_inference_steps": 28,
-                        "output_format": "jpeg",
-                        "image_size": {"width": 1536, "height": 1536},
-                    }
-                    if use_product_ref and product_ref_path:
-                        arguments["image_prompt_url"] = fal_client.upload_file(product_ref_path)
-                    result = fal_client.subscribe(
-                        "fal-ai/flux-pro/kontext",
-                        arguments=arguments,
-                    )
-                    return result
+                if output_path is None:
+                    # Upload source image and run FLUX Kontext
+                    if look_type == "body_motion":
+                        flux_guidance = 5.0
+                    elif use_product_ref:
+                        flux_guidance = 4.0
+                    else:
+                        flux_guidance = 3.5
 
-                result = await asyncio.to_thread(call_flux)
+                    def call_flux():
+                        source_url = fal_client.upload_file(face_path)
+                        arguments = {
+                            "image_url": source_url,
+                            "prompt": full_prompt,
+                            "guidance_scale": flux_guidance,
+                            "num_inference_steps": 28,
+                            "output_format": "jpeg",
+                            "image_size": {"width": 1536, "height": 1536},
+                        }
+                        if use_product_ref and product_ref_path:
+                            arguments["image_prompt_url"] = fal_client.upload_file(product_ref_path)
+                        result = fal_client.subscribe(
+                            "fal-ai/flux-pro/kontext",
+                            arguments=arguments,
+                        )
+                        return result
 
-                # Extract output image URL
-                output_image_url = None
-                if isinstance(result, dict):
-                    images = result.get("images") or []
-                    if images and isinstance(images[0], dict):
-                        output_image_url = images[0].get("url")
-                    elif "image" in result:
-                        img = result["image"]
-                        output_image_url = img.get("url") if isinstance(img, dict) else img
+                    result = await asyncio.to_thread(call_flux)
 
-                if not output_image_url:
-                    raise RuntimeError(f"FLUX Kontext returned no output image: {str(result)[:300]}")
+                    # Extract output image URL
+                    output_image_url = None
+                    if isinstance(result, dict):
+                        images = result.get("images") or []
+                        if images and isinstance(images[0], dict):
+                            output_image_url = images[0].get("url")
+                        elif "image" in result:
+                            img = result["image"]
+                            output_image_url = img.get("url") if isinstance(img, dict) else img
 
-                # Download result and upload to R2
-                output_path = os.path.join(tmpdir, "look.jpg")
-                async with httpx.AsyncClient(timeout=60) as client:
-                    resp = await client.get(output_image_url)
-                    resp.raise_for_status()
-                    with open(output_path, "wb") as f:
-                        f.write(resp.content)
+                    if not output_image_url:
+                        raise RuntimeError(f"FLUX Kontext returned no output image: {str(result)[:300]}")
+
+                    # Download result
+                    output_path = os.path.join(tmpdir, "look.jpg")
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        resp = await client.get(output_image_url)
+                        resp.raise_for_status()
+                        with open(output_path, "wb") as f:
+                            f.write(resp.content)
 
                 look_r2_key = f"creators/{avatar.user_id}/avatars/{avatar.id}/looks/{look.id}.jpg"
                 await r2.upload_file(output_path, look_r2_key, content_type="image/jpeg")
