@@ -1767,17 +1767,49 @@ async def _regenerate_pipeline(avatar_id: str, user_id: str, test_script: str):
     use_webhook = (settings.APP_ENV or "").lower() in ("production",)
 
     if use_webhook:
-        # -- InfiniteTalk via RunPod webhook mode (non-blocking) --
-        job_id = await runpod.submit_video_job_webhook(
-            image_url=face_url, audio_url=audio_url,
-            variant_id=f"avatar_{avatar_id}",  # identifies this as avatar test video in webhook
-            prompt="A person talking naturally to the camera",
-            size="480p",
+        # -- InfiniteTalk via webhook mode (non-blocking): WaveSpeed first
+        # (faster + more reliable than RunPod's InfiniteTalk template per
+        # prior testing), RunPod webhook as fallback if WaveSpeed itself
+        # can't be submitted (e.g. API key missing, transient submit
+        # error). Either branch only SUBMITS here and returns immediately
+        # -- the matching webhook receiver in routers/webhooks.py
+        # (/wavespeed or /runpod/infinitetalk) finalizes the avatar when
+        # the provider calls back.
+        job_id = None
+        provider_used = None
+        try:
+            from services.render_providers import WavespeedInfinitetalkProvider
+            wavespeed = WavespeedInfinitetalkProvider()
+            if await wavespeed.is_available():
+                prediction_id = await wavespeed.submit_webhook(
+                    image_url=face_url, audio_url=audio_url,
+                    prompt="A person talking naturally to the camera",
+                    width=854, height=480,
+                    job_tag=f"avatar_{avatar_id}",
+                )
+                job_id = f"wavespeed:{prediction_id}"
+                provider_used = "wavespeed"
+        except Exception as exc:
+            logger.warning(
+                "WaveSpeed webhook submit failed for avatar %s, falling back to RunPod: %s",
+                avatar_id, exc,
+            )
+
+        if job_id is None:
+            job_id = await runpod.submit_video_job_webhook(
+                image_url=face_url, audio_url=audio_url,
+                variant_id=f"avatar_{avatar_id}",  # identifies this as avatar test video in webhook
+                prompt="A person talking naturally to the camera",
+                size="480p",
+            )
+            provider_used = "runpod"
+
+        logger.info(
+            "Avatar test video submitted via %s webhook: job_id=%s, avatar_id=%s",
+            provider_used, job_id, avatar_id,
         )
 
-        logger.info(f"Avatar test video submitted via webhook: job_id={job_id}, avatar_id={avatar_id}")
-
-        # Store job_id on avatar so webhook handler can match it
+        # Store job_id on avatar so the matching webhook handler can find it
         async with factory() as session:
             avatar = await session.get(Avatar, avatar_id)
             if avatar:
@@ -1788,7 +1820,7 @@ async def _regenerate_pipeline(avatar_id: str, user_id: str, test_script: str):
                 avatar.progress_percent = 85
                 await session.commit()
 
-        # Return immediately -- webhook handler will finalize when RunPod completes
+        # Return immediately -- webhook handler will finalize when the provider completes
         logger.info(f"Avatar {avatar_id} render submitted via webhook, returning immediately")
         return
 

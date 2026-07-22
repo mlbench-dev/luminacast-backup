@@ -947,6 +947,78 @@ class WavespeedInfinitetalkProvider:
             sentry_sdk.capture_exception(e)
             raise
 
+    @staticmethod
+    def _wavespeed_webhook_base() -> str:
+        """Same pattern as services.runpod._webhook_base() — a public
+        callback URL WaveSpeed can POST to. Falls back to the known prod
+        domain when APP_DOMAIN isn't set to something reachable, since a
+        webhook to localhost is never deliverable."""
+        from config import settings
+        domain = getattr(settings, "APP_DOMAIN", None) or "localhost"
+        if domain in ("localhost", "127.0.0.1"):
+            return "https://www.luminacast.com/api/webhooks/wavespeed"
+        scheme = "http" if domain.replace(".", "").isdigit() else "https"
+        return f"{scheme}://{domain}/api/webhooks/wavespeed"
+
+    async def submit_webhook(
+        self,
+        image_url: str,
+        audio_url: str,
+        prompt: str,
+        width: int,
+        height: int,
+        job_tag: str,
+    ) -> str:
+        """Submit-and-return variant of ``generate()`` — fires the job with
+        a webhook callback instead of polling, so the calling worker is
+        free immediately. Mirrors RunPodService.submit_video_job_webhook.
+
+        ``job_tag`` identifies the caller (e.g. ``f"avatar_{avatar_id}"``)
+        so the webhook receiver can match the completed job back to the
+        right record — WaveSpeed doesn't accept arbitrary metadata on the
+        request, so the tag is only used by the caller to store/match the
+        returned prediction id, not sent to WaveSpeed itself.
+        """
+        api_key = os.environ.get("WAVESPEED_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("WAVESPEED_API_KEY missing at call time")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "image": image_url,
+            "audio": audio_url,
+            "prompt": prompt,
+            "seed": -1,
+            "resolution": self._resolution_from_dims(width, height),
+        }
+        webhook_url = self._wavespeed_webhook_base()
+        submit_url = f"{self.BASE}?webhook={webhook_url}"
+
+        logger.info(
+            "wavespeed webhook submit job_tag=%s webhook=%s", job_tag, webhook_url,
+        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(submit_url, headers=headers, json=payload)
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"WaveSpeed POST {resp.status_code}: {(resp.text or '')[:500]}"
+                )
+            body = resp.json()
+
+        data = body.get("data") or body
+        prediction_id = data.get("id") or body.get("id")
+        if not prediction_id:
+            raise RuntimeError(
+                f"WaveSpeed webhook submit: no prediction id in response: {str(body)[:500]}"
+            )
+        logger.info(
+            "wavespeed webhook job submitted prediction_id=%s job_tag=%s",
+            prediction_id, job_tag,
+        )
+        return prediction_id
+
 
 class FalHalloProvider:
     """Tier 3: fal.ai Hallo image-driven talking-portrait fallback.

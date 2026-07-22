@@ -637,6 +637,107 @@ async def _handle_avatar_test_video_webhook(db, avatar, job_id, status, output, 
     return {"status": "processed", "avatar_id": avatar.id, "result": status}
 
 
+@router.post("/wavespeed")
+async def wavespeed_webhook(request: Request):
+    """Receive InfiniteTalk job completion from WaveSpeed.
+
+    WaveSpeed POSTs roughly the same shape as its poll-result endpoint:
+    {"data" or top-level: {"id": "...", "status": "succeeded"|"completed"|
+    "failed"|..., "outputs": ["<video_url>", ...], "error"/"message": "..."}}
+
+    Only avatar preview jobs go through this path today (see
+    tasks/generate_avatar.py._regenerate_pipeline) — cast-render blocks
+    still use the blocking dispatcher cascade, not this webhook. Matched
+    to an avatar via the ``runpod_job_id`` column using a ``wavespeed:``
+    prefix (see WavespeedInfinitetalkProvider.submit_webhook), reusing the
+    same column as the RunPod webhook path to avoid a DB migration.
+    """
+    payload = await request.json()
+    data = payload.get("data") or payload
+    prediction_id = data.get("id") or payload.get("id", "")
+    status = data.get("status", "")
+    outputs = data.get("outputs") or []
+    error = data.get("error") or data.get("message") or ""
+
+    logger.info(json.dumps({
+        "service": "webhook",
+        "event": "wavespeed_infinitetalk_result",
+        "prediction_id": prediction_id,
+        "status": status,
+        "has_outputs": bool(outputs),
+        "error": _normalize_error_message(str(error)[:200]) if error else "",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }))
+
+    if not prediction_id:
+        raise HTTPException(400, "Missing prediction ID")
+
+    job_id = f"wavespeed:{prediction_id}"
+
+    from models.avatar import Avatar, AvatarStatus, AvatarPhase
+    from services.r2_storage import get_r2_storage_service
+
+    async with async_session_factory() as db:
+        avatar = await db.scalar(
+            select(Avatar).where(Avatar.runpod_job_id == job_id)
+        )
+        if not avatar:
+            logger.warning(f"WaveSpeed webhook received for unknown job_id: {job_id}")
+            return {"status": "ignored", "reason": "unknown job_id"}
+
+        r2 = get_r2_storage_service()
+
+        if status in ("succeeded", "completed") and outputs:
+            video_url = outputs[0] if isinstance(outputs, list) else outputs
+            test_video_key = f"creators/{avatar.user_id}/avatar/{avatar.id}/test_video.mp4"
+            video_uploaded = False
+
+            if isinstance(video_url, str) and video_url.startswith("http"):
+                import httpx
+                try:
+                    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                        video_resp = await client.get(video_url)
+                        video_resp.raise_for_status()
+                        await r2.upload_bytes(video_resp.content, test_video_key, "video/mp4")
+                        video_uploaded = True
+                        logger.info(f"Avatar {avatar.id} test video uploaded (WaveSpeed URL->R2): {len(video_resp.content)} bytes")
+                except Exception as dl_err:
+                    sentry_sdk.capture_exception(dl_err)
+                    logger.error(f"Avatar {avatar.id} WaveSpeed video download failed: {dl_err}")
+
+            if video_uploaded:
+                avatar.test_video_key = test_video_key
+                avatar.status = AvatarStatus.READY
+                avatar.active_phase = AvatarPhase.READY
+                avatar.progress_step = "Avatar ready — review your test video"
+                avatar.progress_percent = 100
+                avatar.runpod_job_id = None
+                await db.commit()
+                logger.info(f"Avatar {avatar.id} READY via WaveSpeed webhook")
+            else:
+                avatar.status = AvatarStatus.FAILED
+                avatar.active_phase = AvatarPhase.FAILED
+                avatar.progress_step = "Failed: Video render completed but no video data returned"
+                avatar.runpod_job_id = None
+                await db.commit()
+                logger.error(f"Avatar {avatar.id} WaveSpeed completed but video download failed")
+
+        elif status in ("failed", "canceled", "cancelled", "error"):
+            error_msg = error or f"WaveSpeed job {status}"
+            avatar.status = AvatarStatus.FAILED
+            avatar.active_phase = AvatarPhase.FAILED
+            avatar.progress_step = f"Failed: {_normalize_error_message(str(error_msg)[:200])}"
+            avatar.runpod_job_id = None
+            await db.commit()
+            logger.error(f"Avatar {avatar.id} WaveSpeed test video failed: {error_msg}")
+
+        else:
+            logger.warning(f"Unexpected WaveSpeed webhook status for avatar {avatar.id}: {status}")
+            return {"status": "ignored", "reason": f"unexpected status: {status}"}
+
+    return {"status": "processed", "avatar_id": avatar.id, "result": status}
+
+
 def _populate_cast_final_video_url(cast, all_variants):
     """Populate cast.final_video_url from the first ready variant with a usable key.
     Safe to call multiple times — updates to composited key when it appears."""
