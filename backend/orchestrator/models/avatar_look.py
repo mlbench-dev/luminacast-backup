@@ -50,6 +50,23 @@ FRAMING_PROMPTS: dict[str, str] = {
 DEFAULT_FRAMING = ShotFraming.MEDIUM.value
 
 
+class SceneEnvironment(str, enum.Enum):
+    STUDIO = "studio"
+    ROOM = "room"
+    OUTDOOR = "outdoor"
+
+DEFAULT_ENVIRONMENT = SceneEnvironment.STUDIO.value
+
+ENVIRONMENT_PROMPTS: dict[str, str] = {
+    SceneEnvironment.STUDIO.value: "clean studio backdrop, softbox lighting, seamless paper background",
+    SceneEnvironment.ROOM.value:   "cozy indoor room, bookshelf and warm lamp light in the background",
+    SceneEnvironment.OUTDOOR.value: "outdoors, natural daylight, soft bokeh greenery in the background",
+}
+
+def environment_prompt_fragment(environment: str | None) -> str:
+    key = (environment or DEFAULT_ENVIRONMENT).strip().lower()
+    return ENVIRONMENT_PROMPTS.get(key, ENVIRONMENT_PROMPTS[DEFAULT_ENVIRONMENT])
+
 def framing_prompt_fragment(framing: str | None) -> str:
     """Return the FLUX prompt fragment for ``framing`` (defaults to MEDIUM)."""
     key = (framing or DEFAULT_FRAMING).strip().upper()
@@ -111,6 +128,8 @@ class AvatarLook(Base):
     # is keyed by the (avatar_id, look_type, framing) triple — a look generated
     # for one framing is NEVER reused for a different framing.
     framing = Column(String(20), default="MEDIUM", server_default="MEDIUM", nullable=False)
+    environment = Column(String(20), default=DEFAULT_ENVIRONMENT, server_default=DEFAULT_ENVIRONMENT, nullable=False)
+    mic_visible = Column(Boolean, default=False, server_default="false", nullable=False)
     product_id = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, server_default=func.now(), nullable=False)
 

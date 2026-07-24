@@ -133,9 +133,17 @@ async def test_regional_url_normalized_to_canonical_before_lookup(monkeypatch):
     await _resolve_tiktok(BLOCKED_URL, client)
 
     # First engine is the verified pratikdani actor; it must be called with
-    # {"url": "<canonical>"}, not the regional PDP URL.
+    # {"url": "<canonical>"}, not the regional PDP URL. The /gb/ segment in
+    # the original URL must route the proxy to a GB residential exit IP.
     first_call = client.post.call_args_list[0]
-    assert first_call.kwargs["json"] == {"url": CANONICAL_URL}
+    assert first_call.kwargs["json"] == {
+        "url": CANONICAL_URL,
+        "proxyConfiguration": {
+            "useApifyProxy": True,
+            "apifyProxyGroups": ["RESIDENTIAL"],
+            "apifyProxyCountry": "GB",
+        },
+    }
 
 
 @pytest.mark.asyncio

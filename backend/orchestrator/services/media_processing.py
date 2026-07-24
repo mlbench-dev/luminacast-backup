@@ -329,6 +329,20 @@ def _voice_filter_chain(
     )
     return ",".join(nodes)
 
+_CHAIN_BUILDERS = {
+    "clip_mic": lambda **kw: _VOICE_EQ_CLIP_MIC,
+    "ambient_room": lambda duration_s=None: _mic_off_ambient_eq(duration_s=duration_s),
+    "ambient_room_soft": lambda duration_s=None: _mic_off_ambient_eq(duration_s=duration_s),
+    "clip_mic_windscreen": lambda **kw: _VOICE_EQ_CLIP_MIC + ["highpass=f=120"],
+    "ambient_outdoor": lambda duration_s=None: _mic_off_ambient_eq(duration_s=duration_s) + ["highpass=f=110"],
+}
+
+def _voice_filter_chain_for_scene(chain_id: str | None, *, clip_mic_enabled: bool, duration_s: float | None = None) -> str:
+    if not chain_id:
+        return _voice_filter_chain(clip_mic_enabled=clip_mic_enabled, duration_s=duration_s)
+    builder = _CHAIN_BUILDERS.get(chain_id, _CHAIN_BUILDERS["ambient_room"])
+    nodes = list(_VOICE_COMMON_PREFIX) + builder(duration_s=duration_s) + [_VOICE_LOUDNORM]
+    return ",".join(nodes)
 
 async def _run_ffmpeg_voice_pass(
     *,
@@ -385,6 +399,7 @@ async def post_process_voice(
     output_mix_path: str,
     *,
     clip_mic_enabled: bool = False,
+    scene_chain_id: str | None = None,
     block_id: str | None = None,
 ) -> tuple[str, str]:
     """Broadcast-quality voice post-processing for TTS output.
@@ -425,7 +440,8 @@ async def post_process_voice(
             duration_s = 5.0
         timeout_s = max(30.0, 4.0 * float(duration_s or 0))
 
-        chain = _voice_filter_chain(
+        chain = _voice_filter_chain_for_scene(
+            scene_chain_id,
             clip_mic_enabled=clip_mic_enabled,
             duration_s=duration_s,
         )

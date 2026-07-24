@@ -191,12 +191,13 @@ def test_parse_catalog_string_and_list_fields():
         "a/one:url,b/two:productUrls[],c/three:productInput"
     )
     assert [actor for actor, _ in chain] == ["a~one", "b~two", "c~three"]
+    proxy = {"useApifyProxy": True}
     # string field
-    assert chain[0][1]("U") == {"url": "U"}
+    assert chain[0][1]("U", proxy) == {"url": "U", "proxyConfiguration": proxy}
     # list-wrapped field
-    assert chain[1][1]("U") == {"productUrls": ["U"]}
+    assert chain[1][1]("U", proxy) == {"productUrls": ["U"], "proxyConfiguration": proxy}
     # plain string field
-    assert chain[2][1]("U") == {"productInput": "U"}
+    assert chain[2][1]("U", proxy) == {"productInput": "U", "proxyConfiguration": proxy}
 
 
 def test_parse_catalog_rejects_malformed():
@@ -213,7 +214,8 @@ async def test_env_catalog_changes_actor_chain(monkeypatch):
     monkeypatch.setattr(resolver.settings, "TIKTOK_RESOLVER_ACTORS", "custom/actor:myField", raising=False)
     chain = resolver._load_tiktok_actors()
     assert chain[0][0] == "custom~actor"
-    assert chain[0][1]("U") == {"myField": "U"}
+    proxy = {"useApifyProxy": True}
+    assert chain[0][1]("U", proxy) == {"myField": "U", "proxyConfiguration": proxy}
     assert len(chain) == 1
 
 

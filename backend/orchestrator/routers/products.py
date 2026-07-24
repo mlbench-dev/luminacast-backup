@@ -982,6 +982,14 @@ async def upload_asset(
         file_size_bytes=len(content),
     )
     db.add(asset)
+
+    # asset_type="cover" is the frontend's signal that this upload IS the
+    # product's cover, not just another gallery shot — every cover_image_url
+    # in every response is derived solely from product.cover_image_key, so
+    # without this the upload succeeded but the cover never visibly changed.
+    if asset_type == "cover" and media_type == "image":
+        product.cover_image_key = r2_key
+
     await db.commit()
     await db.refresh(asset)
 
@@ -1213,109 +1221,18 @@ async def generate_overlay(
 
 # ── AI Image Generation ──
 
-@router.post("/{product_id}/generate-ai-images")
-async def generate_ai_images(
-    product_id: str,
-    style: str = Body("product_shot"),
-    custom_prompt: str = Body(""),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate styled product images via fal.ai FLUX."""
-    product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
-        raise HTTPException(404, "Product not found")
+async def _resolve_product_source_image(product: Product, db: AsyncSession, r2) -> str:
+    """Return a public R2 URL for the product's real reference photo.
 
-    prompts = {
-        "product_shot": f"Professional product photography of {product.name}, studio lighting, white background, 4K quality",
-        "lifestyle": f"{product.name} in a stylish lifestyle setting, natural lighting, editorial photography",
-        "swatch": f"Close-up swatch of {product.name}, detailed texture, macro photography",
-    }
-    prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else prompts.get(style, prompts["product_shot"])
-
-    # Use fal.ai FLUX if available
-    from config import settings as app_settings
-    if not app_settings.FAL_API_KEY:
-        raise HTTPException(503, "AI generation unavailable: FAL_API_KEY not configured")
-
-    try:
-        import asyncio
-        import fal_client
-
-        def _run_flux():
-            os.environ["FAL_KEY"] = app_settings.FAL_API_KEY
-            return fal_client.subscribe(
-                "fal-ai/flux/schnell",
-                arguments={"prompt": prompt, "image_size": "square_hd", "num_images": 1},
-            )
-
-        result = await asyncio.to_thread(_run_flux)
-        image_url = result["images"][0]["url"]
-
-        # Download and upload to R2
-        import httpx
-        from services.r2_storage import get_r2_storage_service
-        r2 = get_r2_storage_service()
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(image_url)
-            asset_id = f"pa_{uuid.uuid4().hex[:12]}"
-            r2_key = f"products/{product_id}/assets/{asset_id}.png"
-            await r2.upload_bytes(resp.content, r2_key, "image/png")
-
-            asset = ProductAsset(
-                id=asset_id, product_id=product_id, user_id=user.id,
-                asset_type="ai_generated_image", media_type="image",
-                r2_key=r2_key, r2_url=r2.get_public_url(r2_key),
-                file_size_bytes=len(resp.content),
-                generation_prompt=prompt, generation_model="flux_schnell",
-            )
-            db.add(asset)
-            await db.commit()
-
-        return {"id": asset.id, "r2_url": asset.r2_url, "prompt": prompt}
-
-    except Exception as e:
-        raise HTTPException(500, f"AI image generation failed: {str(e)[:200]}")
-
-
-# ── AI Video Generation ──
-
-@router.post("/{product_id}/generate-ai-video")
-async def generate_ai_video(
-    product_id: str,
-    style: str = Body("product_showcase"),
-    duration_seconds: int = Body(5),
-    custom_prompt: str = Body(""),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate a short product video using fal.ai image-to-video."""
-    product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
-        raise HTTPException(404, "Product not found")
-
-    prompts = {
-        "product_showcase": f"Slow cinematic rotation of {product.name}, studio lighting, white background, smooth camera movement, product photography style, 4K quality",
-        "lifestyle": f"{product.name} being used naturally, soft natural lighting, lifestyle photography, warm tones",
-        "unboxing": f"Hands opening a package revealing {product.name}, overhead shot, satisfying unboxing reveal, clean background",
-        "comparison": f"Before and after using {product.name}, split screen effect, dramatic transformation",
-    }
-    prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else prompts.get(style, prompts["product_showcase"])
-
-    from config import settings as app_settings
-    if not app_settings.FAL_API_KEY:
-        raise HTTPException(503, "AI generation unavailable: FAL_API_KEY not configured")
-
-    # Need a source image — try R2 cover, fall back to TikTok CDN
-    from services.r2_storage import get_r2_storage_service
-    r2 = get_r2_storage_service()
-    source_image_url = ""
-
+    Prefers the stored cover; for TikTok-sourced products with no cover yet,
+    materializes the TikTok CDN cover to R2 first. Returns "" when no
+    reference photo exists — callers that need one (image-to-image /
+    image-to-video generation) should treat that as a 400.
+    """
     if product.cover_image_key:
-        source_image_url = r2.get_public_url(product.cover_image_key)
-    elif product.tiktok_product_id:
-        # Materialize TikTok cover to R2 first
+        return r2.get_public_url(product.cover_image_key)
+
+    if product.tiktok_product_id:
         from models.trending_product import TrendingProduct
         tp = await db.scalar(
             select(TrendingProduct).where(
@@ -1333,12 +1250,176 @@ async def generate_ai_video(
                         await r2.upload_bytes(resp.content, r2_key, "image/jpeg")
                         product.cover_image_key = r2_key
                         await db.commit()
-                        source_image_url = r2.get_public_url(r2_key)
+                        return r2.get_public_url(r2_key)
             except Exception:
                 pass
 
+    return ""
+
+
+@router.post("/{product_id}/generate-ai-images")
+async def generate_ai_images(
+    product_id: str,
+    style: str = Body("product_shot"),
+    custom_prompt: str = Body(""),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate styled product photos via FLUX Kontext (image-to-image).
+
+    Kontext edits the product's *real* cover photo instead of hallucinating
+    a fresh product from text alone — FLUX schnell (pure text-to-image) was
+    generating a different-looking product (wrong design/color) every time
+    because it had no reference to what the product actually looks like.
+    """
+    product = await db.get(Product, product_id)
+    if not product or product.user_id != user.id:
+        raise HTTPException(404, "Product not found")
+
+    from config import settings as app_settings
+    if not app_settings.FAL_API_KEY:
+        raise HTTPException(503, "AI generation unavailable: FAL_API_KEY not configured")
+
+    from services.r2_storage import get_r2_storage_service
+    r2 = get_r2_storage_service()
+    source_image_url = await _resolve_product_source_image(product, db, r2)
     if not source_image_url:
         raise HTTPException(400, "Product needs a cover image. Upload one or pick a different product.")
+
+    scene_prompts = {
+        "product_shot": "Professional studio product photography on a clean white background with soft studio lighting, 4K quality.",
+        "lifestyle": f"{product.name} shown in a stylish lifestyle setting with natural lighting, editorial photography style.",
+        "swatch": f"Extreme close-up macro photography of {product.name}, showing fine texture and material detail.",
+    }
+    # Scene/style instruction is stated first (FLUX Kontext weighs earlier
+    # instructions more heavily), then the identity-preservation clause —
+    # same ordering as services/flux_kontext.py's avatar-frame edits.
+    scene_instruction = (
+        custom_prompt.strip() if custom_prompt and custom_prompt.strip()
+        else scene_prompts.get(style, scene_prompts["product_shot"])
+    )
+    preserve_clause = (
+        "Keep the exact same product from the reference photo completely unchanged — "
+        "identical shape, color, materials, design, and any logos or text. "
+        "Do not restyle, redesign, or recolor the product."
+    )
+    prompt = f"{scene_instruction} {preserve_clause}"
+
+    try:
+        import asyncio
+        import fal_client
+
+        def _run_flux_kontext():
+            os.environ["FAL_KEY"] = app_settings.FAL_API_KEY
+            return fal_client.subscribe(
+                "fal-ai/flux-pro/kontext",
+                arguments={
+                    "prompt": prompt,
+                    "image_url": source_image_url,
+                    "guidance_scale": 3.5,
+                    "num_inference_steps": 28,
+                    "output_format": "jpeg",
+                },
+            )
+
+        result = await asyncio.to_thread(_run_flux_kontext)
+        image_url = result["images"][0]["url"]
+
+        # Download and upload to R2
+        import httpx
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(image_url)
+            asset_id = f"pa_{uuid.uuid4().hex[:12]}"
+            r2_key = f"products/{product_id}/assets/{asset_id}.jpg"
+            await r2.upload_bytes(resp.content, r2_key, "image/jpeg")
+
+            asset = ProductAsset(
+                id=asset_id, product_id=product_id, user_id=user.id,
+                asset_type="ai_generated_image", media_type="image",
+                r2_key=r2_key, r2_url=r2.get_public_url(r2_key),
+                file_size_bytes=len(resp.content),
+                generation_prompt=prompt, generation_model="flux_pro_kontext",
+            )
+            db.add(asset)
+            await db.commit()
+
+        return {"id": asset.id, "r2_url": asset.r2_url, "prompt": prompt}
+
+    except Exception as e:
+        raise HTTPException(500, f"AI image generation failed: {str(e)[:200]}")
+
+
+# ── AI Video Generation ──
+
+_KLING_MODELS = {
+    "pro": "fal-ai/kling-video/v1.5/pro/image-to-video",
+    "fast": "fal-ai/kling-video/v1.6/standard/image-to-video",
+}
+
+# v1.5/pro's input schema has aspect_ratio (16:9 / 9:16 / 1:1); v1.6/standard's
+# does not — only prompt/image_url/duration/negative_prompt/cfg_scale. Sending
+# it there is silently swallowed by the queue accept but breaks the run before
+# a result ever exists (POST 200, then the result fetch 404s).
+_KLING_SUPPORTS_ASPECT_RATIO = {"pro"}
+
+# cfg_scale (0-1, fal default 0.5) controls how strongly the output follows
+# the text prompt vs. staying close to the source image. v1.6/standard was
+# observed producing near-static output (product visible, no motion) at the
+# default — pushed higher here so it follows the motion instruction more
+# assertively. v1.5/pro already produces correct motion at the default, so
+# it's left alone.
+_KLING_CFG_SCALE = {"fast": 0.8}
+
+
+@router.post("/{product_id}/generate-ai-video")
+async def generate_ai_video(
+    product_id: str,
+    style: str = Body("product_showcase"),
+    duration_seconds: int = Body(5),
+    custom_prompt: str = Body(""),
+    quality: str = Body("pro"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a short product video using fal.ai image-to-video."""
+    product = await db.get(Product, product_id)
+    if not product or product.user_id != user.id:
+        raise HTTPException(404, "Product not found")
+
+    prompts = {
+        "product_showcase": f"Slow cinematic rotation of {product.name}, studio lighting, white background, smooth camera movement, product photography style, 4K quality",
+        "lifestyle": f"{product.name} being used naturally, soft natural lighting, lifestyle photography, warm tones",
+        # Kling's image-to-video locks frame 1 to the product's actual cover
+        # photo — there is no box in that photo. Any prompt asking the model
+        # to materialize a box, cover the product, then remove it forces it
+        # to hallucinate an object that was never in frame, which it does
+        # badly (a half-formed cover-and-remove, or a backwards
+        # shoe-then-box-then-no-box sequence). Framing the "reveal" as
+        # camera/lighting motion instead of object insertion plays to what
+        # these models can actually do reliably.
+        "unboxing": f"{product.name} sits on display exactly as shown. Camera starts close and slightly above, then pulls back and rises in a smooth motion as studio lighting brightens, revealing the full product in a satisfying unveiling shot, clean background",
+        "comparison": f"Before and after using {product.name}, split screen effect, dramatic transformation",
+    }
+    prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else prompts.get(style, prompts["product_showcase"])
+
+    from config import settings as app_settings
+    if not app_settings.FAL_API_KEY:
+        raise HTTPException(503, "AI generation unavailable: FAL_API_KEY not configured")
+
+    # Need a source image — try R2 cover, fall back to TikTok CDN
+    from services.r2_storage import get_r2_storage_service
+    r2 = get_r2_storage_service()
+    source_image_url = await _resolve_product_source_image(product, db, r2)
+    if not source_image_url:
+        raise HTTPException(400, "Product needs a cover image. Upload one or pick a different product.")
+
+    kling_tier = quality if quality in _KLING_MODELS else "pro"
+    kling_model = _KLING_MODELS[kling_tier]
+    # Derived from the model id itself (not hand-typed) so the stored label
+    # can't drift out of sync with _KLING_MODELS on a future version bump.
+    _model_parts = kling_model.split("/")
+    kling_model_label = f"kling_{_model_parts[2]}_{_model_parts[3]}"
 
     try:
         import asyncio
@@ -1346,15 +1427,16 @@ async def generate_ai_video(
 
         def _run_kling():
             os.environ["FAL_KEY"] = app_settings.FAL_API_KEY
-            return fal_client.subscribe(
-                "fal-ai/kling-video/v1.5/pro/image-to-video",
-                arguments={
-                    "prompt": prompt,
-                    "image_url": source_image_url,
-                    "duration": str(duration_seconds),
-                    "aspect_ratio": "9:16",
-                },
-            )
+            kling_args = {
+                "prompt": prompt,
+                "image_url": source_image_url,
+                "duration": str(duration_seconds),
+            }
+            if kling_tier in _KLING_SUPPORTS_ASPECT_RATIO:
+                kling_args["aspect_ratio"] = "9:16"
+            if kling_tier in _KLING_CFG_SCALE:
+                kling_args["cfg_scale"] = _KLING_CFG_SCALE[kling_tier]
+            return fal_client.subscribe(kling_model, arguments=kling_args)
 
         result = await asyncio.to_thread(_run_kling)
         video_url = result["video"]["url"]
@@ -1373,7 +1455,7 @@ async def generate_ai_video(
                 r2_key=r2_key, r2_url=r2.get_public_url(r2_key),
                 duration_seconds=duration_seconds,
                 file_size_bytes=len(resp.content),
-                generation_prompt=prompt, generation_model="kling_v1.5_pro",
+                generation_prompt=prompt, generation_model=kling_model_label,
             )
             db.add(asset)
             await db.commit()

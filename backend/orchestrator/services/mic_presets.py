@@ -84,3 +84,23 @@ def select_mic_preset(mic_on: Optional[bool]) -> Optional[MicPreset]:
     if mic_on is None:
         return None
     return MicPreset.MIC_ON if mic_on else MicPreset.MIC_OFF
+
+from models.avatar_look import SceneEnvironment
+
+SCENE_FILTER_LIBRARY: dict[tuple[str, bool], str] = {
+    (SceneEnvironment.STUDIO.value, True):   "clip_mic",
+    (SceneEnvironment.STUDIO.value, False):  "ambient_room",
+    (SceneEnvironment.ROOM.value, True):     "clip_mic",
+    (SceneEnvironment.ROOM.value, False):    "ambient_room_soft",
+    (SceneEnvironment.OUTDOOR.value, True):  "clip_mic_windscreen",
+    (SceneEnvironment.OUTDOOR.value, False): "ambient_outdoor",
+}
+
+def select_scene_preset(environment: Optional[str], mic_visible: Optional[bool]) -> Optional[str]:
+    """Environment-aware replacement for select_mic_preset. Returns a chain
+    id for media_processing._voice_filter_chain_for_scene, or None to fall
+    through to legacy behaviour."""
+    if not presets_enabled() or mic_visible is None:
+        return None
+    key = ((environment or SceneEnvironment.STUDIO.value).lower(), mic_visible)
+    return SCENE_FILTER_LIBRARY.get(key, SCENE_FILTER_LIBRARY[(SceneEnvironment.STUDIO.value, mic_visible)])

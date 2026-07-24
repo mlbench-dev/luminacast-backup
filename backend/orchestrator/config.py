@@ -68,6 +68,29 @@ class Settings(BaseSettings):
     # Per-run memory cap (MB) for the resolver's Apify calls, for cost control.
     TIKTOK_RESOLVER_MAX_MEMORY_MB: int = 512
 
+    # Amazon product resolver — env-overridable Apify actor id ("owner/slug").
+    # Leave empty to use the in-code default (junglee/amazon-crawler). Set this
+    # when Apify renames/removes the actor so the fix is a settings change, not
+    # a deploy. See services/url_product_resolver.py.
+    AMAZON_RESOLVER_ACTOR_ID: str = ""
+
+    # Generic-site product resolver — env-overridable Apify actor id
+    # ("owner/slug"). Used as a fallback ONLY when a direct fetch returns no
+    # product image (bot-protected storefronts like SHEIN serve a generic
+    # homepage to plain HTTP requests instead of the real product page).
+    # Leave empty to use the in-code default (apify/website-content-crawler).
+    GENERIC_RESOLVER_ACTOR_ID: str = ""
+
+    # Apify residential-proxy routing shared by every URL-import resolver.
+    # Region-locked storefronts (TikTok Shop /gb/, amazon.co.uk, ...) block
+    # non-local exit IPs, so every scrape is routed through a residential
+    # proxy whose exit IP matches the country parsed from the product URL.
+    # Both knobs are settings, not code, so a plan/inventory change on the
+    # Apify side (proxy group renamed, country matching temporarily disabled
+    # for cost reasons, etc.) doesn't require a deploy.
+    APIFY_PROXY_GROUPS: str = "RESIDENTIAL"
+    APIFY_PROXY_COUNTRY_MATCHING: bool = True
+
     # Dedicated GPU server (faster alternative to RunPod)
     GPU_SERVER_URL: str = ""
     GPU_SERVER_ENABLED: bool = False

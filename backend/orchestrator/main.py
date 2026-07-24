@@ -354,8 +354,26 @@ async def lifespan(app: FastAPI):
             await _s.execute(_sa_text(
                 "CREATE INDEX IF NOT EXISTS ix_uploaded_music_user_id ON uploaded_music(user_id)"
             ))
+            # avatar_looks: scene environment + visible-mic toggle for look
+            # generation (studio/room/outdoor backdrop, lavalier mic in shot).
+            await _s.execute(_sa_text(
+                "ALTER TABLE avatar_looks "
+                "ADD COLUMN IF NOT EXISTS environment VARCHAR(20) NOT NULL DEFAULT 'studio', "
+                "ADD COLUMN IF NOT EXISTS mic_visible BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+            # blocks: avatar_motion/avatar_acting merged into avatar_action,
+            # with separate start/end action prompts.
+            await _s.execute(_sa_text(
+                "UPDATE blocks SET category = 'avatar_action' "
+                "WHERE category IN ('avatar_motion', 'avatar_acting')"
+            ))
+            await _s.execute(_sa_text(
+                "ALTER TABLE blocks "
+                "ADD COLUMN IF NOT EXISTS action_start_prompt TEXT, "
+                "ADD COLUMN IF NOT EXISTS action_end_prompt TEXT"
+            ))
             await _s.commit()
-            logger.info("Idempotent column additions verified (body_shot_sets, blocks, live_sessions, social_*, mubert, music)")
+            logger.info("Idempotent column additions verified (body_shot_sets, blocks, live_sessions, social_*, mubert, music, avatar_looks)")
         except Exception as _e:
             import sentry_sdk
             sentry_sdk.capture_exception(_e)

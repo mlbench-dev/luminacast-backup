@@ -76,6 +76,113 @@ def _canonical_tiktok_url(product_id: str) -> str:
     return f"https://www.tiktok.com/view/product/{product_id}"
 
 
+# ---------------------------------------------------------------------------
+# Region / residential-proxy routing
+#
+# TikTok Shop and Amazon both region-lock their storefronts: a UK product
+# page (shop.tiktok.com/gb/..., amazon.co.uk/...) rejects requests whose exit
+# IP doesn't look local. Apify's residential proxy pool lets a run request a
+# specific country's exit IP via proxyConfiguration.apifyProxyCountry, so we
+# parse the target country out of the URL itself and route every scrape
+# through a matching exit IP. The proxy group and whether country-matching is
+# even applied are both settings (APIFY_PROXY_GROUPS /
+# APIFY_PROXY_COUNTRY_MATCHING) rather than hardcoded, so a change on the
+# Apify side doesn't require a code deploy.
+# ---------------------------------------------------------------------------
+
+# TikTok Shop region path segments TikTok is known to operate storefronts in.
+# These map 1:1 onto ISO-3166 alpha-2 country codes, which is also what Apify
+# proxyConfiguration.apifyProxyCountry expects.
+_TIKTOK_REGION_CODES = {
+    "us", "gb", "ie", "es", "de", "fr", "it",
+    "sg", "my", "th", "vn", "ph", "id",
+    "mx", "br", "ca", "au", "jp", "kr",
+}
+
+
+def _extract_tiktok_region(url: str) -> Optional[str]:
+    """Pull the two-letter storefront region out of a TikTok Shop URL.
+
+    Matches the region segment in regional PDP URLs like
+    shop.tiktok.com/gb/pdp/<id>. The canonical lookup URL
+    (tiktok.com/view/product/<id>) carries no region, so callers must parse
+    this from the *original* user-supplied URL before it's canonicalized.
+    Returns None when no known region segment is present — the caller falls
+    back to an unmatched (default) proxy rather than guessing.
+    """
+    match = re.search(r"tiktok\.com/([a-z]{2})(?:/|$)", url, re.IGNORECASE)
+    if not match:
+        return None
+    code = match.group(1).lower()
+    return code.upper() if code in _TIKTOK_REGION_CODES else None
+
+
+# Amazon storefront domain suffix -> ISO-3166 alpha-2 country code. Covers
+# every Amazon marketplace TLD; extend here (or override entirely via a
+# future env var if this ever needs to be a settings change too).
+_AMAZON_TLD_COUNTRY = {
+    "com": "US",
+    "co.uk": "GB",
+    "de": "DE",
+    "fr": "FR",
+    "it": "IT",
+    "es": "ES",
+    "nl": "NL",
+    "se": "SE",
+    "pl": "PL",
+    "com.be": "BE",
+    "ca": "CA",
+    "com.mx": "MX",
+    "com.br": "BR",
+    "co.jp": "JP",
+    "in": "IN",
+    "com.au": "AU",
+    "sg": "SG",
+    "ae": "AE",
+    "sa": "SA",
+    "eg": "EG",
+    "com.tr": "TR",
+}
+
+
+def _extract_amazon_country(url: str) -> str:
+    """Derive the Amazon marketplace country from the storefront domain.
+
+    amazon.co.uk -> GB, amazon.de -> DE, amazon.com -> US, etc. Defaults to
+    US for unrecognized or shortened (amzn.to) domains — the safest default
+    since amazon.com is the largest marketplace and an unmatched proxy still
+    resolves it correctly.
+    """
+    host = (urlparse(url).hostname or "").lower()
+    idx = host.find("amazon.")
+    if idx == -1:
+        return "US"
+    tld = host[idx + len("amazon."):]
+    return _AMAZON_TLD_COUNTRY.get(tld, "US")
+
+
+def _build_proxy_configuration(country: Optional[str]) -> dict:
+    """Build the Apify proxyConfiguration input for a region-matched scrape.
+
+    Always routes through the configured proxy group(s) (residential by
+    default). Adds apifyProxyCountry only when a country was resolved from
+    the URL and country-matching is enabled in settings — leaving it off lets
+    Apify pick any exit IP in the group, which is the right fallback when we
+    couldn't determine the storefront's region.
+    """
+    config: dict = {"useApifyProxy": True}
+    groups = [
+        g.strip()
+        for g in (getattr(settings, "APIFY_PROXY_GROUPS", "") or "").split(",")
+        if g.strip()
+    ]
+    if groups:
+        config["apifyProxyGroups"] = groups
+    if country and getattr(settings, "APIFY_PROXY_COUNTRY_MATCHING", True):
+        config["apifyProxyCountry"] = country
+    return config
+
+
 @dataclass
 class ResolvedProduct:
     """Normalised product payload returned by every resolver."""
@@ -118,16 +225,21 @@ class ResolvedProduct:
 # This is the in-code default. It can be overridden at deploy time via the
 # TIKTOK_RESOLVER_ACTORS env var so a future Apify rename is a config change,
 # not a code change. See _parse_actor_catalog for the env format.
-_DEFAULT_TIKTOK_ACTORS: tuple[tuple[str, Callable[[str], dict]], ...] = (
-    ("pratikdani~tiktok-shop-scraper", lambda url: {"url": url}),
-    ("pro100chok~tiktok-shop-scraper-usage", lambda url: {"productUrls": [url]}),
-    ("cunning_soil~tiktok-shop-product-scraper-mobile-api", lambda url: {"productInput": url}),
+#
+# Each builder now takes (url, proxy_config) — every actor's input schema
+# accepts a generic "proxyConfiguration" field alongside its own URL field,
+# so we always merge in the region-matched proxy built by
+# _build_proxy_configuration.
+_DEFAULT_TIKTOK_ACTORS: tuple[tuple[str, Callable[[str, dict], dict]], ...] = (
+    ("pratikdani~tiktok-shop-scraper", lambda url, proxy: {"url": url, "proxyConfiguration": proxy}),
+    ("pro100chok~tiktok-shop-scraper-usage", lambda url, proxy: {"productUrls": [url], "proxyConfiguration": proxy}),
+    ("cunning_soil~tiktok-shop-product-scraper-mobile-api", lambda url, proxy: {"productInput": url, "proxyConfiguration": proxy}),
 )
 
 
 def _parse_actor_catalog(
     raw: str,
-) -> tuple[tuple[str, Callable[[str], dict]], ...]:
+) -> tuple[tuple[str, Callable[[str, dict], dict]], ...]:
     """Parse the TIKTOK_RESOLVER_ACTORS env string into an actor chain.
 
     Format: comma-separated entries, each "<owner/slug>:<input_field>[:list]".
@@ -139,7 +251,7 @@ def _parse_actor_catalog(
     Raises ValueError on any malformed entry so the caller can fall back to
     the in-code default.
     """
-    entries: list[tuple[str, Callable[[str], dict]]] = []
+    entries: list[tuple[str, Callable[[str, dict], dict]]] = []
     for chunk in raw.split(","):
         spec = chunk.strip()
         if not spec:
@@ -165,14 +277,14 @@ def _parse_actor_catalog(
     return tuple(entries)
 
 
-def _make_payload_builder(field_name: str, as_list: bool) -> Callable[[str], dict]:
+def _make_payload_builder(field_name: str, as_list: bool) -> Callable[[str, dict], dict]:
     """Build a payload builder closure binding field_name / as_list."""
     if as_list:
-        return lambda url: {field_name: [url]}
-    return lambda url: {field_name: url}
+        return lambda url, proxy: {field_name: [url], "proxyConfiguration": proxy}
+    return lambda url, proxy: {field_name: url, "proxyConfiguration": proxy}
 
 
-def _load_tiktok_actors() -> tuple[tuple[str, Callable[[str], dict]], ...]:
+def _load_tiktok_actors() -> tuple[tuple[str, Callable[[str, dict], dict]], ...]:
     """Resolve the active actor chain at module load.
 
     Uses TIKTOK_RESOLVER_ACTORS when set and parseable; otherwise falls back to
@@ -480,13 +592,18 @@ async def _resolve_tiktok(url: str, client: httpx.AsyncClient) -> ResolvedProduc
     product_id = _extract_tiktok_product_id(url)
     lookup_url = _canonical_tiktok_url(product_id) if product_id else url
 
+    # Region must come from the original regional URL (e.g. /gb/pdp/...) —
+    # the canonical lookup_url carries no region segment.
+    region = _extract_tiktok_region(url)
+    proxy_config = _build_proxy_configuration(region)
+
     max_memory_mb = getattr(settings, "TIKTOK_RESOLVER_MAX_MEMORY_MB", 512)
 
     items: list = []
     for actor_id, build_payload in _TIKTOK_FALLBACK_ACTORS:
         items = await _run_tiktok_actor(
             actor_id,
-            build_payload(lookup_url),
+            build_payload(lookup_url, proxy_config),
             token,
             client,
             max_memory_mb=max_memory_mb,
@@ -602,21 +719,46 @@ async def _resolve_tiktok(url: str, client: httpx.AsyncClient) -> ResolvedProduc
 # Amazon resolver — junglee actor (synchronous run)
 # ---------------------------------------------------------------------------
 
+_DEFAULT_AMAZON_ACTOR_ID = "junglee~amazon-crawler"
+
+
+def _load_amazon_actor_id() -> str:
+    """Resolve the active Amazon actor id, env-overridable at deploy time.
+
+    Reads AMAZON_RESOLVER_ACTOR_ID ("owner/slug") on every call — not cached
+    at import — so a rename is a settings change with no redeploy needed.
+    Falls back to the in-code default when unset or malformed.
+    """
+    raw = (getattr(settings, "AMAZON_RESOLVER_ACTOR_ID", "") or "").strip()
+    if not raw:
+        return _DEFAULT_AMAZON_ACTOR_ID
+    if "/" not in raw:
+        logger.warning(
+            "amazon_resolver.invalid_actor_id value=%r — using default", raw
+        )
+        return _DEFAULT_AMAZON_ACTOR_ID
+    return raw.replace("/", "~", 1)
+
+
 async def _resolve_amazon(url: str, client: httpx.AsyncClient) -> ResolvedProduct:
-    """Resolve an Amazon product URL via the junglee Apify actor."""
+    """Resolve an Amazon product URL via the configured Apify actor.
+
+    Routes the scrape through a residential proxy whose exit IP matches the
+    marketplace country parsed from the URL's domain (amazon.co.uk -> GB,
+    amazon.de -> DE, ...) so region-locked storefronts don't block the run.
+    """
     token = settings.APIFY_API_TOKEN
     if not token:
         raise RuntimeError("APIFY_API_TOKEN not configured")
 
-    actor_id = "junglee~amazon-crawler"
+    actor_id = _load_amazon_actor_id()
     run_url = f"{APIFY_BASE}/acts/{actor_id}/run-sync-get-dataset-items"
 
+    country = _extract_amazon_country(url)
     payload = {
         "categoryOrProductUrls": [{"url": url}],
         "maxItems": 1,
-        "proxyConfiguration": {
-            "useApifyProxy": True,
-        },
+        "proxyConfiguration": _build_proxy_configuration(country),
     }
     resp = await client.post(
         run_url,
@@ -624,6 +766,15 @@ async def _resolve_amazon(url: str, client: httpx.AsyncClient) -> ResolvedProduc
         json=payload,
         timeout=120,
     )
+    if resp.status_code == 404:
+        # A 404 almost always means the actor id was renamed/removed on
+        # Apify's side, not a bad product URL — surface it the same way the
+        # TikTok chain does so the catalog gets fixed via settings.
+        sentry_sdk.capture_exception(ApifyActorNotFoundError(actor_id))
+        logger.error(
+            "amazon_resolver.actor_not_found engine=%s status=404 url=%s",
+            actor_id, run_url,
+        )
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"Apify Amazon actor returned {resp.status_code}: {resp.text[:300]}")
 
@@ -784,15 +935,14 @@ def _extract_amazon_asin(url: str) -> Optional[str]:
 # Generic resolver — JSON-LD + OG tag scraping
 # ---------------------------------------------------------------------------
 
-async def _resolve_generic(url: str, client: httpx.AsyncClient) -> ResolvedProduct:
-    """Resolve a generic e-commerce URL by scraping JSON-LD and OG tags."""
-    resp = await client.get(url, timeout=30, follow_redirects=True)
-    resp.raise_for_status()
-    html = resp.text
+def _extract_generic_fields(html: str) -> dict:
+    """Pull title/description/cover/price out of raw page HTML.
 
+    Shared by the direct-fetch path and the Apify-rendered fallback below —
+    both hand this function real page HTML, just sourced differently.
+    """
     product = _extract_jsonld_product(html) or {}
 
-    # OG fallback
     og_title = _extract_meta(html, "og:title")
     og_desc = _extract_meta(html, "og:description")
     og_image = _extract_meta(html, "og:image")
@@ -802,7 +952,6 @@ async def _resolve_generic(url: str, client: httpx.AsyncClient) -> ResolvedProdu
     description = product.get("description") or og_desc
     cover = (product.get("image") if isinstance(product.get("image"), str) else None) or og_image
 
-    # Price from JSON-LD offers
     price = None
     offers = product.get("offers")
     if isinstance(offers, dict):
@@ -812,15 +961,101 @@ async def _resolve_generic(url: str, client: httpx.AsyncClient) -> ResolvedProdu
     if price is None:
         price = _safe_float(og_price)
 
+    return {
+        "title": title, "description": description,
+        "cover": cover, "price": price, "raw": product,
+    }
+
+
+_DEFAULT_GENERIC_ACTOR_ID = "apify/website-content-crawler"
+
+
+async def _fetch_html_via_apify(url: str, client: httpx.AsyncClient) -> Optional[str]:
+    """Render a page through Apify's website-content-crawler and return its HTML.
+
+    Fallback for bot-protected storefronts (SHEIN and similar) that serve a
+    generic homepage — no og:image, no JSON-LD — to a plain server-side GET
+    instead of the real product page. This actor drives a real headless
+    browser through Apify's proxy pool specifically to get past that, then
+    we run the exact same JSON-LD/OG extraction on what it renders.
+    Returns None on any failure so the caller falls back to the direct-fetch
+    result rather than erroring the whole import.
+    """
+    token = settings.APIFY_API_TOKEN
+    if not token:
+        return None
+
+    raw_actor = (getattr(settings, "GENERIC_RESOLVER_ACTOR_ID", "") or "").strip()
+    actor_id = raw_actor.replace("/", "~", 1) if raw_actor else _DEFAULT_GENERIC_ACTOR_ID.replace("/", "~", 1)
+    run_url = f"{APIFY_BASE}/acts/{actor_id}/run-sync-get-dataset-items?timeout=90"
+
+    payload = {
+        "startUrls": [{"url": url}],
+        "crawlerType": "playwright:adaptive",
+        "maxCrawlPages": 1,
+        "maxCrawlDepth": 0,
+        "saveHtml": True,
+        "proxyConfiguration": _build_proxy_configuration(None),
+    }
+
+    try:
+        resp = await client.post(run_url, params={"token": token}, json=payload, timeout=90)
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        logger.warning("generic_resolver.apify_fallback_request_failed url=%s error=%s", url, exc)
+        return None
+
+    if resp.status_code == 404:
+        sentry_sdk.capture_exception(ApifyActorNotFoundError(actor_id))
+        logger.error("generic_resolver.actor_not_found engine=%s status=404 url=%s", actor_id, run_url)
+        return None
+    if not (200 <= resp.status_code < 300):
+        logger.warning(
+            "generic_resolver.apify_fallback_unfinished engine=%s status=%s url=%s",
+            actor_id, resp.status_code, url,
+        )
+        return None
+
+    try:
+        items = resp.json()
+    except Exception:
+        return None
+    if not isinstance(items, list) or not items:
+        return None
+
+    html = items[0].get("html") if isinstance(items[0], dict) else None
+    return html if isinstance(html, str) and html else None
+
+
+async def _resolve_generic(url: str, client: httpx.AsyncClient) -> ResolvedProduct:
+    """Resolve a generic e-commerce URL by scraping JSON-LD and OG tags.
+
+    Tries a direct fetch first (fast, free). If that yields no product image
+    — the signature of a bot-protected site serving a generic/challenge page
+    instead of the real one — retries through Apify's headless-browser
+    crawler, which is far more likely to get past that wall.
+    """
+    resp = await client.get(url, timeout=30, follow_redirects=True)
+    resp.raise_for_status()
+    fields = _extract_generic_fields(resp.text)
+
+    if not fields["cover"]:
+        rendered_html = await _fetch_html_via_apify(url, client)
+        if rendered_html:
+            apify_fields = _extract_generic_fields(rendered_html)
+            if apify_fields["cover"]:
+                logger.info("generic_resolver.apify_fallback_recovered_image url=%s", url)
+                fields = apify_fields
+
     return ResolvedProduct(
         source="generic",
         source_product_id=None,
         source_url=url,
-        title=title,
-        description=description,
-        price=price,
-        cover_image_url=cover,
-        raw=product if product else None,
+        title=fields["title"],
+        description=fields["description"],
+        price=fields["price"],
+        cover_image_url=fields["cover"],
+        raw=fields["raw"] or None,
     )
 
 

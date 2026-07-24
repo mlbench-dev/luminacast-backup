@@ -81,6 +81,8 @@ export function StyleDNA({ avatar, onAnalyzed }: StyleDNAProps) {
 
       {result ? (
         <StyleDNAResultPanel result={result} onReset={handleReset} />
+      ) : analyzing ? (
+        <StyleDNAProcessingPanel videoCount={urls.filter((u) => u.trim()).length} />
       ) : (
         <div>
           <p className="text-xs text-white/40 mb-3">
@@ -180,6 +182,21 @@ export function StyleDNA({ avatar, onAnalyzed }: StyleDNAProps) {
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+function StyleDNAProcessingPanel({ videoCount }: { videoCount: number }) {
+  return (
+    <div className="py-6 flex flex-col items-center text-center">
+      <Loader2 className="w-6 h-6 text-accent animate-spin mb-3" />
+      <p className="text-sm text-white/80 mb-1">
+        Analyzing {videoCount || 1} video{videoCount === 1 ? "" : "s"}...
+      </p>
+      <p className="text-xs text-white/40 max-w-xs">
+        Downloading, separating voice from background audio, and transcribing.
+        This usually takes 1-2 minutes per video — keep this tab open.
+      </p>
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
 import { Sentry } from "@/lib/sentry";
+import { confirmAction } from "@/lib/swal";
 import {
   Plus,
   Search,
@@ -218,6 +219,7 @@ export function UrlImportBar() {
   const [url, setUrl] = useState("");
   const [importing, setImporting] = useState(false);
   const [manualEntry, setManualEntry] = useState<NeedsManualEntry | null>(null);
+  const [needsImage, setNeedsImage] = useState<{ id: string; name: string } | null>(null);
 
   const handleImport = async () => {
     const trimmed = url.trim();
@@ -243,6 +245,12 @@ export function UrlImportBar() {
         toast({ title: "Already in your library", description: result.name });
       } else {
         toast({ title: "Product imported!", description: result.name });
+        // The resolver couldn't fetch a usable image (bot-blocked source,
+        // no og:image, etc.) — don't leave the product with a blank cover
+        // silently; ask the user to add one right away.
+        if (!(result as any).cover_image_url) {
+          setNeedsImage({ id: (result as any).id, name: result.name });
+        }
       }
       queryClient.invalidateQueries({ queryKey: ["products"] });
       setUrl("");
@@ -284,6 +292,18 @@ export function UrlImportBar() {
             setManualEntry(null);
             setUrl("");
             toast({ title: "Product added!", description: name });
+            queryClient.invalidateQueries({ queryKey: ["products"] });
+          }}
+        />
+      )}
+      {needsImage && (
+        <AddCoverImageDialog
+          productId={needsImage.id}
+          productName={needsImage.name}
+          onClose={() => setNeedsImage(null)}
+          onUploaded={() => {
+            setNeedsImage(null);
+            toast({ title: "Cover image added" });
             queryClient.invalidateQueries({ queryKey: ["products"] });
           }}
         />
@@ -399,6 +419,78 @@ function ManualEntryDialog({
           <Button size="sm" onClick={handleSave} disabled={!name.trim() || saving} className="gap-2">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             {saving ? "Saving..." : "Add product"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Add-cover-image fallback ──
+// Shown when a URL import succeeded (product was created) but the source
+// couldn't be scraped for a usable image — a bot-protected storefront, a
+// generic site with no og:image, etc. The product already has its real
+// name/price/description; this only needs the image.
+function AddCoverImageDialog({
+  productId,
+  productName,
+  onClose,
+  onUploaded,
+}: {
+  productId: string;
+  productName: string;
+  onClose: () => void;
+  onUploaded: () => void;
+}) {
+  const { toast } = useToast();
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!coverFile || saving) return;
+    setSaving(true);
+    try {
+      await productsApi.uploadAsset(productId, coverFile, "cover");
+      onUploaded();
+    } catch (err: any) {
+      Sentry.captureException(err);
+      toast({
+        title: "Couldn't upload image",
+        description: err?.response?.data?.detail || err.message || "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-text">Add a cover image</h2>
+        <p className="mt-1 text-sm text-text-muted">
+          We couldn't automatically fetch an image for <span className="text-text">{productName}</span>.
+          Upload one to finish setting it up.
+        </p>
+        <div className="mt-4">
+          <Input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setCoverFile(e.target.files?.[0] ?? null)}
+            data-testid="add-cover-image-input"
+          />
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={saving}>
+            Skip for now
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={!coverFile || saving} className="gap-2">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            {saving ? "Uploading..." : "Add image"}
           </Button>
         </div>
       </div>
@@ -1529,6 +1621,18 @@ function ProductDetailPanel({ productId, onClose }: {
   const [customPrompt, setCustomPrompt] = useState("");
   const [videoPrompt, setVideoPrompt] = useState("");
   const [videoStyle, setVideoStyle] = useState<string>("product_showcase");
+  const [videoDuration, setVideoDuration] = useState<5 | 10>(5);
+  const [videoQuality, setVideoQuality] = useState<"pro" | "fast">("pro");
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!lightboxUrl) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightboxUrl(null);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [lightboxUrl]);
 
   // Manual commission entry (FEATURE 3.3) — only used when
   // commission_source === "manual". The percentage is entered as 0-100
@@ -1590,7 +1694,7 @@ function ProductDetailPanel({ productId, onClose }: {
 
   const generateVideoMutation = useMutation({
     mutationFn: ({ style, customPrompt: cp }: { style: string; customPrompt: string }) =>
-      productsApi.generateAiVideo(productId, style, 5, cp),
+      productsApi.generateAiVideo(productId, style, videoDuration, cp, videoQuality),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["product-detail", productId] });
       queryClient.invalidateQueries({ queryKey: ["products"] });
@@ -1945,7 +2049,12 @@ function ProductDetailPanel({ productId, onClose }: {
                   <div className="grid grid-cols-3 gap-2">
                     {(p.assets ?? []).filter((a: any) => a.media_type === "image").map((asset: any) => (
                       <div key={asset.id} className="relative group">
-                        <img src={asset.r2_url || cdnUrl(asset.r2_key)} className="aspect-square rounded-md object-cover" alt="" />
+                        <img
+                          src={asset.r2_url || cdnUrl(asset.r2_key)}
+                          className="aspect-square rounded-md object-cover cursor-zoom-in"
+                          alt=""
+                          onClick={() => setLightboxUrl(asset.r2_url || cdnUrl(asset.r2_key))}
+                        />
                         <button
                           onClick={() => deleteAssetMutation.mutate(asset.id)}
                           className="absolute top-1 right-1 hidden group-hover:flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white text-xs"
@@ -2065,7 +2174,7 @@ function ProductDetailPanel({ productId, onClose }: {
                   {([
                     { value: "product_showcase", label: "Showcase" },
                     { value: "lifestyle", label: "Lifestyle" },
-                    { value: "unboxing", label: "Unboxing" },
+                    { value: "unboxing", label: "Reveal" },
                     { value: "comparison", label: "Compare" },
                   ] as const).map((opt) => (
                     <Button
@@ -2074,6 +2183,37 @@ function ProductDetailPanel({ productId, onClose }: {
                       variant={videoStyle === opt.value ? "default" : "outline"}
                       className="text-[10px] py-1.5"
                       onClick={() => setVideoStyle(opt.value)}
+                    >
+                      {opt.label}
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-text-muted">Length:</span>
+                  {([5, 10] as const).map((secs) => (
+                    <Button
+                      key={secs}
+                      size="sm"
+                      variant={videoDuration === secs ? "default" : "outline"}
+                      className="text-[10px] py-1 px-2.5 h-auto"
+                      onClick={() => setVideoDuration(secs)}
+                    >
+                      {secs}s
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-text-muted">Speed:</span>
+                  {([
+                    { value: "fast", label: "Fast" },
+                    { value: "pro", label: "Quality" },
+                  ] as const).map((opt) => (
+                    <Button
+                      key={opt.value}
+                      size="sm"
+                      variant={videoQuality === opt.value ? "default" : "outline"}
+                      className="text-[10px] py-1 px-2.5 h-auto"
+                      onClick={() => setVideoQuality(opt.value)}
                     >
                       {opt.label}
                     </Button>
@@ -2095,6 +2235,12 @@ function ProductDetailPanel({ productId, onClose }: {
                     {generateVideoMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Film className="h-3 w-3 mr-1" />Gen</>}
                   </Button>
                 </div>
+                <p className="text-[10px] text-text-muted">
+                  {generateVideoMutation.isPending ? "Generating... " : ""}
+                  {videoQuality === "pro"
+                    ? `Quality mode, ${videoDuration}s clip: roughly ${videoDuration === 10 ? "5-6" : "3-4"} minutes.`
+                    : "Fast mode: quicker than Quality, at some cost to motion smoothness."}
+                </p>
               </div>
             </div>
 
@@ -2228,10 +2374,12 @@ function ProductDetailPanel({ productId, onClose }: {
               <Button
                 variant="ghost"
                 className="w-full text-danger hover:bg-danger/10 hover:text-danger"
-                onClick={() => {
-                  if (window.confirm("Remove this product from your library? It won't affect existing casts.")) {
-                    deleteMutation.mutate();
-                  }
+                onClick={async () => {
+                  if (await confirmAction({
+                    title: "Remove this product?",
+                    text: "It won't affect existing casts.",
+                    confirmButtonText: "Remove",
+                  })) deleteMutation.mutate();
                 }}
                 disabled={deleteMutation.isPending}
               >
@@ -2242,6 +2390,28 @@ function ProductDetailPanel({ productId, onClose }: {
           </div>
         )}
       </div>
+
+      {/* Image Lightbox */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <button
+            onClick={() => setLightboxUrl(null)}
+            className="absolute top-4 right-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <img
+            src={lightboxUrl}
+            alt=""
+            className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </>
   );
 }

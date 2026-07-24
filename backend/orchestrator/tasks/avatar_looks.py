@@ -658,12 +658,106 @@ async def _generate_look_async(
                     "candle", "diffuser", "pillow", "blanket", "mug", "bottle",
                 ]
 
+                # Kling Kolors (fal-ai/kling/v1-5/kolors-virtual-try-on) is a
+                # Leffa-based garment-warping model — its own example asset is
+                # a t-shirt, and it has no garment-category parameter. It was
+                # producing near-unchanged output plus warping/ghosting
+                # artifacts on shoe products because it has no notion of
+                # footwear placement; it only knows how to drape a garment
+                # over the torso/legs. Route footwear to the same
+                # identity-preserving FLUX Kontext edit used for non-wearables
+                # instead, with a feet-specific prompt.
+                FOOTWEAR_KEYWORDS = [
+                    "shoe", "shoes", "sneaker", "sneakers", "boot", "boots",
+                    "sandal", "sandals", "heel", "heels", "loafer", "loafers",
+                    "trainer", "trainers", "footwear", "slipper", "slippers",
+                    "cleat", "cleats", "flip flop", "flip-flop",
+                ]
+
                 is_wearable = not any(
                     kw in product_name or kw in product_desc or kw in product_cat
                     for kw in NON_WEARABLE_KEYWORDS
                 )
+                is_footwear = is_wearable and any(
+                    kw in product_name or kw in product_desc or kw in product_cat
+                    for kw in FOOTWEAR_KEYWORDS
+                )
 
-                if not is_wearable:
+                if is_footwear:
+                    # Footwear needs a full-body reference with feet in frame
+                    # (the headshot face_ref_key has no feet to edit), and a
+                    # garment-warping model can't place shoes — so this uses
+                    # FLUX Kontext on the body_motion front photo instead.
+                    from sqlalchemy import select as sa_select
+                    front_look_result = await session.execute(
+                        sa_select(AvatarLook).where(
+                            AvatarLook.avatar_id == avatar.id,
+                            AvatarLook.look_type == "body_motion",
+                            AvatarLook.pose_angle == "front",
+                            AvatarLook.status == "ready",
+                        ).limit(1)
+                    )
+                    front_look = front_look_result.scalars().first()
+                    if not front_look or not front_look.face_ref_key:
+                        raise ValueError(
+                            "No front body motion photo found. Please generate a front body motion pose first "
+                            "(Edit Avatar → Body Motion → Front) before creating try-on looks."
+                        )
+                    body_front_url = r2.get_public_url(front_look.face_ref_key)
+
+                    body_path = os.path.join(tmpdir, "body_front.jpg")
+                    product_path = os.path.join(tmpdir, "product.jpg")
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        resp = await client.get(body_front_url)
+                        resp.raise_for_status()
+                        with open(body_path, "wb") as f:
+                            f.write(resp.content)
+                        resp_prod = await client.get(product_image_url)
+                        resp_prod.raise_for_status()
+                        with open(product_path, "wb") as f:
+                            f.write(resp_prod.content)
+
+                    footwear_prompt = (
+                        f"Same person, same face, same identity, same pose, same outfit. "
+                        f"They are now wearing the exact shoes shown in the reference image "
+                        f"on their feet, replacing their current footwear — {product.name}. "
+                        f"The shoes must match the reference image exactly in shape, color, "
+                        f"materials, and design. Feet and shoes clearly visible, natural "
+                        f"standing pose, photorealistic, studio lighting."
+                    )
+
+                    def call_flux_footwear():
+                        source_url = fal_client.upload_file(body_path)
+                        product_ref_url = fal_client.upload_file(product_path)
+                        result = fal_client.subscribe(
+                            "fal-ai/flux-pro/kontext",
+                            arguments={
+                                "image_url": source_url,
+                                "prompt": footwear_prompt,
+                                "guidance_scale": 4.0,
+                                "num_inference_steps": 28,
+                                "output_format": "jpeg",
+                                "image_prompt_url": product_ref_url,
+                            },
+                        )
+                        return result
+
+                    result = await asyncio.to_thread(call_flux_footwear)
+
+                    output_image_url = None
+                    if isinstance(result, dict):
+                        images = result.get("images") or []
+                        if images and isinstance(images[0], dict):
+                            output_image_url = images[0].get("url")
+                        elif "image" in result:
+                            img = result["image"]
+                            output_image_url = img.get("url") if isinstance(img, dict) else img
+
+                    if not output_image_url:
+                        raise RuntimeError(f"FLUX Kontext returned no output: {str(result)[:300]}")
+
+                    logger.info("Footwear product '%s' — used FLUX 'wearing shoes' instead of Kling Kolors try-on", product.name)
+                elif not is_wearable:
                     # Non-wearable: generate avatar HOLDING the product via FLUX Kontext
                     # Download both face image and product image as references
                     face_path = os.path.join(tmpdir, "face.jpg")

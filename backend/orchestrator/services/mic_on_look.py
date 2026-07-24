@@ -369,3 +369,22 @@ async def resolve_mic_on_face_key(
             base_look_id=base_look_id,
         )
     return base_face_key
+
+
+async def create_base_scenes(avatar_id: str, base_look_id: str, environment: str, session):
+    """Eagerly create the two default scenes (mic-visible / mic-off) right
+    after the avatar's base look is ready, instead of lazily at render time."""
+    from models.avatar_look import AvatarLook
+    base_look = await session.get(AvatarLook, base_look_id)
+    if base_look is None:
+        return None, None
+    base_look.environment = environment
+    base_look.mic_visible = False
+    await session.commit()
+
+    mic_variant = await generate_mic_on_variant(avatar_id, base_look_id, session)
+    if mic_variant is not None:
+        mic_variant.environment = environment
+        mic_variant.mic_visible = True
+        await session.commit()
+    return base_look, mic_variant

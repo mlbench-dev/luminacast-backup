@@ -637,6 +637,14 @@ async def approve_avatar(
                 look_type="background",
             )
             db.add(original_look)
+            await db.flush()  # need original_look.id before create_base_scenes
+            from services.mic_on_look import create_base_scenes
+            await create_base_scenes(
+                avatar_id,
+                original_look.id,
+                getattr(avatar, "scene_environment", "studio"),
+                db,
+            )
 
     # Seed body_motion AvatarLook rows from the most recent completed BodyShotSet
     # so the cast builder's body-motion picker is populated with the angle photos
@@ -1936,23 +1944,43 @@ async def analyze_style_dna(
                         url, exc,
                     )
 
-            # 4. transcribe
+            # 4. transcribe. Try the dedicated GPU server first; if it's
+            #    unreachable (box down, network issue) fall back to fal.ai
+            #    Whisper — same degrade-gracefully pattern as the
+            #    BS-RoFormer step above, using the tiered provider that
+            #    already backs the live-reference pipeline.
             transcript_text = ""
             transcript_duration = 0.0
+            transcribe_key = f"creators/{user.id}/avatar/{avatar.id}/style_dna_transcribe_{uuid.uuid4().hex[:8]}.wav"
+            await r2.upload_file(clean_audio, transcribe_key, content_type="audio/wav")
+            transcribe_url = r2.get_public_url(transcribe_key)
+
+            whisper_result = None
+            transcription_provider = "hostkey"
             if gpu_client is not None:
-                # Whisper expects a public URL — upload (or reuse) the clean audio.
-                transcribe_key = f"creators/{user.id}/avatar/{avatar.id}/style_dna_transcribe_{uuid.uuid4().hex[:8]}.wav"
-                await r2.upload_file(clean_audio, transcribe_key, content_type="audio/wav")
-                transcribe_url = r2.get_public_url(transcribe_key)
-                whisper_result = await gpu_client.whisper_transcribe(transcribe_url)
-                transcript_text = (whisper_result or {}).get("transcript", "") or ""
-                transcript_duration = float((whisper_result or {}).get("duration_seconds", 0) or 0)
-                await log_usage(
-                    db, user_id=user.id, event_type="transcription",
-                    provider="hostkey", provider_cost_usd=0.0,
-                    quantity=transcript_duration, quantity_unit="audio_seconds",
-                    resource_type="avatar", resource_id=avatar.id,
+                try:
+                    whisper_result = await gpu_client.whisper_transcribe(transcribe_url)
+                except Exception as exc:
+                    sentry_sdk.capture_exception(exc)
+                    logger.warning(
+                        "style_dna: GPU whisper transcribe failed for %s, "
+                        "falling back to fal Whisper: %s", url, exc,
+                    )
+            if whisper_result is None:
+                from services.render_providers import FalWhisperProvider
+                transcription_provider = "fal"
+                whisper_result = await FalWhisperProvider().generate(
+                    audio_url=transcribe_url, word_timestamps=False,
                 )
+
+            transcript_text = (whisper_result or {}).get("transcript", "") or ""
+            transcript_duration = float((whisper_result or {}).get("duration_seconds", 0) or 0)
+            await log_usage(
+                db, user_id=user.id, event_type="transcription",
+                provider=transcription_provider, provider_cost_usd=0.0,
+                quantity=transcript_duration, quantity_unit="audio_seconds",
+                resource_type="avatar", resource_id=avatar.id,
+            )
             if not transcript_text:
                 raise RuntimeError("transcription returned empty")
 

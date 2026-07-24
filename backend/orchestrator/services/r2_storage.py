@@ -5,13 +5,27 @@ import json
 import logging
 from datetime import datetime, timezone
 from functools import partial
+from io import BytesIO
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# put_object sends the whole body over a single TCP stream — fine for small
+# assets, but a slow/high-latency single stream can badly underutilize
+# available bandwidth on larger files (observed: 12MB taking ~50s on a
+# generated-video upload). upload_fileobj + this config splits anything over
+# 8MB into concurrent multipart chunks instead.
+_MULTIPART_CONFIG = TransferConfig(
+    multipart_threshold=8 * 1024 * 1024,
+    multipart_chunksize=8 * 1024 * 1024,
+    max_concurrency=4,
+    use_threads=True,
+)
 
 # Cache-Control for immutable per-variant media (editor preview clip mp4s).
 # Each clip key is content-addressed by variant id and never mutated in place,
@@ -66,19 +80,28 @@ class R2StorageService:
         )
 
     async def upload_bytes(self, data: bytes, key: str, content_type: str = "application/octet-stream", cache_control: str | None = None) -> str:
-        """Upload raw bytes to R2. Returns the key."""
+        """Upload raw bytes to R2. Returns the key.
+
+        Uses upload_fileobj + TransferConfig so anything over 8MB (product
+        videos, long recordings) goes out as concurrent multipart chunks
+        instead of one single-stream PUT.
+        """
         _log("info", "r2_storage", "Uploading bytes", key=key, size=len(data))
 
-        put_kwargs = dict(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
+        extra_args = {"ContentType": content_type}
         if cache_control:
-            put_kwargs["CacheControl"] = cache_control
+            extra_args["CacheControl"] = cache_control
+
+        # A fresh BytesIO per attempt — a retry after a failed upload must
+        # not reuse a stream whose read cursor is already partially advanced.
+        def _do_upload():
+            self.client.upload_fileobj(
+                BytesIO(data), self.bucket, key,
+                ExtraArgs=extra_args, Config=_MULTIPART_CONFIG,
+            )
 
         loop = asyncio.get_event_loop()
-        await _retry_async(
-            loop.run_in_executor,
-            None,
-            partial(self.client.put_object, **put_kwargs),
-        )
+        await _retry_async(loop.run_in_executor, None, _do_upload)
 
         _log("info", "r2_storage", "Bytes upload complete", key=key)
         return key

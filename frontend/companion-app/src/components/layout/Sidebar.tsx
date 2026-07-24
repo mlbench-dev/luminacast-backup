@@ -16,6 +16,7 @@ import {
   DollarSign,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { confirmAction } from "@/lib/swal";
 import { useAuthStore } from "@/stores/authStore";
 import { UserRole } from "@/lib/types";
 
@@ -95,7 +96,7 @@ export function Sidebar() {
       </div>
 
       {/* Main Navigation */}
-      <nav className="flex-1 space-y-1 px-3 py-2">
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
         {mainNav.map((item) => (
           <NavItem key={item.to} {...item} />
         ))}
@@ -138,7 +139,13 @@ export function Sidebar() {
           {user?.email}
         </div>
         <button
-          onClick={logout}
+          onClick={async () => {
+            if (await confirmAction({
+              title: "Sign out?",
+              text: "You'll need to sign in again to access your dashboard.",
+              confirmButtonText: "Sign Out",
+            })) logout();
+          }}
           data-testid="logout-button"
           className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-text-muted transition-colors hover:bg-card hover:text-danger"
         >
