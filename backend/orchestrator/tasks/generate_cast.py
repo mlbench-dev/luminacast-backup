@@ -145,6 +145,7 @@ async def _generate_cast_async(task, cast_id: str, user_id: str):
             select(Cast)
             .options(
                 selectinload(Cast.blocks).selectinload(Block.variants),
+                selectinload(Cast.blocks).selectinload(Block.avatar_look),
                 selectinload(Cast.avatar),
             )
             .where(Cast.id == cast_id)
@@ -454,6 +455,7 @@ async def _generate_tts_only(cast_id: str, user_id: str):
             select(Cast)
             .options(
                 selectinload(Cast.blocks).selectinload(Block.variants),
+                selectinload(Cast.blocks).selectinload(Block.avatar_look),
                 selectinload(Cast.avatar),
             )
             .where(Cast.id == cast_id)
@@ -565,18 +567,25 @@ async def _generate_tts_only(cast_id: str, user_id: str):
         }))
 
         for block in blocks:
-            # Step 7 — branch the voice chain on the per-block mic flag
-            # (stamped by Step 5). True → clip-mic, False → phone/room.
-            # None or flag-off → fall through to the avatar default.
-            from services.mic_presets import select_mic_preset
-            _preset = select_mic_preset(getattr(block, "mic_on", None))
-            if _preset is not None:
-                block_clip_mic_enabled = _preset.clip_mic_enabled
-                _voice_mode = _preset.chain_id
-            else:
-                block_clip_mic_enabled = avatar_clip_mic_enabled
-                _voice_mode = "clip_mic" if block_clip_mic_enabled else "phone_mic"
-            logger.info("voice mode=%s block=%s", _voice_mode, block.id)
+            # Voice chain precedence: per-block mic_on override > the
+            # scene (AvatarLook) this block uses > avatar-wide default.
+            # The scene's own environment/mic_visible (set when the scene
+            # was created — see routers/avatar_looks.py) picks a chain from
+            # SCENE_FILTER_LIBRARY instead of the flat clip_mic/phone_mic
+            # split, so e.g. an outdoor scene gets windscreen-shaped EQ.
+            from services.mic_presets import resolve_scene_voice_settings
+            _look = getattr(block, "avatar_look", None)
+            block_clip_mic_enabled, scene_chain_id = resolve_scene_voice_settings(
+                block_mic_on=getattr(block, "mic_on", None),
+                avatar_clip_mic_enabled=avatar_clip_mic_enabled,
+                look_environment=getattr(_look, "environment", None),
+                look_mic_visible=getattr(_look, "mic_visible", None),
+            )
+            logger.info(
+                "voice mode=%s scene_chain=%s block=%s",
+                "clip_mic" if block_clip_mic_enabled else "phone_mic",
+                scene_chain_id, block.id,
+            )
 
             for variant in getattr(block, 'variants', []):
                 if variant.status == VariantStatus.READY and variant.audio_key:
@@ -617,6 +626,7 @@ async def _generate_tts_only(cast_id: str, user_id: str):
                             text=script_text,
                             voice_id=avatar_voice_id,
                             clip_mic_enabled=block_clip_mic_enabled,
+                            scene_chain_id=scene_chain_id,
                             block_id=block.id,
                         )
                         last_err = None
@@ -652,6 +662,7 @@ async def _generate_tts_only(cast_id: str, user_id: str):
                             text=script_text,
                             voice_id=avatar_voice_id,
                             clip_mic_enabled=block_clip_mic_enabled,
+                            scene_chain_id=scene_chain_id,
                         )
                         tts_result = {
                             "audio_key": chain_result.get("audio_key"),

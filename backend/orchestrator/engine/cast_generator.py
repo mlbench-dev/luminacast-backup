@@ -3800,20 +3800,25 @@ async def generate_cast_clips(
     failed_count = 0
     submitted_jobs = 0
 
-    from services.mic_presets import select_mic_preset
+    from services.mic_presets import resolve_scene_voice_settings
 
     for block in blocks:
-        # Step 7 — branch the voice chain on the per-block mic flag
-        # (stamped by Step 5). True → clip-mic, False → phone/room.
-        # None or flag-off → fall through to the avatar default.
-        _preset = select_mic_preset(getattr(block, "mic_on", None))
-        if _preset is not None:
-            block_clip_mic_enabled = _preset.clip_mic_enabled
-            _voice_mode = _preset.chain_id
-        else:
-            block_clip_mic_enabled = bool(avatar_clip_mic_enabled)
-            _voice_mode = "clip_mic" if block_clip_mic_enabled else "phone_mic"
-        logger.info("voice mode=%s block=%s", _voice_mode, getattr(block, "id", None))
+        # Voice chain precedence: per-block mic_on override > the scene
+        # (AvatarLook) this block uses > avatar-wide default. Requires the
+        # caller to have eager-loaded Block.avatar_look (this function gets
+        # plain in-memory `blocks`, no session of its own to lazy-load with).
+        _look = getattr(block, "avatar_look", None)
+        block_clip_mic_enabled, scene_chain_id = resolve_scene_voice_settings(
+            block_mic_on=getattr(block, "mic_on", None),
+            avatar_clip_mic_enabled=bool(avatar_clip_mic_enabled),
+            look_environment=getattr(_look, "environment", None),
+            look_mic_visible=getattr(_look, "mic_visible", None),
+        )
+        logger.info(
+            "voice mode=%s scene_chain=%s block=%s",
+            "clip_mic" if block_clip_mic_enabled else "phone_mic",
+            scene_chain_id, getattr(block, "id", None),
+        )
 
         for variant in getattr(block, 'variants', []):
             if variant.status in (VariantStatus.READY, "READY"):
@@ -3839,6 +3844,7 @@ async def generate_cast_clips(
                     text=variant.script_text,
                     voice_id=avatar_voice_id,
                     clip_mic_enabled=block_clip_mic_enabled,
+                    scene_chain_id=scene_chain_id,
                     block_id=getattr(block, "id", None),
                 )
 

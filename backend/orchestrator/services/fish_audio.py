@@ -798,6 +798,7 @@ class FishAudioService:
         voice_id: str,
         *,
         clip_mic_enabled: bool = False,
+        scene_chain_id: str | None = None,
         block_id: str | None = None,
         user_id: str | None = None,
     ) -> dict:
@@ -813,6 +814,12 @@ class FishAudioService:
         ``clip_mic_enabled`` toggles the EQ profile between lavalier
         (warm proximity, tighter compand) and phone-mic (natural,
         lighter compand). The default is phone-mic.
+
+        ``scene_chain_id`` optionally selects a scene-aware filter chain
+        (see ``services.mic_presets.SCENE_FILTER_LIBRARY``) instead of the
+        flat clip_mic/phone_mic split — e.g. an outdoor scene gets a
+        windscreen-shaped high-pass even with the mic visible. ``None``
+        preserves the plain ``clip_mic_enabled`` behavior.
         """
         original_len = len(text)
         text = _sanitize_for_tts(text)
@@ -846,6 +853,7 @@ class FishAudioService:
                     return await self._attach_post_process(
                         result,
                         clip_mic_enabled=clip_mic_enabled,
+                        scene_chain_id=scene_chain_id,
                         block_id=block_id,
                     )
                 except Exception as e:  # noqa: deliberate fallback — self-hosted TTS → Fish Audio API (zero-shot reference)
@@ -861,6 +869,7 @@ class FishAudioService:
                     return await self._attach_post_process(
                         result,
                         clip_mic_enabled=clip_mic_enabled,
+                        scene_chain_id=scene_chain_id,
                         block_id=block_id,
                     )
 
@@ -875,6 +884,7 @@ class FishAudioService:
             return await self._attach_post_process(
                 result,
                 clip_mic_enabled=clip_mic_enabled,
+                scene_chain_id=scene_chain_id,
                 block_id=block_id,
             )
 
@@ -883,6 +893,7 @@ class FishAudioService:
         result: dict,
         *,
         clip_mic_enabled: bool = False,
+        scene_chain_id: str | None = None,
         block_id: str | None = None,
     ) -> dict:
         """Post-process the freshly-generated TTS (de-ess / EQ / compand /
@@ -912,6 +923,7 @@ class FishAudioService:
                 raw_tmp_path=tmp_path,
                 mix_r2_key=audio_key,
                 clip_mic_enabled=clip_mic_enabled,
+                scene_chain_id=scene_chain_id,
                 block_id=block_id,
             )
             result["audio_key"] = mix_key

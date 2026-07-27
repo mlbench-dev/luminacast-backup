@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.avatar import Avatar
-from models.avatar_look import AvatarLook
+from models.avatar_look import AvatarLook, SceneEnvironment, DEFAULT_ENVIRONMENT
 from models.user import User
 from routers.auth import get_current_user
 from services.r2_storage import get_r2_storage_service
@@ -41,6 +41,10 @@ def _look_to_dict(look: AvatarLook) -> dict:
         "pose_angle": look.pose_angle,
         "product_id": look.product_id,
         "created_at": look.created_at.isoformat() if look.created_at else None,
+        # Scene-aware voice filters: chosen when the scene is created (below),
+        # not decided later per-block. See services/mic_presets.py.
+        "environment": look.environment or DEFAULT_ENVIRONMENT,
+        "mic_visible": bool(look.mic_visible),
     }
 
 
@@ -50,6 +54,11 @@ class CreateLookRequest(BaseModel):
     look_type: str = "background"
     pose_angle: Optional[str] = None
     product_id: Optional[str] = None
+    # Scene properties, decided at creation time instead of only per-block
+    # afterward. Optional — omitted looks keep the model defaults (studio,
+    # mic off).
+    environment: Optional[str] = None
+    mic_visible: Optional[bool] = None
 
 
 @router.get("/{avatar_id}/looks")
@@ -98,6 +107,12 @@ async def create_avatar_look(
     # Validate product_id for tryon
     if payload.look_type == "tryon" and not payload.product_id:
         raise HTTPException(400, "tryon looks require product_id")
+
+    # Validate environment (scene-aware voice filters key off this)
+    valid_environments = {e.value for e in SceneEnvironment}
+    environment = (payload.environment or DEFAULT_ENVIRONMENT).strip().lower()
+    if environment not in valid_environments:
+        raise HTTPException(400, f"Invalid environment. Must be one of: {sorted(valid_environments)}")
 
     # Rate limit: only one in-flight look generation per avatar at a time.
     # Scope is per-avatar (not per-user) so working on multiple avatars in
@@ -151,6 +166,8 @@ async def create_avatar_look(
         look_type=payload.look_type,
         pose_angle=payload.pose_angle if payload.look_type == "body_motion" else None,
         product_id=payload.product_id if payload.look_type == "tryon" else None,
+        environment=environment,
+        mic_visible=bool(payload.mic_visible),
     )
     db.add(look)
     await db.commit()

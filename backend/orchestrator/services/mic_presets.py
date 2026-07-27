@@ -104,3 +104,38 @@ def select_scene_preset(environment: Optional[str], mic_visible: Optional[bool])
         return None
     key = ((environment or SceneEnvironment.STUDIO.value).lower(), mic_visible)
     return SCENE_FILTER_LIBRARY.get(key, SCENE_FILTER_LIBRARY[(SceneEnvironment.STUDIO.value, mic_visible)])
+
+
+def resolve_scene_voice_settings(
+    *,
+    block_mic_on: Optional[bool],
+    avatar_clip_mic_enabled: bool,
+    look_environment: Optional[str] = None,
+    look_mic_visible: Optional[bool] = None,
+) -> tuple[bool, Optional[str]]:
+    """Resolve the effective (clip_mic_enabled, scene_chain_id) for one block.
+
+    This is the missing link between the scene-level choice (an AvatarLook's
+    own ``environment``/``mic_visible`` columns, set when the scene is
+    created — see routers/avatar_looks.py) and the per-block override that
+    already existed (``blocks.mic_on``). Precedence:
+
+        per-block override > the scene's own mic default > avatar default
+
+    Previously only the per-block override and avatar-wide default existed
+    in the audio path, so a look's mic_visible/environment (written by
+    create_base_scenes and, now, look creation) was never actually read back
+    when choosing the voice filter chain — SCENE_FILTER_LIBRARY existed but
+    nothing called this with real scene data. ``look_environment`` routes to
+    the environment-aware chain (studio/room/outdoor) instead of the flat
+    clip_mic/phone_mic choice.
+    """
+    if block_mic_on is not None:
+        mic_visible = block_mic_on
+    elif look_mic_visible is not None:
+        mic_visible = look_mic_visible
+    else:
+        mic_visible = bool(avatar_clip_mic_enabled)
+
+    chain_id = select_scene_preset(look_environment, mic_visible)
+    return mic_visible, chain_id

@@ -24,6 +24,12 @@ const PRESET_BACKGROUNDS: { label: string; prompt: string }[] = [
   { label: "Garden", prompt: "lush green garden background, dappled natural sunlight, blurred foliage" },
 ];
 
+const ENVIRONMENT_OPTIONS: { value: string; label: string }[] = [
+  { value: "studio", label: "Studio" },
+  { value: "room", label: "Room" },
+  { value: "outdoor", label: "Outdoor" },
+];
+
 const POSE_OPTIONS: { value: string; label: string }[] = [
   { value: "front", label: "Front" },
   { value: "three_quarter_left", label: "Three Quarter Left" },
@@ -48,6 +54,8 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
   const [poseAngle, setPoseAngle] = useState("front");
   const [selectedProduct, setSelectedProduct] = useState<ProductWithAssets | null>(null);
   const [productSearch, setProductSearch] = useState("");
+  const [environment, setEnvironment] = useState("studio");
+  const [micVisible, setMicVisible] = useState(false);
 
   const reset = () => {
     setName("");
@@ -56,6 +64,8 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
     setPoseAngle("front");
     setSelectedProduct(null);
     setProductSearch("");
+    setEnvironment("studio");
+    setMicVisible(false);
   };
   const handleClose = () => { reset(); onOpenChange(false); };
 
@@ -99,13 +109,19 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
           product_id: selectedProduct.id,
         });
       }
-      const payload: { name: string; background_prompt?: string; look_type?: string; pose_angle?: string } = {
+      const payload: { name: string; background_prompt?: string; look_type?: string; pose_angle?: string; environment?: string; mic_visible?: boolean } = {
         name: name.trim() || "New Look",
         background_prompt: prompt.trim() || (lookType === "body_motion" ? `Body motion pose: ${poseAngle}` : ""),
         look_type: lookType,
       };
       if (lookType === "body_motion") {
         payload.pose_angle = poseAngle;
+      }
+      if (lookType === "background") {
+        // Scene properties decided now, at creation time, instead of only
+        // per-block afterward — see services/mic_presets.py.
+        payload.environment = environment;
+        payload.mic_visible = micVisible;
       }
       return avatarLooksApi.create(avatarId, payload);
     },
@@ -267,6 +283,43 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
                     {preset.label}
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Scene properties — environment + mic visibility, decided now
+              instead of only per-block afterward. Together they pick the
+              voice filter chain (see services/mic_presets.py) that this
+              scene's blocks use by default. */}
+          {lookType === "background" && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-sm text-text-muted mb-1 block">Environment</label>
+                <select
+                  value={environment}
+                  onChange={(e) => setEnvironment(e.target.value)}
+                  className="w-full text-sm bg-surface text-text border border-border rounded p-2"
+                  data-testid="scene-environment-select"
+                >
+                  {ENVIRONMENT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-text-muted mb-1 block">Microphone</label>
+                <button
+                  type="button"
+                  onClick={() => setMicVisible((v) => !v)}
+                  className={`w-full text-sm border rounded p-2 transition-colors ${
+                    micVisible
+                      ? "bg-accent text-white border-accent"
+                      : "bg-surface text-text-dim border-border hover:border-accent"
+                  }`}
+                  data-testid="scene-mic-visible-toggle"
+                >
+                  {micVisible ? "Clip mic visible" : "No mic (natural)"}
+                </button>
               </div>
             </div>
           )}

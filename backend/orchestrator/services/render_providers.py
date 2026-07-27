@@ -2214,6 +2214,7 @@ class FishAudioProvider:
             text=text,
             voice_id=voice_id,
             clip_mic_enabled=bool(kwargs.get("clip_mic_enabled", False)),
+            scene_chain_id=kwargs.get("scene_chain_id"),
             block_id=kwargs.get("block_id"),
         )
 
@@ -2321,6 +2322,7 @@ class FishAudioCloudProvider:
                 raw_tmp_path=tmp_path,
                 mix_r2_key=output_key,
                 clip_mic_enabled=bool(_kwargs.get("clip_mic_enabled", False)),
+                scene_chain_id=_kwargs.get("scene_chain_id"),
                 block_id=_kwargs.get("block_id"),
             )
             result["audio_key"] = mix_key
@@ -2414,6 +2416,7 @@ class ElevenLabsTTSProvider:
                 raw_tmp_path=tmp_path,
                 mix_r2_key=output_key,
                 clip_mic_enabled=bool(_kwargs.get("clip_mic_enabled", False)),
+                scene_chain_id=_kwargs.get("scene_chain_id"),
                 block_id=_kwargs.get("block_id"),
             )
             result["audio_key"] = mix_key

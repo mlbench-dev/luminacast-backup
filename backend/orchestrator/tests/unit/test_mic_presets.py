@@ -80,3 +80,104 @@ def test_clip_mic_enabled_maps_to_post_process_boolean():
     only MIC_ON drives the clip-mic chain."""
     assert select_mic_preset(True).clip_mic_enabled is True
     assert select_mic_preset(False).clip_mic_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# select_scene_preset — environment-aware chain selection
+# ---------------------------------------------------------------------------
+
+def test_select_scene_preset_studio_mic_on():
+    assert mic_presets.select_scene_preset("studio", True) == "clip_mic"
+
+
+def test_select_scene_preset_room_mic_off_uses_soft_chain():
+    """Room mic-off gets its own softer chain, distinct from studio's
+    ambient_room — this is the whole point of environment-awareness."""
+    assert mic_presets.select_scene_preset("room", False) == "ambient_room_soft"
+
+
+def test_select_scene_preset_outdoor_mic_on_uses_windscreen():
+    assert mic_presets.select_scene_preset("outdoor", True) == "clip_mic_windscreen"
+
+
+def test_select_scene_preset_outdoor_mic_off():
+    assert mic_presets.select_scene_preset("outdoor", False) == "ambient_outdoor"
+
+
+def test_select_scene_preset_unknown_environment_falls_back_to_studio():
+    assert mic_presets.select_scene_preset("spaceship", True) == "clip_mic"
+    assert mic_presets.select_scene_preset("spaceship", False) == "ambient_room"
+
+
+def test_select_scene_preset_none_environment_defaults_to_studio():
+    assert mic_presets.select_scene_preset(None, True) == "clip_mic"
+
+
+def test_select_scene_preset_none_mic_visible_returns_none():
+    """mic_visible=None means unresolved — caller must resolve it first."""
+    assert mic_presets.select_scene_preset("studio", None) is None
+
+
+def test_select_scene_preset_case_insensitive_environment():
+    assert mic_presets.select_scene_preset("STUDIO", True) == "clip_mic"
+    assert mic_presets.select_scene_preset("Room", False) == "ambient_room_soft"
+
+
+def test_select_scene_preset_respects_feature_flag(monkeypatch):
+    monkeypatch.setenv("VOICE_MIC_PRESETS_ENABLED", "false")
+    importlib.reload(mic_presets)
+    assert mic_presets.select_scene_preset("studio", True) is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_scene_voice_settings — the block > scene > avatar precedence chain
+# ---------------------------------------------------------------------------
+
+def test_resolve_prefers_block_override_over_everything():
+    """An explicit per-block mic_on wins even when the scene and avatar
+    disagree with it."""
+    mic_visible, chain_id = mic_presets.resolve_scene_voice_settings(
+        block_mic_on=True,
+        avatar_clip_mic_enabled=False,
+        look_environment="outdoor",
+        look_mic_visible=False,
+    )
+    assert mic_visible is True
+    assert chain_id == "clip_mic_windscreen"
+
+
+def test_resolve_falls_through_to_scene_default_when_no_block_override():
+    """No block override → the scene's own mic_visible (set when the scene
+    was created) decides, not the avatar-wide default."""
+    mic_visible, chain_id = mic_presets.resolve_scene_voice_settings(
+        block_mic_on=None,
+        avatar_clip_mic_enabled=False,
+        look_environment="room",
+        look_mic_visible=True,
+    )
+    assert mic_visible is True
+    assert chain_id == "clip_mic"
+
+
+def test_resolve_falls_through_to_avatar_default_with_no_look():
+    """No block override, no look at all (e.g. legacy block with no
+    avatar_look_id) → avatar-wide default, studio environment."""
+    mic_visible, chain_id = mic_presets.resolve_scene_voice_settings(
+        block_mic_on=None,
+        avatar_clip_mic_enabled=True,
+        look_environment=None,
+        look_mic_visible=None,
+    )
+    assert mic_visible is True
+    assert chain_id == "clip_mic"
+
+
+def test_resolve_block_override_false_beats_scene_true():
+    mic_visible, chain_id = mic_presets.resolve_scene_voice_settings(
+        block_mic_on=False,
+        avatar_clip_mic_enabled=True,
+        look_environment="studio",
+        look_mic_visible=True,
+    )
+    assert mic_visible is False
+    assert chain_id == "ambient_room"

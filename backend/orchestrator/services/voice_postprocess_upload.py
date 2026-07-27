@@ -40,6 +40,7 @@ async def post_process_and_upload(
     raw_tmp_path: str,
     mix_r2_key: str,
     clip_mic_enabled: bool = False,
+    scene_chain_id: Optional[str] = None,
     block_id: Optional[str] = None,
 ) -> tuple[str, str]:
     """Run post_process_voice on ``raw_tmp_path`` and upload both outputs
@@ -70,6 +71,7 @@ async def post_process_and_upload(
             out_lipsync,
             out_mix,
             clip_mic_enabled=clip_mic_enabled,
+            scene_chain_id=scene_chain_id,
             block_id=block_id,
         )
 
