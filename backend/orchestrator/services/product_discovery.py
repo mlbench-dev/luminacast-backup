@@ -297,16 +297,17 @@ class ProductDiscoveryService:
                 items = resp.json()
                 logger.info("parseforge returned %d items", len(items))
 
-                try:
-                    from services.usage_logger import log_api_usage
-                    await log_api_usage(
-                        user_id="",
-                        service="apify_scrape",
-                        operation="parseforge_trending",
-                        cost_cents=max(1, len(items) // 10),
-                    )
-                except Exception:
-                    pass
+                # This is a platform-wide trending scrape, not triggered by a
+                # specific user — None is the semantically correct value here
+                # (nullable column), not a placeholder. The previous "" wasn't
+                # "no user", it was an invalid FK value that failed every call.
+                from services.usage_logger import log_api_usage
+                await log_api_usage(
+                    user_id=None,
+                    service="apify_scrape",
+                    operation="parseforge_trending",
+                    cost_cents=max(1, len(items) // 10),
+                )
 
                 # Enrich with detail images/video from pro100chok
                 try:

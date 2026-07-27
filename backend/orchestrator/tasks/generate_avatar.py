@@ -187,7 +187,7 @@ async def _advance_phase(
 # AI CHARACTER PIPELINE — 5 Steps
 # ═══════════════════════════════════════════════════════════════════════
 
-@celery_app.task(bind=True, max_retries=1, name="tasks.generate_avatar.generate_digital", time_limit=5400, soft_time_limit=5100)
+@celery_app.task(bind=True, max_retries=0, name="tasks.generate_avatar.generate_digital", time_limit=5400, soft_time_limit=5100)
 def generate_digital_avatar_task(
     self, avatar_id: str, user_id: str,
     description: str = "", voice_style: str = "energetic",
@@ -214,7 +214,7 @@ def generate_digital_avatar_task(
             loop2.run_until_complete(_mark_failed(avatar_id, str(exc)))
         finally:
             loop2.close()
-        raise self.retry(exc=exc, countdown=60)
+        raise
     finally:
         loop.close()
 
@@ -363,7 +363,7 @@ Make the image sharp, well-lit, and professional."""
 
     voice_id = VOICE_STYLE_MAP.get(voice_style, VOICE_STYLE_MAP["energetic"])
 
-    tts_result = await fish.generate_tts(text=TEST_SCRIPT, voice_id=voice_id)
+    tts_result = await fish.generate_tts(text=TEST_SCRIPT, voice_id=voice_id, user_id=user_id)
     test_audio_key, lipsync_audio_key = _resolve_preview_audio_keys(
         tts_result,
         user_id=user_id,
@@ -436,6 +436,7 @@ Make the image sharp, well-lit, and professional."""
         poll_interval=5,
         audio_duration_s=tts_duration,
         quality="480p",
+        user_id=user_id,
     )
     output = result.get("output")
 
@@ -577,7 +578,7 @@ Make the image sharp, well-lit, and professional."""
 #  Phase 2 (generate_from_selection_task): voice clone → persona → TTS → InfiniteTalk → READY
 # ═══════════════════════════════════════════════════════════════════════
 
-@celery_app.task(bind=True, max_retries=1, name="tasks.generate_avatar.clone")
+@celery_app.task(bind=True, max_retries=0, name="tasks.generate_avatar.clone")
 def clone_avatar_task(self, avatar_id: str, user_id: str, tiktok_url: str = None, video_keys: list = None):
     """Phase 1: fetch videos → extract face candidates → vision filter → upload → candidates_ready."""
     sentry_sdk.set_tag("avatar_id", avatar_id)
@@ -595,7 +596,7 @@ def clone_avatar_task(self, avatar_id: str, user_id: str, tiktok_url: str = None
             loop2.run_until_complete(_mark_failed(avatar_id, str(exc)))
         finally:
             loop2.close()
-        raise self.retry(exc=exc, countdown=60)
+        raise
     finally:
         loop.close()
 
@@ -737,10 +738,16 @@ async def _extract_candidates_pipeline(avatar_id: str, user_id: str, tiktok_url:
 # PHASE 2 — Generate from user's frame selection
 # ═══════════════════════════════════════════════════════════════════════
 
-@celery_app.task(bind=True, max_retries=1, name="tasks.generate_avatar.generate_from_selection", time_limit=5400, soft_time_limit=5100)
+@celery_app.task(bind=True, max_retries=0, name="tasks.generate_avatar.generate_from_selection", time_limit=5400, soft_time_limit=5100)
 def generate_from_selection_task(self, avatar_id: str, user_id: str):
     """Phase 2: voice clone → persona → TTS → InfiniteTalk → ready.
     Called after user selects a face frame via the select-frame endpoint.
+
+    No automatic retry on failure — a silent retry 60s later could race a
+    user-initiated retry (the Preview screen's "Retry" button re-calls this
+    same pipeline), duplicating the same expensive GPU/API work the earlier
+    duplicate-generation fix was about. On failure the avatar is marked
+    FAILED and the user retries explicitly when ready.
     """
     sentry_sdk.set_tag("avatar_id", avatar_id)
     sentry_sdk.set_tag("user_id", user_id)
@@ -757,7 +764,7 @@ def generate_from_selection_task(self, avatar_id: str, user_id: str):
             loop2.run_until_complete(_mark_failed(avatar_id, str(exc)))
         finally:
             loop2.close()
-        raise self.retry(exc=exc, countdown=60)
+        raise
     finally:
         loop.close()
 
@@ -981,7 +988,7 @@ async def _generate_from_selection_pipeline(avatar_id: str, user_id: str):
         # was last written to test_script during voice description generation.
         script_to_speak = avatar.locked_test_script or avatar.test_script or TEST_SCRIPT
 
-    tts_result = await fish.generate_tts(text=script_to_speak, voice_id=voice_id)
+    tts_result = await fish.generate_tts(text=script_to_speak, voice_id=voice_id, user_id=user_id)
     test_audio_key, lipsync_audio_key = _resolve_preview_audio_keys(
         tts_result,
         user_id=user_id,
@@ -1032,6 +1039,7 @@ async def _generate_from_selection_pipeline(avatar_id: str, user_id: str):
             prompt="A person talking naturally to the camera on a live stream",
             size="480p",
             audio_duration_s=tts_duration,
+            user_id=user_id,
         )
     except Exception as e:
         sentry_sdk.capture_exception(e)
@@ -1607,9 +1615,12 @@ async def _extract_and_upload_audio(video_url: str, avatar_id: str, user_id: str
 # REGENERATE — Audio + Video only (reuses existing face)
 # ═══════════════════════════════════════════════════════════════════════
 
-@celery_app.task(bind=True, max_retries=1, name="tasks.generate_avatar.regenerate_video", time_limit=5400, soft_time_limit=5100)
+@celery_app.task(bind=True, max_retries=0, name="tasks.generate_avatar.regenerate_video", time_limit=5400, soft_time_limit=5100)
 def regenerate_avatar_video_task(self, avatar_id: str, user_id: str, test_script: str = ""):
-    """Regenerate just the audio + video for an existing avatar (keeps face image)."""
+    """Regenerate just the audio + video for an existing avatar (keeps face image).
+
+    No automatic retry — see generate_from_selection_task's docstring for why.
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -1622,7 +1633,7 @@ def regenerate_avatar_video_task(self, avatar_id: str, user_id: str, test_script
             loop2.run_until_complete(_mark_failed(avatar_id, str(exc)))
         finally:
             loop2.close()
-        raise self.retry(exc=exc, countdown=60)
+        raise
     finally:
         loop.close()
 
@@ -1729,7 +1740,7 @@ async def _regenerate_pipeline(avatar_id: str, user_id: str, test_script: str):
 
     # Step 1: Generate new audio
     await _update_progress(avatar_id, "Generating new voice audio...", 55)
-    tts_result = await fish.generate_tts(text=script, voice_id=voice_id)
+    tts_result = await fish.generate_tts(text=script, voice_id=voice_id, user_id=user_id)
     test_audio_key, lipsync_audio_key = _resolve_preview_audio_keys(
         tts_result,
         user_id=user_id,
@@ -1848,6 +1859,7 @@ async def _regenerate_pipeline(avatar_id: str, user_id: str, test_script: str):
         audio_duration_s=tts_duration,
         is_pip=False,
         block_id=f"avatar_preview_{avatar_id}",
+        user_id=user_id,
     )
 
     backend = dispatch_result.get("backend", "unknown")
@@ -1920,7 +1932,7 @@ async def _regenerate_pipeline(avatar_id: str, user_id: str, test_script: str):
 # CLONE PIPELINE PREVIEW — corpus voice + selected face → test video
 # ═══════════════════════════════════════════════════════════════════════
 
-@celery_app.task(bind=True, max_retries=1, name="tasks.generate_avatar.generate_clone_preview", time_limit=5400, soft_time_limit=5100)
+@celery_app.task(bind=True, max_retries=0, name="tasks.generate_avatar.generate_clone_preview", time_limit=5400, soft_time_limit=5100)
 def generate_clone_preview_task(self, avatar_id: str, user_id: str):
     """Generate preview video for clone avatar using corpus voice + selected face.
 
@@ -1950,7 +1962,7 @@ def generate_clone_preview_task(self, avatar_id: str, user_id: str):
 # NEW SEGMENT-BASED PIPELINES — process-segment kicks off both in parallel
 # ═══════════════════════════════════════════════════════════════════════
 
-@celery_app.task(bind=True, max_retries=1, name="tasks.generate_avatar.process_image_pipeline")
+@celery_app.task(bind=True, max_retries=0, name="tasks.generate_avatar.process_image_pipeline")
 def process_image_pipeline_task(
     self, avatar_id: str, user_id: str,
     video_r2_key: str, start_sec: float, end_sec: float,
@@ -1972,7 +1984,7 @@ def process_image_pipeline_task(
             loop2.run_until_complete(_mark_failed(avatar_id, str(exc)))
         finally:
             loop2.close()
-        raise self.retry(exc=exc, countdown=60)
+        raise
     finally:
         loop.close()
 
@@ -2097,7 +2109,7 @@ async def _image_pipeline(
                 pass
 
 
-@celery_app.task(bind=True, max_retries=1, name="tasks.generate_avatar.process_voice_pipeline")
+@celery_app.task(bind=True, max_retries=0, name="tasks.generate_avatar.process_voice_pipeline")
 def process_voice_pipeline_task(
     self, avatar_id: str, user_id: str,
     video_r2_key: str, start_sec: float, end_sec: float,
@@ -2121,7 +2133,7 @@ def process_voice_pipeline_task(
             loop2.run_until_complete(_update_voice_progress(avatar_id, -1))
         finally:
             loop2.close()
-        raise self.retry(exc=exc, countdown=60)
+        raise
     finally:
         loop.close()
 

@@ -6,7 +6,8 @@ import sentry_sdk
 from fastapi import APIRouter, Body, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
+from sqlalchemy import update as sa_update
 from pydantic import BaseModel
 from typing import Optional
 from database import get_db
@@ -604,6 +605,78 @@ async def _get_render_status_for_avatar(db: AsyncSession, avatar_id: str) -> dic
     }
 
 
+_BODY_MOTION_POSES = ["front", "three_quarter_left", "three_quarter_right", "profile_left", "profile_right", "back"]
+_BODY_MOTION_POSE_LABELS = {
+    "front": "Front",
+    "three_quarter_left": "3/4 Left",
+    "three_quarter_right": "3/4 Right",
+    "profile_left": "Profile Left",
+    "profile_right": "Profile Right",
+    "back": "Back",
+}
+
+
+async def _seed_body_motion_looks_from_body_shot_set(db: AsyncSession, avatar_id: str) -> int:
+    """Create body_motion AvatarLook rows from the most recent completed
+    BodyShotSet.
+
+    BodyShotSet (the AI-avatar wizard's "Shots" step) and AvatarLook
+    (everything else — Edit Avatar's Body Motion tab, the cast builder's
+    body-motion picker, try-on's required "front" pose lookup) are two
+    separate tables. This seeding previously only ran inside approve_avatar,
+    so an avatar whose body shots were generated but never explicitly
+    approved (or approved via a different path) showed an empty Body Motion
+    tab, forcing the user to regenerate photos that already existed. Calling
+    this right when BodyShotSet generation completes — not just on approval
+    — closes that gap; it's still called from approve_avatar too since it's
+    idempotent (skips any pose that already has a ready/generating/pending
+    AvatarLook row) and cheap to no-op on a second call.
+    """
+    seeded_count = 0
+    try:
+        bss_result = await db.execute(
+            select(BodyShotSet)
+            .where(BodyShotSet.avatar_id == avatar_id, BodyShotSet.status == "completed")
+            .order_by(BodyShotSet.created_at.desc())
+            .limit(1)
+        )
+        body_shot_set = bss_result.scalars().first()
+        if body_shot_set and body_shot_set.angles:
+            angles = body_shot_set.angles
+            for pose in _BODY_MOTION_POSES:
+                pose_key = angles.get(pose)
+                if not pose_key:
+                    continue
+                existing_bm = await db.execute(
+                    select(AvatarLook).where(
+                        AvatarLook.avatar_id == avatar_id,
+                        AvatarLook.pose_angle == pose,
+                        AvatarLook.look_type == "body_motion",
+                        AvatarLook.status.in_(["ready", "generating", "pending"]),
+                    )
+                )
+                if existing_bm.scalars().first():
+                    continue
+                label = _BODY_MOTION_POSE_LABELS[pose]
+                db.add(AvatarLook(
+                    id=f"al_{uuid.uuid4().hex[:12]}",
+                    avatar_id=avatar_id,
+                    name=f"AI: {label}",
+                    face_ref_key=pose_key,
+                    background_prompt=f"Body motion pose: {pose}",
+                    is_default=False,
+                    is_original=False,
+                    status="ready",
+                    look_type="body_motion",
+                    pose_angle=pose,
+                ))
+                seeded_count += 1
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        logger.warning("Failed to seed body_motion looks for avatar %s: %s", avatar_id, e)
+    return seeded_count
+
+
 @router.post("/{avatar_id}/approve", response_model=AvatarResponse)
 async def approve_avatar(
     avatar_id: str,
@@ -646,60 +719,11 @@ async def approve_avatar(
                 db,
             )
 
-    # Seed body_motion AvatarLook rows from the most recent completed BodyShotSet
-    # so the cast builder's body-motion picker is populated with the angle photos
-    # the user already approved on the onboarding screen (no re-render needed).
-    seeded_count = 0
-    try:
-        BODY_MOTION_POSES = ["front", "three_quarter_left", "three_quarter_right", "profile_left", "profile_right", "back"]
-        POSE_LABELS = {
-            "front": "Front",
-            "three_quarter_left": "3/4 Left",
-            "three_quarter_right": "3/4 Right",
-            "profile_left": "Profile Left",
-            "profile_right": "Profile Right",
-            "back": "Back",
-        }
-        bss_result = await db.execute(
-            select(BodyShotSet)
-            .where(BodyShotSet.avatar_id == avatar_id, BodyShotSet.status == "completed")
-            .order_by(BodyShotSet.created_at.desc())
-            .limit(1)
-        )
-        body_shot_set = bss_result.scalars().first()
-        if body_shot_set and body_shot_set.angles:
-            angles = body_shot_set.angles
-            for pose in BODY_MOTION_POSES:
-                pose_key = angles.get(pose)
-                if not pose_key:
-                    continue
-                existing_bm = await db.execute(
-                    select(AvatarLook).where(
-                        AvatarLook.avatar_id == avatar_id,
-                        AvatarLook.pose_angle == pose,
-                        AvatarLook.look_type == "body_motion",
-                        AvatarLook.status.in_(["ready", "generating", "pending"]),
-                    )
-                )
-                if existing_bm.scalars().first():
-                    continue
-                label = POSE_LABELS[pose]
-                db.add(AvatarLook(
-                    id=f"al_{uuid.uuid4().hex[:12]}",
-                    avatar_id=avatar_id,
-                    name=f"AI: {label}",
-                    face_ref_key=pose_key,
-                    background_prompt=f"Body motion pose: {pose}",
-                    is_default=False,
-                    is_original=False,
-                    status="ready",
-                    look_type="body_motion",
-                    pose_angle=pose,
-                ))
-                seeded_count += 1
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-        logger.warning("Failed to seed body_motion looks for avatar %s: %s", avatar_id, e)
+    # Idempotent safety net — the primary seeding now happens right when
+    # BodyShotSet generation completes (see _run_body_shots_pipeline), not
+    # only here. Kept here too in case an avatar's BodyShotSet predates
+    # that fix, or was completed through some other path.
+    seeded_count = await _seed_body_motion_looks_from_body_shot_set(db, avatar_id)
 
     await db.commit()
     await db.refresh(avatar)
@@ -881,6 +905,67 @@ async def get_candidates(
     )
 
 
+async def _claim_avatar_for_generation(
+    avatar: Avatar,
+    db: AsyncSession,
+    *,
+    require_status: Optional[AvatarStatus] = None,
+    stale_after_seconds: Optional[int] = None,
+) -> bool:
+    """Atomically transition avatar.status -> PROCESSING. Returns True iff
+    this call won the transition.
+
+    Two endpoints that both dispatch avatar generation (e.g. select-frame
+    fired twice — a double-click, a frontend retry, two tabs) used to do a
+    plain read-then-write: check ``avatar.status``, then set it to
+    PROCESSING and commit. That has a race window — a second near-
+    simultaneous request can read the pre-transition status before the
+    first one's commit lands, so both pass the check and both dispatch a
+    full (expensive) generation task for the same avatar. That's exactly
+    what happened: two Celery tasks, two RunPod jobs, double GPU/API cost,
+    and both writing their finished video to the same R2 key so one
+    silently overwrote the other.
+
+    A single conditional UPDATE closes the gap: only one concurrent
+    caller's WHERE clause can still match by the time it executes, so only
+    one caller's statement affects a row. ``require_status`` pins the
+    precondition (e.g. CANDIDATES_READY) when the endpoint needs one;
+    omitted, it just requires "not already PROCESSING".
+
+    ``stale_after_seconds`` matters for endpoints where PROCESSING is NOT
+    exclusive to this operation — the AI-avatar wizard reuses the same
+    ``avatar.status`` across setup/face/voice/shots/preview, so an avatar
+    can legitimately sit at PROCESSING for minutes from an earlier, already-
+    finished step by the time the user reaches this one. Without a
+    staleness window, that leftover value would permanently 409 every
+    future call — a real bug this shipped with initially: an avatar stuck
+    at PROCESSING from a step 9 minutes earlier blocked Preview generation
+    forever. When set, a PROCESSING row still claims successfully if
+    ``updated_at`` is older than the window — only a *recent* PROCESSING
+    (an actual concurrent in-flight request) blocks the claim.
+    """
+    conditions = [Avatar.id == avatar.id]
+    if require_status is not None:
+        conditions.append(Avatar.status == require_status)
+    elif stale_after_seconds is not None:
+        stale_cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+        conditions.append(or_(
+            Avatar.status != AvatarStatus.PROCESSING,
+            Avatar.updated_at < stale_cutoff,
+        ))
+    else:
+        conditions.append(Avatar.status != AvatarStatus.PROCESSING)
+
+    result = await db.execute(
+        sa_update(Avatar).where(*conditions).values(status=AvatarStatus.PROCESSING)
+    )
+    await db.commit()
+    if result.rowcount > 0:
+        avatar.status = AvatarStatus.PROCESSING
+        return True
+    return False
+
+
 @router.post("/{avatar_id}/select-frame", response_model=AvatarResponse)
 async def select_frame(
     avatar_id: str,
@@ -906,8 +991,13 @@ async def select_frame(
     if face_ref_key and not any(face_ref_key.endswith(ext) for ext in ('.jpg', '.jpeg', '.png', '.webp')):
         face_ref_key = f"{face_ref_key.rstrip('/')}/face_ref.jpg"
 
+    if not await _claim_avatar_for_generation(avatar, db, require_status=AvatarStatus.CANDIDATES_READY):
+        raise HTTPException(
+            status_code=409,
+            detail="This avatar is already generating. Please wait for it to finish before trying again.",
+        )
+
     avatar.face_ref_key = face_ref_key
-    avatar.status = AvatarStatus.PROCESSING
     avatar.progress_step = "Frame selected — continuing pipeline..."
     avatar.progress_percent = 40
     await db.commit()
@@ -940,8 +1030,13 @@ async def capture_frame(
     face_key = f"creators/{user.id}/avatar/{avatar_id}/face_ref.jpg"
     await r2.upload_bytes(frame_bytes, face_key, "image/jpeg")
 
+    if not await _claim_avatar_for_generation(avatar, db, require_status=AvatarStatus.CANDIDATES_READY):
+        raise HTTPException(
+            status_code=409,
+            detail="This avatar is already generating. Please wait for it to finish before trying again.",
+        )
+
     avatar.face_ref_key = face_key
-    avatar.status = AvatarStatus.PROCESSING
     avatar.progress_step = "Frame captured — cloning voice and generating video..."
     avatar.progress_percent = 40
     await db.commit()
@@ -1323,7 +1418,7 @@ async def edit_frame(
     r2 = get_r2_storage_service()
 
     try:
-        edited_url = await edit_avatar_frame(req.frame_url, req.instructions)
+        edited_url = await edit_avatar_frame(req.frame_url, req.instructions, user_id=user.id)
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise HTTPException(status_code=500, detail=f"Face editing failed: {str(e)[:200]}")
@@ -2548,6 +2643,17 @@ async def ai_generate_preview(
     if not avatar.voice_id:
         raise HTTPException(status_code=400, detail="No voice selected")
 
+    # NOT using _claim_avatar_for_generation here: this wizard reuses
+    # avatar.status across every unrelated step (setup/face/voice/shots/
+    # preview all write PROCESSING), so the value carries no information
+    # about whether a preview generation specifically is in flight. A time-
+    # based staleness heuristic was tried and failed — a user moving briskly
+    # through the wizard reaches this endpoint well within any reasonable
+    # "recent duplicate" window, causing false 409s on legitimate first
+    # attempts. Fixing the underlying double-submission race for this
+    # endpoint needs a dedicated per-operation signal (e.g. a RenderJob row
+    # or a new column), not a reuse of the shared status field — left as a
+    # known gap rather than another guess.
     if req.test_script:
         avatar.test_script = req.test_script
     avatar.status = AvatarStatus.PROCESSING
@@ -4198,6 +4304,16 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
             f"clothing_consistency_warning={clothing_consistency_warning}"
         )
 
+        # Seed body_motion AvatarLook rows immediately — Edit Avatar's Body
+        # Motion tab, the cast builder, and try-on all read AvatarLook, not
+        # BodyShotSet. Previously this only happened on avatar approval, so
+        # body shots generated but not yet (or never) approved were invisible
+        # everywhere except this wizard, forcing a pointless regeneration.
+        seeded = await _seed_body_motion_looks_from_body_shot_set(db, avatar_id)
+        if seeded:
+            await db.commit()
+            logger.info("Seeded %d body_motion AvatarLook row(s) for avatar %s", seeded, avatar_id)
+
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.error(f"generate-body-shots pipeline failed for set {set_id}: {e}")
@@ -4928,6 +5044,7 @@ async def regenerate_preview_video(
             poll_interval=5,
             audio_duration_s=tts_duration,
             quality="480p",
+            user_id=user.id,
         )
 
         output = result.get("output")

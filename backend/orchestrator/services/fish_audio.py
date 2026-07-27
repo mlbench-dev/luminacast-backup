@@ -293,7 +293,7 @@ class FishAudioService:
 
     # ── Self-hosted TTS (pre-built RunPod Fish Speech template) ──
 
-    async def _self_hosted_tts(self, text: str, voice_id: str) -> dict:
+    async def _self_hosted_tts(self, text: str, voice_id: str, *, user_id: str | None = None) -> dict:
         """Generate TTS via pre-built RunPod Fish Speech template.
 
         1. Download reference audio from R2 (voice_id is an R2 key)
@@ -349,14 +349,11 @@ class FishAudioService:
                         except Exception:
                             duration_seconds_gpu = round(len(audio_bytes_gpu) / 16000.0, 2)
                         await r2.upload_bytes(audio_bytes_gpu, output_key, content_type="audio/mpeg")
-                        try:
-                            from services.usage_logger import log_api_usage
-                            await log_api_usage(
-                                user_id="", service="fish_speech", operation="tts_generate_gpu_server",
-                                success=True, duration_seconds=round(time.monotonic() - tts_start, 1),
-                            )
-                        except Exception:
-                            pass
+                        from services.usage_logger import log_api_usage
+                        await log_api_usage(
+                            user_id=user_id, service="fish_speech", operation="tts_generate_gpu_server",
+                            success=True, duration_seconds=round(time.monotonic() - tts_start, 1),
+                        )
                         _log("info", "fish_speech", "TTS via GPU server complete",
                              audio_key=output_key, duration_seconds=round(duration_seconds_gpu, 2))
                         return {
@@ -412,14 +409,11 @@ class FishAudioService:
             # Upload to R2
             await r2.upload_bytes(audio_bytes, output_key, content_type="audio/mpeg")
 
-            try:
-                from services.usage_logger import log_api_usage
-                await log_api_usage(
-                    user_id="", service="fish_speech", operation="tts_generate",
-                    success=True, duration_seconds=round(time.monotonic() - tts_start, 1),
-                )
-            except Exception:
-                pass
+            from services.usage_logger import log_api_usage
+            await log_api_usage(
+                user_id=user_id, service="fish_speech", operation="tts_generate",
+                success=True, duration_seconds=round(time.monotonic() - tts_start, 1),
+            )
 
             return {
                 "audio_key": output_key,
@@ -566,7 +560,7 @@ class FishAudioService:
                 pass
             raise
 
-    async def _fish_audio_tts_with_reference(self, text: str, voice_id: str) -> dict:
+    async def _fish_audio_tts_with_reference(self, text: str, voice_id: str, *, user_id: str | None = None) -> dict:
         """Generate TTS via Fish Audio hosted API using inline reference audio.
 
         Downloads the voice reference from R2 and sends it to Fish Audio's
@@ -722,14 +716,11 @@ class FishAudioService:
             r2 = get_r2_storage_service()
             await r2.upload_bytes(audio_bytes, audio_key, content_type="audio/mpeg")
 
-            try:
-                from services.usage_logger import log_api_usage
-                await log_api_usage(
-                    user_id="", service="fish_audio", operation="tts_generate",
-                    success=True, duration_seconds=round(time.monotonic() - tts_start, 1),
-                )
-            except Exception as e:
-                sentry_sdk.capture_exception(e)
+            from services.usage_logger import log_api_usage
+            await log_api_usage(
+                user_id=user_id, service="fish_audio", operation="tts_generate",
+                success=True, duration_seconds=round(time.monotonic() - tts_start, 1),
+            )
 
             return {
                 "audio_key": audio_key,
@@ -808,6 +799,7 @@ class FishAudioService:
         *,
         clip_mic_enabled: bool = False,
         block_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict:
         """Generate TTS audio. Returns ``{audio_key, duration_seconds, tmp_path, lipsync_audio_key}``.
 
@@ -845,7 +837,7 @@ class FishAudioService:
             # If voice_id is an R2 key (self-hosted clone), use self-hosted TTS
             if _is_r2_voice_id(voice_id) and self._use_self_hosted():
                 try:
-                    result = await self._self_hosted_tts(text, voice_id)
+                    result = await self._self_hosted_tts(text, voice_id, user_id=user_id)
                     span.set_data('duration_seconds', result.get('duration_seconds'))
                     span.set_data('tier', 'self_hosted')
                     _log("info", "fish_speech", "TTS generated via self-hosted worker",
@@ -860,7 +852,7 @@ class FishAudioService:
                     _log("warning", "fish_speech",
                          f"Self-hosted TTS failed, falling back to Fish Audio API with reference audio: {e}")
                     # Fall back to Fish Audio API using inline reference audio (zero-shot)
-                    result = await self._fish_audio_tts_with_reference(text, voice_id)
+                    result = await self._fish_audio_tts_with_reference(text, voice_id, user_id=user_id)
                     span.set_data('duration_seconds', result.get('duration_seconds'))
                     span.set_data('tier', 'fish_audio_api_fallback')
                     _log("info", "fish_audio", "TTS generated via Fish Audio API fallback",

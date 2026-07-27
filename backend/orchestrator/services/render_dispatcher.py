@@ -192,6 +192,7 @@ class RenderDispatcher:
         audio_duration_s: float,
         is_pip: bool = False,
         block_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict:
         """Submit a face-bake job and return {output, backend}. The pipeline
         is normally HOSTKEY → Modal → RunPod (all InfiniteTalk). For PIP blocks
@@ -409,7 +410,7 @@ class RenderDispatcher:
         # "Video not found". Kept only as the absolute last resort for the day
         # it (or a replacement template) comes back online.
         logger.info("Dispatching to RunPod InfiniteTalk (Tier 4, last-resort fallback)")
-        return await self._render_on_runpod(image_url, audio_url, prompt, size, audio_duration_s)
+        return await self._render_on_runpod(image_url, audio_url, prompt, size, audio_duration_s, user_id=user_id)
 
     async def _hostkey_available(self) -> bool:
         """Check if HOSTKEY GPU is reachable and not locked.
@@ -932,7 +933,8 @@ class RenderDispatcher:
         }
 
     async def _render_on_runpod(
-        self, image_url: str, audio_url: str, prompt: str, size: str, audio_duration_s: float
+        self, image_url: str, audio_url: str, prompt: str, size: str, audio_duration_s: float,
+        user_id: str | None = None,
     ) -> dict:
         """Submit to RunPod serverless and poll until complete.
 
@@ -959,6 +961,7 @@ class RenderDispatcher:
             job_id,
             audio_duration_s=audio_duration_s,
             quality=runpod_size,
+            user_id=user_id,
         )
 
         # wait_for_completion now raises on CANCELLED / TIMED_OUT / FAILED,

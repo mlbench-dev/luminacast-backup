@@ -15,11 +15,9 @@ import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/cn";
 import { confirmAction } from "@/lib/swal";
 import { Progress } from "@/components/ui/progress";
-import { EstimatedProgressBar } from "@/components/ui/EstimatedProgressBar";
 import { VoiceCorpusTab } from "@/components/avatar/VoiceCorpusTab";
 import { LiveReferenceCard } from "@/components/avatar/LiveReferenceCard";
 import { VoiceBrowser } from "@/components/avatar/VoiceBrowser";
-import { RenderStatusBanner } from "@/components/RenderStatusBanner";
 import { AvatarIdentityPanel } from "@/components/avatar/AvatarIdentityPanel";
 import { ClipMicToggle } from "@/components/avatar/ClipMicToggle";
 import { AvatarBackgrounds } from "@/components/AvatarBackgrounds";
@@ -2092,21 +2090,13 @@ function PreviewPhase({
 
         {isGeneratingPreview && (
           <div className="space-y-3 py-4">
-            <EstimatedProgressBar
-              estimatedSeconds={120}
-              isComplete={false}
-              label={avatarStatus?.progress_step || "Generating preview..."}
-            />
-            {avatarStatus?.render_status && (
-              <RenderStatusBanner
-                state={avatarStatus.render_status.state || "QUEUED"}
-                position={avatarStatus.render_status.position}
-                etaSeconds={avatarStatus.render_status.eta}
-                confidence={avatarStatus.render_status.confidence}
-                errorMessage={avatarStatus.render_status.error_message}
-                elapsedSeconds={avatarStatus.render_status.elapsed_seconds}
-              />
-            )}
+            <div className="flex items-center gap-2 text-sm text-text">
+              <Loader2 className="h-4 w-4 animate-spin text-accent" />
+              <span>{avatarStatus?.progress_step || "Generating preview..."}</span>
+            </div>
+            <p className="text-xs text-text-muted">
+              This usually takes 2-5 minutes.
+            </p>
           </div>
         )}
 

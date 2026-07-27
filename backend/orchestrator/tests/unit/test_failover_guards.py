@@ -317,8 +317,10 @@ def test_wavespeed_payload_shape():
 
 
 def test_fal_hallo_payload_shape():
-    """fal-ai/hallo accepts image_url + audio_url (not source_video_url
-    like the old MuseTalk endpoint).
+    """fal-ai/hallo accepts source_image_url + audio_url (not source_video_url
+    like the old MuseTalk endpoint, and not image_url — that field name was
+    verified against fal's live OpenAPI schema after the endpoint's schema
+    drifted from what it accepted when this provider was first written).
     """
     rp = _import_providers()
     provider = rp.FalHalloProvider()
@@ -370,7 +372,7 @@ def test_fal_hallo_payload_shape():
 
     body = captured.get("payload") or {}
     assert body == {
-        "image_url": "https://cdn.test/face.jpg",
+        "source_image_url": "https://cdn.test/face.jpg",
         "audio_url": "https://cdn.test/voice.mp3",
     }, f"unexpected payload: {body}"
     assert result["video_url"] == "https://cdn.fal/x.mp4"

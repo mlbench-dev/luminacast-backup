@@ -43,7 +43,7 @@ def _ensure_fal_key():
 FAL_KONTEXT_MODEL = "fal-ai/flux-pro/kontext"
 
 
-async def edit_avatar_frame(image_url: str, user_instructions: str = "") -> str:
+async def edit_avatar_frame(image_url: str, user_instructions: str = "", user_id: str | None = None) -> str:
     """Edit a face reference image using FLUX Kontext Pro.
 
     Always removes TikTok captions/watermarks/UI elements and preserves identity.
@@ -113,13 +113,10 @@ async def edit_avatar_frame(image_url: str, user_instructions: str = "") -> str:
         span.set_data('status', 'success')
         _log("info", "flux_kontext", "FLUX Kontext edit complete",
              edited_url=edited_url[:100])
-        try:
-            from services.usage_logger import log_api_usage
-            await log_api_usage(
-                user_id="", service="flux_kontext", operation="face_edit",
-                success=True, duration_seconds=round(time.monotonic() - _fal_start, 1),
-                cost_cents=4,  # ~$0.04 per edit
-            )
-        except Exception:
-            pass
+        from services.usage_logger import log_api_usage
+        await log_api_usage(
+            user_id=user_id, service="flux_kontext", operation="face_edit",
+            success=True, duration_seconds=round(time.monotonic() - _fal_start, 1),
+            cost_cents=4,  # ~$0.04 per edit
+        )
         return edited_url

@@ -186,14 +186,16 @@ async def generate_scene_image(
         except Exception as e:
             sentry_sdk.capture_exception(e)
 
-    try:
-        from services.usage_logger import log_api_usage
-        await log_api_usage(
-            user_id="", service="scene_image", operation="product_scene",
-            success=True, duration_seconds=round(time.monotonic() - _fal_start, 1),
-            cost_cents=4,
-        )
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
+    # TODO: user_id isn't threaded through this call chain yet (it originates
+    # deep in cast_render._render_async, keyed by render_id, not user_id) —
+    # passing None here is deliberate (nullable column, safe insert) rather
+    # than the previous "" (violated the FK on every call). Follow-up:
+    # resolve user_id from the render's cast/avatar for real attribution.
+    from services.usage_logger import log_api_usage
+    await log_api_usage(
+        user_id=None, service="scene_image", operation="product_scene",
+        success=True, duration_seconds=round(time.monotonic() - _fal_start, 1),
+        cost_cents=4,
+    )
 
     return scene_bytes

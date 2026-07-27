@@ -419,6 +419,7 @@ class RunPodService:
         variant_id: str | None = None,
         audio_duration_s: float = 15.0,
         quality: str = "480p",
+        user_id: str | None = None,
     ) -> dict:
         """Poll for job completion using the 5-state machine.
 
@@ -555,7 +556,7 @@ class RunPodService:
                     try:
                         from services.usage_logger import log_api_usage
                         await log_api_usage(
-                            user_id="", service="infinitetalk", operation="video_generation",
+                            user_id=user_id, service="infinitetalk", operation="video_generation",
                             success=True, duration_seconds=round(poll_count * poll_interval, 1),
                             runpod_job_id=job_id,
                             cost_cents=max(1, int(poll_count * poll_interval / 3600 * 100)),
@@ -583,7 +584,7 @@ class RunPodService:
                     try:
                         from services.usage_logger import log_api_usage
                         await log_api_usage(
-                            user_id="", service="infinitetalk", operation="video_generation",
+                            user_id=user_id, service="infinitetalk", operation="video_generation",
                             success=False, duration_seconds=round(poll_count * poll_interval, 1),
                             runpod_job_id=job_id, error_message=str(error)[:500],
                         )
@@ -609,7 +610,7 @@ class RunPodService:
                     try:
                         from services.usage_logger import log_api_usage
                         await log_api_usage(
-                            user_id="", service="infinitetalk", operation="video_generation",
+                            user_id=user_id, service="infinitetalk", operation="video_generation",
                             success=False, duration_seconds=round(poll_count * poll_interval, 1),
                             runpod_job_id=job_id, error_message=err,
                         )

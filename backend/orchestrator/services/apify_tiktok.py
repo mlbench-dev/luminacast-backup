@@ -223,16 +223,18 @@ class ApifyTikTokService:
                             run_id=run_id,
                             video_count=len(videos),
                         )
-                        try:
-                            from services.usage_logger import log_api_usage
-                            await log_api_usage(
-                                user_id="", service="apify_scrape", operation="tiktok_videos",
-                                success=True,
-                                duration_seconds=round(time.monotonic() - _apify_start, 1),
-                                cost_cents=max(1, len(videos)),  # ~$0.002/video
-                            )
-                        except Exception:
-                            pass
+                        # TODO: user_id isn't threaded through fetch_tiktok_videos'
+                        # 5 call sites yet — None is deliberate (nullable column,
+                        # safe insert) vs. the previous "" (violated the FK on
+                        # every call). Follow-up: thread real user_id through for
+                        # per-user cost attribution.
+                        from services.usage_logger import log_api_usage
+                        await log_api_usage(
+                            user_id=None, service="apify_scrape", operation="tiktok_videos",
+                            success=True,
+                            duration_seconds=round(time.monotonic() - _apify_start, 1),
+                            cost_cents=max(1, len(videos)),  # ~$0.002/video
+                        )
                         return videos
 
                     if status in ("FAILED", "ABORTED", "TIMED-OUT"):

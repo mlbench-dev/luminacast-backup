@@ -1026,13 +1026,20 @@ class FalHalloProvider:
     PR #67 Bug 3 fix: the previous tier 3 used ``fal-ai/musetalk`` which
     requires a ``source_video_url`` (a real video clip), not an image —
     so every call from our image+audio call site landed at 400. Verified
-    via live curl on 2026-05-12 that ``fal-ai/hallo`` does accept the
-    ``image_url`` + ``audio_url`` pair we already build at the call site
-    and returns a video URL via the standard fal queue API.
+    via live curl on 2026-05-12 that ``fal-ai/hallo`` accepted an
+    ``image_url`` + ``audio_url`` pair.
+
+    That field has since been renamed upstream: fal's current OpenAPI schema
+    for this endpoint (checked live) requires ``source_image_url``, not
+    ``image_url``. The submit call was still accepted (200) because fal's
+    queue API only validates the payload against the real schema when the
+    job actually runs — the failure only surfaced as a 422 on the *result*
+    fetch, well after submission looked successful. This tier was silently
+    100% broken until that rename was caught.
 
     Submit:
         POST https://queue.fal.run/fal-ai/hallo
-        body {image_url, audio_url}
+        body {source_image_url, audio_url}
         → 200 {request_id, status_url, response_url}
     Poll:
         GET <status_url>           → {status: IN_QUEUE|IN_PROGRESS|COMPLETED|...}
@@ -1072,7 +1079,7 @@ class FalHalloProvider:
             raise RuntimeError("FAL_KEY / FAL_API_KEY missing at call time")
 
         submit_url = f"{self.SUBMIT_BASE}/{self.ENDPOINT}"
-        payload = {"image_url": image_url, "audio_url": audio_url}
+        payload = {"source_image_url": image_url, "audio_url": audio_url}
 
         # Per-block poll budget derived from the block's effective duration
         # (no hardcoded ceiling). A cold fal queue can sit a multi-second
