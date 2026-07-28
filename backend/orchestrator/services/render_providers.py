@@ -778,6 +778,27 @@ class HostkeyInfinitetalkProvider:
             raise
 
 
+def _wavespeed_api_key() -> str:
+    """WAVESPEED_API_KEY, preferring the real process env but falling back
+    to pydantic settings (which reads .env into the Settings object only —
+    it never exports back into os.environ). Without this fallback, every
+    render silently skips tier 2 (WaveSpeed InfiniteTalk) as "unavailable"
+    even when the key is configured in .env, forcing every block onto the
+    much slower/flakier tier-3 fal_hallo provider. See the near-identical
+    ``_ensure_wavespeed_key`` in services/render_dispatcher.py, which fixes
+    the same gap for the older avatar-generation dispatch path but isn't on
+    this (tasks/cast_render.py try_chain) call path.
+    """
+    key = os.environ.get("WAVESPEED_API_KEY", "")
+    if key:
+        return key
+    try:
+        from config import settings
+        return settings.WAVESPEED_API_KEY or ""
+    except Exception:
+        return ""
+
+
 class WavespeedInfinitetalkProvider:
     """Tier 2: WaveSpeed cloud InfiniteTalk endpoint (~$0.03/s, $0.15 minimum).
 
@@ -803,7 +824,7 @@ class WavespeedInfinitetalkProvider:
     POLL_BASE = "https://api.wavespeed.ai/api/v3/predictions"
 
     async def is_available(self, **_kw) -> bool:
-        return bool(os.environ.get("WAVESPEED_API_KEY"))
+        return bool(_wavespeed_api_key())
 
     @staticmethod
     def _resolution_from_dims(width: int, height: int) -> str:
@@ -831,7 +852,7 @@ class WavespeedInfinitetalkProvider:
         render_id: str | None = None,
         **_kwargs,
     ) -> dict:
-        api_key = os.environ.get("WAVESPEED_API_KEY", "")
+        api_key = _wavespeed_api_key()
         if not api_key:
             raise RuntimeError("WAVESPEED_API_KEY missing at call time")
         headers = {
@@ -979,7 +1000,7 @@ class WavespeedInfinitetalkProvider:
         request, so the tag is only used by the caller to store/match the
         returned prediction id, not sent to WaveSpeed itself.
         """
-        api_key = os.environ.get("WAVESPEED_API_KEY", "")
+        api_key = _wavespeed_api_key()
         if not api_key:
             raise RuntimeError("WAVESPEED_API_KEY missing at call time")
         headers = {

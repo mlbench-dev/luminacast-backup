@@ -17,11 +17,30 @@ except ImportError:  # pragma: no cover — keeps the module importable in test 
 logger = logging.getLogger(__name__)
 
 def _env_first(*names: str, default: str = "") -> str:
-    """Return the first non-empty value found among the given env var names."""
+    """Return the first non-empty value found among the given env var names.
+
+    Falls back to config.settings (keyed on the first name) if every env
+    var is empty. pydantic-settings loads .env into the Settings object
+    only — it never exports those values back into the real process
+    os.environ — so a bare os.environ.get() lookup comes back empty even
+    when e.g. R2_ENDPOINT is genuinely configured in .env. This silently
+    produced an empty R2_ENDPOINT here, which boto3 then rejected with
+    "Invalid endpoint: " only at final-video upload time, after the whole
+    compose had already run. Same gap, same fix, as
+    services/render_providers.py's _wavespeed_api_key().
+    """
     for n in names:
         v = os.environ.get(n, "")
         if v:
             return v
+    if names:
+        try:
+            from config import settings
+            v = getattr(settings, names[0], "") or ""
+            if v:
+                return v
+        except Exception:
+            pass
     return default
 
 

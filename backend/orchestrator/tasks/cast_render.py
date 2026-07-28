@@ -2956,18 +2956,37 @@ async def _ensure_fresh_tts_for_block(
                 )
                 return snapshot_audio_url, float(variant.tts_duration_seconds or 0)
 
-            # Step 7 — branch the voice chain on the per-block mic flag
-            # (stamped by Step 5). True → clip-mic, False → phone/room.
-            # None or flag-off → fall through to the avatar default.
-            from services.mic_presets import select_mic_preset
-            preset = select_mic_preset(getattr(block, "mic_on", None))
-            if preset is not None:
-                clip_mic_enabled = preset.clip_mic_enabled
-                voice_mode = preset.chain_id
-            else:
-                clip_mic_enabled = bool(getattr(avatar, "clip_mic_enabled", False))
-                voice_mode = "clip_mic" if clip_mic_enabled else "phone_mic"
-            logger.info("voice mode=%s block=%s", voice_mode, block_id)
+            # Voice chain precedence: per-block mic_on override > the scene
+            # (AvatarLook) this block uses > avatar-wide default. Mirrors
+            # the resolution in tasks/generate_cast.py / engine/cast_generator.py
+            # so an inline stale-TTS regen picks the same chain a full
+            # generation run would have.
+            from models.avatar_look import AvatarLook
+            from sqlalchemy import select as _sa_select_look
+            look = None
+            if getattr(block, "avatar_look_id", None):
+                look = await session.get(AvatarLook, block.avatar_look_id)
+            if look is None:
+                _look_res = await session.execute(
+                    _sa_select_look(AvatarLook)
+                    .where(AvatarLook.avatar_id == avatar.id)
+                    .where(AvatarLook.is_default.is_(True))
+                    .limit(1)
+                )
+                look = _look_res.scalars().first()
+
+            from services.mic_presets import resolve_scene_voice_settings
+            clip_mic_enabled, scene_chain_id = resolve_scene_voice_settings(
+                block_mic_on=getattr(block, "mic_on", None),
+                avatar_clip_mic_enabled=bool(getattr(avatar, "clip_mic_enabled", False)),
+                look_environment=getattr(look, "environment", None),
+                look_mic_visible=getattr(look, "mic_visible", None),
+            )
+            logger.info(
+                "voice mode=%s scene_chain=%s block=%s",
+                "clip_mic" if clip_mic_enabled else "phone_mic",
+                scene_chain_id, block_id,
+            )
 
             from services.fish_audio import get_fish_audio_service
             fish = get_fish_audio_service()
@@ -2975,6 +2994,7 @@ async def _ensure_fresh_tts_for_block(
                 text=script_text,
                 voice_id=avatar.voice_id,
                 clip_mic_enabled=clip_mic_enabled,
+                scene_chain_id=scene_chain_id,
                 block_id=block_id,
             )
             new_key = tts_result.get("audio_key", "") or ""
@@ -4168,10 +4188,42 @@ async def _render_async(task, render_id: str):
                         )
                     ).scalars().first()
                     if _th_row and _th_row.face_ref_key:
-                        face_ref_url = r2.get_public_url(_th_row.face_ref_key)
+                        # Effective mic-on: per-block override > the block's
+                        # scene (pinned look, else avatar default) own
+                        # mic_visible. Talking-head looks are per-framing
+                        # reference stills, not scenes — they're never
+                        # created via AddLookDialog so their own mic_visible
+                        # is always the column default and meaningless here.
+                        # Without this, every non-MEDIUM-framing block (the
+                        # common case) bypassed mic-on entirely, regardless
+                        # of the scene's setting or resolve_scene_voice_settings
+                        # already having picked the clip-mic audio chain for it.
+                        _th_mic_on = getattr(_th_blk, "mic_on", None)
+                        if _th_mic_on is None:
+                            _th_scene_look = None
+                            if getattr(_th_blk, "avatar_look_id", None):
+                                _th_scene_look = await _th_session.get(
+                                    AvatarLook, _th_blk.avatar_look_id
+                                )
+                            if _th_scene_look is None:
+                                _th_scene_res = await _th_session.execute(
+                                    _th_select(AvatarLook)
+                                    .where(AvatarLook.avatar_id == _th_cst.avatar_id)
+                                    .where(AvatarLook.is_default.is_(True))
+                                    .limit(1)
+                                )
+                                _th_scene_look = _th_scene_res.scalars().first()
+                            _th_mic_on = bool(getattr(_th_scene_look, "mic_visible", False))
+
+                        from services.mic_on_look import resolve_mic_on_face_key
+                        _th_face_key = await resolve_mic_on_face_key(
+                            _th_mic_on, _th_cst.avatar_id, _th_row.id,
+                            _th_row.face_ref_key, _th_session,
+                        )
+                        face_ref_url = r2.get_public_url(_th_face_key)
                         logger.info(
-                            "Block %s: using talking-head face look=%s framing=%s",
-                            block_id, _th_row.id, _th_framing,
+                            "Block %s: using talking-head face look=%s framing=%s mic_on=%s",
+                            block_id, _th_row.id, _th_framing, _th_mic_on,
                         )
         except Exception as _th_exc:
             sentry_sdk.capture_exception(_th_exc)
@@ -4843,9 +4895,19 @@ async def _render_async(task, render_id: str):
                     block_mic_on = getattr(blk, "mic_on", None) if blk else None
                     avatar_id_for_mic = getattr(cst, "avatar_id", None) if cst else None
 
-                    async def _maybe_mic_on(look_id: str | None, key: str) -> str:
+                    # When the block leaves mic_on unset, default to this
+                    # look's own mic_visible (chosen at scene-creation time)
+                    # instead of always keeping the clean frame — keeps the
+                    # visual mic in sync with the scene-aware audio chain
+                    # (services.mic_presets.resolve_scene_voice_settings).
+                    async def _maybe_mic_on(look, key: str) -> str:
+                        look_id = getattr(look, "id", None) if look is not None else None
+                        effective_mic_on = (
+                            block_mic_on if block_mic_on is not None
+                            else bool(getattr(look, "mic_visible", False))
+                        )
                         resolved_key = await resolve_mic_on_face_key(
-                            block_mic_on, avatar_id_for_mic, look_id, key, bm_session
+                            effective_mic_on, avatar_id_for_mic, look_id, key, bm_session
                         )
                         return r2.get_public_url(resolved_key)
 
@@ -4859,7 +4921,7 @@ async def _render_async(task, render_id: str):
                         if pinned_id:
                             pinned = await bm_session.get(AvatarLook, pinned_id)
                             if pinned and pinned.face_ref_key:
-                                return await _maybe_mic_on(pinned.id, pinned.face_ref_key)
+                                return await _maybe_mic_on(pinned, pinned.face_ref_key)
                         for prefix in (
                             f"action_block_{block_id}_{kind}",
                             f"body_motion_block_{block_id}_{kind}",
@@ -4875,7 +4937,7 @@ async def _render_async(task, render_id: str):
                             )
                             row = res.scalars().first()
                             if row and row.face_ref_key:
-                                return await _maybe_mic_on(row.id, row.face_ref_key)
+                                return await _maybe_mic_on(row, row.face_ref_key)
                         if kind == "start" and avatar_obj and avatar_obj.face_ref_key:
                             return r2.get_public_url(avatar_obj.face_ref_key)
                         return None

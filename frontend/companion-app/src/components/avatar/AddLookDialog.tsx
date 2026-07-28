@@ -70,9 +70,12 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
   const handleClose = () => { reset(); onOpenChange(false); };
 
   const handleChipClick = (preset: { label: string; prompt: string }) => {
-    setSelectedChip(preset.label);
     setPrompt(preset.prompt);
-    if (!name) setName(preset.label);
+    // Keep the name in sync with the selected preset when switching presets.
+    // Only preserve the name if the user has typed something of their own —
+    // i.e. it no longer matches the previously selected preset's label.
+    setName((prev) => (!prev.trim() || prev === selectedChip ? preset.label : prev));
+    setSelectedChip(preset.label);
   };
 
   // Fetch products for tryon picker
@@ -331,9 +334,12 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
               <select
                 value={poseAngle}
                 onChange={(e) => {
+                  const prevOption = POSE_OPTIONS.find((p) => p.value === poseAngle);
                   setPoseAngle(e.target.value);
                   const option = POSE_OPTIONS.find((p) => p.value === e.target.value);
-                  if (option && !name) setName(option.label);
+                  if (option) {
+                    setName((prev) => (!prev.trim() || prev === prevOption?.label ? option.label : prev));
+                  }
                 }}
                 className="w-full text-sm bg-surface text-text border border-border rounded p-2"
               >

@@ -84,7 +84,30 @@ def test_orchestrator_style_wins_when_both_set(monkeypatch):
     assert mod.R2_SECRET_KEY == "orch_secret_value"
 
 
-def test_empty_when_neither_set(monkeypatch):
+def test_falls_back_to_settings_when_env_vars_unset(monkeypatch):
+    """pydantic-settings loads .env into config.settings only — it never
+    exports those values back into os.environ. If neither the orchestrator
+    nor the legacy env var names are set directly, _env_first must still
+    pick up whatever config.settings has (i.e. whatever's in .env), rather
+    than silently returning empty. This is exactly what broke real renders:
+    R2_ENDPOINT was correctly set in .env but never reachable via a bare
+    os.environ.get(), so the final-video upload failed with boto3's
+    "Invalid endpoint" only after the entire compose had already run.
+    """
+    from config import settings
+
+    monkeypatch.setattr(settings, "R2_ACCESS_KEY_ID", "settings_access_value")
+    monkeypatch.setattr(settings, "R2_SECRET_ACCESS_KEY", "settings_secret_value")
+    mod = _reload_module(monkeypatch, {})
+    assert mod.R2_ACCESS_KEY == "settings_access_value"
+    assert mod.R2_SECRET_KEY == "settings_secret_value"
+
+
+def test_empty_when_nothing_configured_anywhere(monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "R2_ACCESS_KEY_ID", "")
+    monkeypatch.setattr(settings, "R2_SECRET_ACCESS_KEY", "")
     mod = _reload_module(monkeypatch, {})
     assert mod.R2_ACCESS_KEY == ""
     assert mod.R2_SECRET_KEY == ""
