@@ -712,10 +712,15 @@ async def approve_avatar(
             db.add(original_look)
             await db.flush()  # need original_look.id before create_base_scenes
             from services.mic_on_look import create_base_scenes
+            from models.avatar_look import DEFAULT_ENVIRONMENT
+            # No environment choice exists yet at avatar-approval time (that's
+            # only collected later, per-scene, in AddLookDialog) — studio is
+            # the sensible bootstrap default for the auto-created "Original"
+            # look's two base scenes (mic-visible / mic-off).
             await create_base_scenes(
                 avatar_id,
                 original_look.id,
-                getattr(avatar, "scene_environment", "studio"),
+                DEFAULT_ENVIRONMENT,
                 db,
             )
 

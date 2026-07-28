@@ -250,11 +250,21 @@ export function CastBuilderPage() {
               }
             } catch { /* hash comparison failed, fall back to timestamp */ }
           }
-          // Fallback: timestamp-based if no hash available
+          // Fallback: timestamp-based if no hash available. cast_renders has
+          // no timeline_hash column today, so this fallback is actually the
+          // only path that ever runs. The render-completion process itself
+          // touches the casts row (status/video fields) a few ms AFTER
+          // stamping completed_at, so a bare `castUpdated > renderTime`
+          // treats that routine bookkeeping write as if the user had edited
+          // the timeline — the button then never correctly flips to "Render
+          // Ready" right after a successful render. A small buffer absorbs
+          // that same-instant bookkeeping write while still catching a
+          // genuine edit made afterward.
           if (!isStale && !latest.timeline_hash) {
             const renderTime = new Date(latest.completed_at || latest.created_at).getTime();
             const castUpdated = new Date((cast as any).updated_at || 0).getTime();
-            isStale = castUpdated > renderTime;
+            const STALE_BUFFER_MS = 5000;
+            isStale = castUpdated > renderTime + STALE_BUFFER_MS;
           }
           setRenderStatus({
             status: isStale ? "idle" : "ready",

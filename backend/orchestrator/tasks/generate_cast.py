@@ -1083,15 +1083,29 @@ async def _resolve_face_image_for_block(cast, block, session) -> str:
     Step 8: once a concrete base look is resolved, the chosen key is routed
     through ``resolve_mic_on_face_key`` so that a block with ``mic_on == True``
     renders the baked clip-on lavalier variant (lazy-generated + cached) while
-    ``mic_on == False``/``None`` keep the clean base look. The mic-on swap is a
+    ``mic_on == False`` keeps the clean base look. The mic-on swap is a
     no-op for the body-shot-angle and legacy-avatar fallback paths, which have
     no base look id to derive a variant from.
+
+    When the block leaves ``mic_on`` unset (``None``), the resolved look's own
+    ``mic_visible`` (chosen at scene-creation time — see
+    routers/avatar_looks.py) is used as the default instead of always keeping
+    the clean look. This keeps the visual mic and the audio filter chain
+    (``services.mic_presets.resolve_scene_voice_settings``, which already
+    falls back to the same ``look.mic_visible`` column) in sync — a "mic
+    visible" scene should show the mic AND sound like a clip-mic even if no
+    block explicitly overrides it.
     """
     from models.avatar_look import AvatarLook, TALKING_HEAD_LOOK_TYPE, DEFAULT_FRAMING
     from services.mic_on_look import resolve_mic_on_face_key
     from sqlalchemy import select
 
     mic_on = getattr(block, "mic_on", None)
+
+    def _effective_mic_on(look):
+        if mic_on is not None:
+            return mic_on
+        return bool(getattr(look, "mic_visible", False)) if look is not None else None
 
     # Phase F: per-block avatar angle snapshot
     avatar_angle = getattr(block, "avatar_angle", None) or "front"
@@ -1136,7 +1150,7 @@ async def _resolve_face_image_for_block(cast, block, session) -> str:
         if look and look.face_ref_key and look.status == "ready":
             logger.info("Block %s using look %s (%s)", block.id, look.id, look.name)
             return await resolve_mic_on_face_key(
-                mic_on, cast.avatar_id, look.id, look.face_ref_key, session
+                _effective_mic_on(look), cast.avatar_id, look.id, look.face_ref_key, session
             )
 
     # Try the avatar default look
@@ -1150,7 +1164,8 @@ async def _resolve_face_image_for_block(cast, block, session) -> str:
         default_look = result.scalar_one_or_none()
         if default_look and default_look.face_ref_key:
             return await resolve_mic_on_face_key(
-                mic_on, cast.avatar_id, default_look.id, default_look.face_ref_key, session
+                _effective_mic_on(default_look), cast.avatar_id, default_look.id,
+                default_look.face_ref_key, session
             )
 
     # Legacy fallback
