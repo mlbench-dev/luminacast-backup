@@ -1805,6 +1805,8 @@ async def add_block(
         rmode = "voiceover"
     elif category == "pip_talking_head":
         rmode = "pip"
+    elif category in ("stock_photo", "stock_video"):
+        rmode = "voiceover"
     else:
         rmode = "avatar_full"
 
@@ -3536,6 +3538,11 @@ async def generate_outline(
             # avatar_action always uses I2V (the body_motion render path)
             # with FLUX-Kontext-generated scene frames.
             block_render_mode = "body_motion"
+        elif scene_category in ("stock_photo", "stock_video"):
+            # Pure B-roll — no avatar face is meant to appear. Routes
+            # through the same voiceover bake path, which resolves the
+            # visual from stock_media_url for these categories.
+            block_render_mode = "voiceover"
         else:
             block_render_mode = "avatar_full"
 
@@ -3899,6 +3906,11 @@ async def generate_smart_outline_endpoint(
             # avatar_action always uses I2V with FLUX-Kontext-generated
             # scene frames — same render path body_motion uses today.
             render_mode = "body_motion"
+        elif category in ("stock_photo", "stock_video"):
+            # Pure B-roll — no avatar face is meant to appear. Routes
+            # through the same voiceover bake path, which resolves the
+            # visual from stock_media_url for these categories.
+            render_mode = "voiceover"
         else:
             render_mode = "avatar_full"
 

@@ -297,10 +297,20 @@ export function castToEditorStarterTimeline(
 
     // PR #83 — Talking-head PIP window.
     //
-    // Three sources of truth, in priority order:
-    //   1. block.metadata.pip_layout — explicit user / LLM choice
-    //      (fullscreen / pip_small / pip_medium / hidden). Wins over
-    //      everything when present.
+    // Sources of truth, in priority order:
+    //   1. block.metadata.pip_layout — explicit user / LLM choice.
+    //      Two vocabularies have existed here and BOTH must be handled:
+    //        - PR #83's own: fullscreen / pip_small / pip_medium / hidden.
+    //        - services.layouts.primitives.LayoutPrimitive (engine/
+    //          cast_generator.py's product/b-roll injection uses this):
+    //          fullscreen / split_h / pip_quarter_bl / pip_quarter_br.
+    //      Before this fix, pip_quarter_bl/br fell through unrecognized to
+    //      the legacy category check below — which only ever renders
+    //      bottom-RIGHT, so a "bl" block silently rendered on the wrong
+    //      side, and any block without category="pip_talking_head" (e.g.
+    //      injected product/b-roll beats that don't set that category)
+    //      fell all the way through to fullscreen — visually indistinguishable
+    //      from the old split_h days despite the DB no longer saying split_h.
     //   2. Legacy category-based PIP (block.category === "pip" |
     //      "pip_talking_head") — kept for any cast that pre-dates this
     //      field. Renders as the legacy bottom-right 30% window.
@@ -313,11 +323,17 @@ export function castToEditorStarterTimeline(
       | "pip_small"
       | "pip_medium"
       | "hidden"
+      | "pip_quarter_bl"
+      | "pip_quarter_br"
+      | "split_h"
       | undefined;
     const isPipSmall = pipLayoutMeta === "pip_small";
     const isPipMedium = pipLayoutMeta === "pip_medium";
     const isPipHidden = pipLayoutMeta === "hidden";
-    const isPipFromMeta = isPipSmall || isPipMedium;
+    const isPipQuarterBl = pipLayoutMeta === "pip_quarter_bl";
+    const isPipQuarterBr = pipLayoutMeta === "pip_quarter_br";
+    const isPipQuarter = isPipQuarterBl || isPipQuarterBr;
+    const isPipFromMeta = isPipSmall || isPipMedium || isPipQuarter;
 
     // Side length at the reference 1920 px canvas height. Scale to the
     // actual canvas height so a future non-reference output keeps the
@@ -342,6 +358,18 @@ export function castToEditorStarterTimeline(
       pipLeft = Math.round(24 * canvas.height / refH);
       pipTop = Math.round(24 * canvas.height / refH);
       pipBorderRadius = 24;
+    } else if (isPipQuarter) {
+      // Mirrors layouts.primitives.compute_geometry's pip_quarter_bl/br:
+      // a ~quarter-canvas-area face anchored to a bottom corner with a
+      // ~4%-of-shorter-side safe-area margin.
+      const margin = Math.round(0.04 * Math.min(canvas.width, canvas.height));
+      pipW = Math.round(canvas.width / 2 - margin * 1.5);
+      pipH = Math.round(canvas.height / 2 - margin);
+      pipTop = canvas.height - pipH - margin;
+      pipLeft = isPipQuarterBr
+        ? canvas.width - pipW - margin
+        : margin;
+      pipBorderRadius = 16;
     } else if (isPip) {
       // Legacy category-based PIP (bottom-right 30%, kept for casts
       // that haven't been migrated to pip_layout yet).

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { authApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
+import { validatePassword, PASSWORD_REQUIREMENTS_TEXT } from "@/lib/passwordValidation";
 
 export function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
@@ -23,6 +24,11 @@ export function ResetPasswordPage() {
     e.preventDefault();
     if (password !== confirmPassword) {
       toast({ title: "Error", description: "Passwords don't match.", variant: "destructive" });
+      return;
+    }
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      toast({ title: "Weak password", description: passwordError, variant: "destructive" });
       return;
     }
     setIsLoading(true);
@@ -97,6 +103,7 @@ export function ResetPasswordPage() {
                       {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   </div>
+                  <p className="text-xs text-text-muted">{PASSWORD_REQUIREMENTS_TEXT}</p>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
                     <Input

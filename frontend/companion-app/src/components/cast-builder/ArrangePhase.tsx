@@ -35,6 +35,8 @@ export interface ArrangePhaseHandle {
   flushSave: () => Promise<void>;
   getChangeCount: () => number;
   getTimelineTracks: () => unknown[];
+  getBlockRegions: () => import("@/lib/editorStarterMapping").BlockRegion[];
+
 }
 
 /** Auto-save debounce interval (ms) — matches the old Twick auto-save */
@@ -95,6 +97,11 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
       if (!state) return [];
       const snapshot = editorStarterToLuminacastSnapshot(state);
       return snapshot.tracks || [];
+    },
+    getBlockRegions() {
+      const state = latestStateRef.current;
+      if (!state) return [];
+      return computeBlockRegions(state);
     },
   }), [cast.id, buildSavePayload]);
 
@@ -158,22 +165,64 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
           const savedTimeline = await castsApi.getTimeline(cast.id, "default");
           if (savedTimeline?.editor_state && savedTimeline.editor_state.tracks) {
             const items: Record<string, any> = savedTimeline.editor_state.items || {};
-            // Collect block_ids that have at least one item bound to them.
+            // Collect block_ids that have at least one item bound to them, and
+            // the longest bonded-audio duration (seconds) saved for each.
             const blockIdsInSaved = new Set<string>();
+            const savedAudioDurationS = new Map<string, number>();
+            const fps = savedTimeline.editor_state.fps || 30;
             for (const item of Object.values(items)) {
               const bid = item?.metadata?.block_id;
-              if (bid) blockIdsInSaved.add(bid);
+              if (!bid) continue;
+              blockIdsInSaved.add(bid);
+              if (item?.type === "audio" && item?.metadata?.bonded) {
+                const durS = (item.durationInFrames || 0) / fps;
+                savedAudioDurationS.set(bid, Math.max(savedAudioDurationS.get(bid) || 0, durS));
+              }
             }
             const currentBlocks = (freshCast.blocks || [])
               .filter((b: any) => b.is_active !== false && b.deleted_at == null);
             const allCurrentInSaved = currentBlocks.every((b: any) => blockIdsInSaved.has(b.id));
-            if (allCurrentInSaved && currentBlocks.length > 0) {
+
+            // Guard against a stale saved slot that's frozen far below the
+            // block's live TTS duration — e.g. a snapshot saved before a
+            // block's audio finished generating, or before it was later
+            // regenerated through a path that doesn't patch the saved
+            // timeline (bulk script/audio regen, sibling cascade before
+            // "Refresh timeline" is clicked). Without this check, the stale
+            // slot from ANY block_id present in the saved JSON gets reused
+            // forever — the block_id-presence check above never verifies
+            // durations, so the same broken slot re-saves on every autosave.
+            //
+            // An absolute floor alone isn't enough: render rnd_25a6a0c2b241
+            // hard-failed on a block whose saved slot was 1.267s against a
+            // refreshed tts_duration of 4.65s (27%) — comfortably above a
+            // flat 1.0s floor, but still a stale leftover that head-trimmed
+            // the baked clip down to an 89%-frozen slice the Phase 3
+            // validator rejected outright. Mirrors the same ratio guard
+            // added backend-side in tasks/cast_render.py.
+            const STALE_DURATION_FLOOR_S = 1.0;
+            const STALE_DURATION_RATIO = 0.35;
+            const staleBlocks: string[] = [];
+            for (const b of currentBlocks) {
+              const savedDurS = savedAudioDurationS.get(b.id);
+              if (savedDurS == null) continue; // no bonded audio item — handled elsewhere
+              const liveVariant = (b.variants || []).find((v: any) => v.is_active !== false) || b.variants?.[0];
+              const liveDurS = liveVariant?.tts_duration_seconds || liveVariant?.duration_seconds || 0;
+              const staleThresholdS = Math.max(STALE_DURATION_FLOOR_S, liveDurS * STALE_DURATION_RATIO);
+              if (liveDurS > 0 && savedDurS < staleThresholdS) {
+                staleBlocks.push(b.id);
+              }
+            }
+
+            if (allCurrentInSaved && currentBlocks.length > 0 && staleBlocks.length === 0) {
               restoredState = savedTimeline.editor_state as UndoableState;
               console.log("RESTORED saved editor state:", {
                 savedItemCount: Object.keys(items).length,
                 currentBlockCount: currentBlocks.length,
                 savedAt: savedTimeline.saved_at,
               });
+            } else if (staleBlocks.length > 0) {
+              console.log("Saved editor state has implausibly short slots — rebuilding fresh from live TTS durations. Affected block_ids:", staleBlocks);
             } else {
               const missing = currentBlocks.filter((b: any) => !blockIdsInSaved.has(b.id)).map((b: any) => b.id);
               console.log("Saved editor state stale — rebuilding. Missing block_ids:", missing);

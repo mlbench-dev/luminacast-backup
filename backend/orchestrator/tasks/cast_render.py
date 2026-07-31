@@ -552,13 +552,18 @@ async def resolve_voiceover_visual_source(
     needs a video clip for the slot. This resolves the best available
     source, in the priority order from the bug brief:
 
-      1. ("video", url)  — a registered VIDEO asset (block.video_asset_id
-         or the effective product's first video ProductAsset). Looped /
-         trimmed to the slot by the caller.
-      2. ("image", url)  — a still: block.image_asset_id, the product hero
-         (cover_image_key), or block.scene_image_key. Animated with a
-         Ken-Burns pan-zoom by the caller (NEVER shown as a still — a still
-         trips clip_mostly_frozen).
+      1. ("video"/"image", url) — a registered explicit asset
+         (block.video_asset_id / block.image_asset_id).
+      2. ("video"/"image", url) — block.parallel_media[0], the AI-picked
+         stock B-roll the script engine attaches to this beat. Most
+         auto-generated stock-footage casts have no registered product
+         asset at all, so this is the primary source in practice.
+      3. ("video", url) — the effective product's first video ProductAsset.
+      4. ("image", url) — the product hero (cover_image_key), or
+         block.scene_image_key.
+      Videos are looped/trimmed to the slot by the caller; images are
+      animated with a Ken-Burns pan-zoom (NEVER shown as a still — a still
+      trips clip_mostly_frozen).
 
     Returns ``(kind, url)`` or ``None`` when nothing resolves (the caller
     then renders avatar-idle B-roll as the last resort). Any DB / resolver
@@ -585,6 +590,37 @@ async def resolve_voiceover_visual_source(
                 url = r2.get_public_url(key)
                 if url:
                     return (want, url)
+
+        # 1c. AI-picked stock B-roll (block.parallel_media). This is what the
+        # script engine actually attaches to voiceover beats for casts with
+        # no registered product asset — most auto-generated stock-footage
+        # casts have nothing in video_asset_id/product_assets/scene_image_key
+        # at all, so without this check every such block fell straight
+        # through to the avatar-idle Ken-Burns fallback below: the narration
+        # played over the avatar's face instead of the b-roll the editor
+        # preview (and the user) actually see. The first video entry is
+        # looped/trimmed to the slot by the caller, matching how a registered
+        # product video is handled just below.
+        parallel_media = getattr(blk, "parallel_media", None) if blk else None
+        if isinstance(parallel_media, list):
+            for pm in parallel_media:
+                if not isinstance(pm, dict):
+                    continue
+                pm_url = pm.get("url")
+                pm_kind = pm.get("kind")
+                if pm_url and pm_kind in ("video", "photo"):
+                    return ("video" if pm_kind == "video" else "image", pm_url)
+
+        # 1d. stock_photo / stock_video blocks carry their pick in
+        # stock_media_url (a different field than parallel_media — set by
+        # the auto-populate step, not the multi-angle b-roll attacher).
+        # These blocks are pure B-roll by category (no avatar face is meant
+        # to appear), so this is checked before falling back to a generic
+        # product asset.
+        stock_media_url = getattr(blk, "stock_media_url", None) if blk else None
+        if stock_media_url:
+            stock_media_kind = (getattr(blk, "stock_media_kind", None) or "").lower()
+            return ("video" if stock_media_kind == "video" else "image", stock_media_url)
 
         # 1b / 2b. Resolve the effective product and pull a video first,
         # then fall back to its hero image.
@@ -1542,7 +1578,7 @@ async def _post_compose_audio_remux(
         # intended ~−47 dB bed (the "music is 4× too loud" report). This is
         # the dominant production audio path, so the env-aware resolution has
         # to happen HERE, not only in the cast_ffmpeg_composer filtergraph.
-        narration: list[tuple[float, str]] = []  # (start_s, path)
+        narration: list[tuple[float, float, str]] = []  # (start_s, slot_dur, path)
         music: list[tuple[float, str, float]] = []  # (start_s, path, volume)
         sfx: list[tuple[float, str, float]] = []  # (start_s, path, volume)
         music_elements_seen: list[dict] = []
@@ -1556,6 +1592,10 @@ async def _post_compose_audio_remux(
                     s_start = float(el.get("s") or 0)
                 except (TypeError, ValueError):
                     s_start = 0.0
+                try:
+                    slot_dur = max(0.0, float(el.get("e") or 0) - s_start)
+                except (TypeError, ValueError):
+                    slot_dur = 0.0
                 local = os.path.join(tmpdir, f"a_{idx}")
                 try:
                     resp = await http.get(src, follow_redirects=True)
@@ -1588,7 +1628,7 @@ async def _post_compose_audio_remux(
                     )
                     music.append((s_start, local, mvol))
                 else:
-                    narration.append((s_start, local))
+                    narration.append((s_start, slot_dur, local))
 
         if not narration and not music and not sfx:
             logger.info(
@@ -1618,7 +1658,7 @@ async def _post_compose_audio_remux(
         # graph never lengthens, ping-pongs, or reverses.
         cmd: list[str] = ["ffmpeg", "-y", "-i", video_source_path]
         ordered_inputs: list[tuple[float, str]] = (
-            [(s, p) for s, p in narration]
+            [(s, p) for s, _dur, p in narration]
             + [(s, p) for s, p, _ in music]
             + [(s, p) for s, p, _ in sfx]
         )
@@ -1630,18 +1670,34 @@ async def _post_compose_audio_remux(
         # same order we appended them above (narration, then music, then sfx).
         ai = 1
 
-        def _delayed(label_in: str, start_s: float, out: str) -> str:
+        def _delayed(label_in: str, start_s: float, out: str, duration_s: float | None = None) -> str:
             delay_ms = max(0, int(round(start_s * 1000)))
+            # Bug: this remux rebuilds the ENTIRE audio mix from scratch from
+            # each element's raw source file, only shifting its start via
+            # adelay — with no per-element duration cap, a source file longer
+            # than its timeline slot (e.g. a voiceover block whose TTS/lipsync
+            # audio runs longer than the stale Arrange-timeline slot it was
+            # assigned) plays in full and audibly overlaps the next block's
+            # narration, which starts on schedule regardless. Confirmed on a
+            # real render: two adjacent voiceover blocks, the first one's full
+            # ~6.5s narration bleeding ~2.5s into the second one's already-
+            # started narration — "two voices talking at once" reported
+            # directly by a user timestamp. atrim caps each source to its own
+            # slot BEFORE the delay is applied, matching what the main
+            # compose pass already does correctly (see worker_ffmpeg_compose's
+            # per-track "-t {slot_dur}" normalize step) — this remux path
+            # rebuilds the mix independently and must enforce the same rule.
+            trim = f"atrim=duration={duration_s:.3f},asetpts=PTS-STARTPTS," if duration_s and duration_s > 0 else ""
             return (
-                f"[{label_in}]aresample=48000,"
+                f"[{label_in}]{trim}aresample=48000,"
                 f"aformat=channel_layouts=stereo,"
                 f"adelay={delay_ms}|{delay_ms},apad[{out}]"
             )
 
         narration_labels: list[str] = []
-        for n, (start_s, _p) in enumerate(narration):
+        for n, (start_s, slot_dur, _p) in enumerate(narration):
             out = f"nar{n}"
-            filter_parts.append(_delayed(f"{ai}:a", start_s, out))
+            filter_parts.append(_delayed(f"{ai}:a", start_s, out, duration_s=slot_dur))
             narration_labels.append(f"[{out}]")
             ai += 1
 
@@ -2543,6 +2599,16 @@ async def _probe_audio_duration_s(url_or_path: str) -> float:
     Returns 0.0 on any failure — callers treat a non-positive result as
     "unknown" and fall back to the slot. ffprobe accepts http(s) URLs
     directly, so this works for the prepared lipsync WAV on R2/CDN.
+
+    Retries once on failure. This probe result silently controls whether a
+    voiceover block's REAL audio-driven duration (broll_s) gets used or the
+    caller falls back to the block's (possibly stale) Arrange-timeline slot
+    — a single transient network blip here reproduces the exact "stale
+    slot never gets corrected" bug this session already found and fixed for
+    other cases, just from a different trigger. A full render fires many of
+    these probes concurrently (same contention documented on
+    voiceover_broll._download), so a bare single attempt is not reliable
+    enough for a value this consequential.
     """
     if not url_or_path:
         return 0.0
@@ -2552,17 +2618,22 @@ async def _probe_audio_duration_s(url_or_path: str) -> float:
         "-of", "default=noprint_wrappers=1:nokey=1",
         url_or_path,
     ]
-    try:
-        proc = await asyncio.to_thread(
-            subprocess.run, cmd,
-            capture_output=True, text=True, timeout=30.0, check=False,
-        )
-        if proc.returncode != 0:
-            return 0.0
-        return float((proc.stdout or "0").strip() or 0.0)
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-        return 0.0
+    last_result = 0.0
+    for attempt in (1, 2):
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=30.0, check=False,
+            )
+            if proc.returncode == 0:
+                last_result = float((proc.stdout or "0").strip() or 0.0)
+                if last_result > 0:
+                    return last_result
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+        if attempt == 1:
+            await asyncio.sleep(1.0)
+    return last_result
 
 
 async def _probe_bytes_duration_s(video_bytes: bytes) -> float:
@@ -3374,6 +3445,41 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
     def _z(o):
         return _Z_ORDER.get(o.get("track_type") or "", 1)
     overlays.sort(key=lambda o: (_z(o), o["start_s"], o["type"]))
+
+    # Close small gaps between consecutive video/image overlays. These are
+    # the B-roll/stock visuals for voiceover and stock_photo/video blocks —
+    # the ONLY thing covering the bonded bake underneath for those blocks.
+    # A multi-angle block's individual clip durations don't always sum to
+    # exactly its slot length (each clip is timed independently at script-
+    # generation time), so consecutive clips can leave a sliver where
+    # neither overlay's `enable` window is active. During that sliver the
+    # compositor falls through to whatever the bonded track shows — which
+    # for a voiceover block is the avatar placeholder, not the B-roll.
+    # Confirmed directly on a real render: pm_blk_d1f2dd615ff3_1 ended at
+    # 14.167s and the next block's pm_blk_d57e79c95cb0_0 started at 14.367s
+    # — a 0.2s gap with nothing covering the canvas — and extracted frames
+    # at exactly that timestamp showed the avatar's face flash between two
+    # B-roll clips. Since every video overlay already carries
+    # `eof_action=pass` (holds its last decoded frame once its source runs
+    # out), simply extending `end_s` to meet the next overlay's start is
+    # enough to close the gap with no visual side effect for a same-clip
+    # extension, and at most a brief extra hold-frame for a real cut.
+    _GAP_CLOSE_MAX_S = 1.0
+    _visual_types = ("video", "image")
+    _visual_idxs = [
+        i for i, o in enumerate(overlays) if o["type"] in _visual_types
+    ]
+    for pos in range(len(_visual_idxs) - 1):
+        cur = overlays[_visual_idxs[pos]]
+        nxt = overlays[_visual_idxs[pos + 1]]
+        gap = nxt["start_s"] - cur["end_s"]
+        if 0 < gap <= _GAP_CLOSE_MAX_S:
+            logger.info(
+                "Closing %.3fs overlay gap: %s (end=%.3f) -> %s (start=%.3f)",
+                gap, cur.get("id"), cur["end_s"], nxt.get("id"), nxt["start_s"],
+            )
+            cur["end_s"] = nxt["start_s"]
+
     logger.info(
         "Overlay extraction complete: accepted=%d rejected(bonded=%d, type=%d, malformed=%d) canvas=%dx%d render=%dx%d",
         accepted, rejected_bonded, rejected_type, rejected_malformed,
@@ -3946,6 +4052,25 @@ async def _render_async(task, render_id: str):
     # mux passes lay down byte-identical audio — lips can't drift from a
     # track they were synced to.
     lipsync_audio_by_block: dict[str, str] = {}
+    # The REAL, audio-driven duration a voiceover block's bake targeted
+    # (broll_s — always the probed TTS/lipsync-prep length, never the
+    # Arrange-timeline slot; see the voiceover branch below). Registered
+    # regardless of whether the bake itself succeeds, because the post-bake
+    # duration reconciliation (_measure_baked_block_durations) can only
+    # measure blocks that produced a baked clip — a block whose bake FAILS
+    # (e.g. a transient ffmpeg timeout) never gets measured, so its
+    # Arrange-timeline slot is never corrected. Confirmed on a real render:
+    # a voiceover block's bake correctly targeted 7.078s (audio-driven) but
+    # timed out on both its B-roll and avatar-idle-fallback attempts; with
+    # no measurement to override it, compose still trimmed that block's
+    # CORRECT, freshly-fetched narration audio down to its stale 4.0s
+    # Arrange slot — chopping the sentence off mid-way just as the next
+    # block's (correctly-placed) audio started, which is indistinguishable
+    # from genuine overlap to a listener. Merged into measured_durations
+    # before the post-bake _apply_real_block_durations call so voiceover
+    # slots always reconcile to their real length whether or not the bake
+    # produced a clip to measure.
+    voiceover_real_durations: dict[str, float] = {}
 
     # Resolve the cast's product reference image + product names once so the
     # per-block bake can decide whether to route through the product-
@@ -4116,6 +4241,44 @@ async def _render_async(task, render_id: str):
         # to match further down. Round to FPS grid is already done by
         # _per_block_user_durations.
         user_target_s = user_durations.get(block_id)
+        # Guard against a stale/bogus "user edit". _per_block_user_durations
+        # reads whatever [s,e] window is saved in the Arrange-phase timeline
+        # for this block and treats it as an intentional trim — but that
+        # window can be a leftover placeholder from before this block's TTS
+        # settled at its current duration (e.g. captured when the Arrange tab
+        # was first opened, or before a later TTS refresh/regeneration), never
+        # resynced afterward. An absolute floor alone isn't enough: render
+        # rnd_25a6a0c2b241 hard-failed on block blk_88f2a4cd3183 whose saved
+        # slot was 1.267s against a refreshed tts_duration of 4.65s (27%) —
+        # comfortably above the old 0.5s floor, but the resulting head-trimmed
+        # clip was 89% frozen and got hard-rejected by Phase 3 with no
+        # fallback, killing the whole render. A trim down to a small fraction
+        # of the actual reading also isn't a plausible pacing edit — few
+        # people intentionally cut a line to a quarter of its spoken length —
+        # so below this ratio (as well as below the absolute structural
+        # floor) we don't trust it and use the real TTS duration instead.
+        # This can never make a genuinely-intended trim worse: a trim that
+        # aggressive would very likely have failed the freeze validator
+        # anyway, and this way the render degrades to "full-length clip" +
+        # a log line instead of failing the entire cast.
+        from services.media_processing import (
+            _VALIDATE_MIN_DURATION_S as _clip_min_duration_s,
+        )
+        _STALE_USER_TARGET_RATIO = 0.35
+        _stale_threshold_s = max(
+            _clip_min_duration_s, float(tts_duration_s or 0) * _STALE_USER_TARGET_RATIO,
+        )
+        if user_target_s is not None and user_target_s < _stale_threshold_s:
+            logger.warning(
+                "Block %s: ignoring implausible user_target=%.2fs (below "
+                "%.2fs — max of the %.2fs structural floor and %.0f%% of "
+                "tts=%.2fs) — likely a stale Arrange-timeline slot from "
+                "before this block's TTS settled at its current duration; "
+                "using tts=%.2fs instead",
+                block_id, user_target_s, _stale_threshold_s, _clip_min_duration_s,
+                _STALE_USER_TARGET_RATIO * 100, tts_duration_s, tts_duration_s,
+            )
+            user_target_s = None
         duration_s = (
             float(user_target_s) if user_target_s is not None else float(tts_duration_s)
         )
@@ -4433,6 +4596,29 @@ async def _render_async(task, render_id: str):
         except Exception as e:
             sentry_sdk.capture_exception(e)
 
+        # stock_photo / stock_video beats are pure B-roll — no avatar face is
+        # meant to appear at all. The category -> render_mode mapping in
+        # routers/casts.py (block creation) only special-cases
+        # avatar_voiceover / live_pip / avatar_action and falls through to
+        # "avatar_full" for everything else, so these blocks were baked as a
+        # full-frame TALKING AVATAR clip while their assigned stock_media_url
+        # (a Pexels photo/video) only ever showed as a small overlay on top —
+        # the avatar filled the background instead of the stock visual.
+        # Route them through the same B-roll bake path as voiceover blocks,
+        # which resolve_voiceover_visual_source now also checks
+        # stock_media_url for.
+        if block_render_mode in ("full", "avatar_full"):
+            try:
+                from models.block import Block as _CatBlock
+                async with factory() as _cat_session:
+                    _cat_blk = await _cat_session.get(_CatBlock, block_id)
+                    if _cat_blk is not None and getattr(_cat_blk, "category", None) in (
+                        "stock_photo", "stock_video",
+                    ):
+                        block_render_mode = "voiceover"
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+
         if block_render_mode == "voiceover":
             # Voiceover blocks have no face animation. They MUST still emit a
             # video clip for their slot — otherwise the FFmpeg compose pass
@@ -4453,6 +4639,8 @@ async def _render_async(task, render_id: str):
             broll_s = audio_dur if audio_dur > 0 else slot_s
             if broll_s <= 0:
                 broll_s = float(duration_s or 0.0)
+            if broll_s > 0:
+                voiceover_real_durations[block_id] = broll_s
 
             # Resolve the visual source in priority order, then the avatar
             # idle as last resort. We render LONGER than the slot so the
@@ -4469,6 +4657,7 @@ async def _render_async(task, render_id: str):
                     if idle_url:
                         src = ("image", idle_url)
 
+            broll_error: str | None = None
             if src is not None:
                 kind, url = src
                 try:
@@ -4486,22 +4675,66 @@ async def _render_async(task, render_id: str):
                         broll_source = "ken_burns_image"
                 except Exception as e:
                     sentry_sdk.capture_exception(e)
+                    broll_error = f"{type(e).__name__}: {e}"
                     logger.warning(
-                        "Voiceover block %s B-roll render failed for %s source: %s",
-                        block_id, kind, e,
+                        "Voiceover block %s B-roll render failed for %s source "
+                        "%s (%s) — trying avatar-idle as a last resort so the "
+                        "slot doesn't ship empty",
+                        block_id, kind, url, e,
                     )
                     video_bytes = None
+                    # The resolved source (product/parallel_media/stock_media_url)
+                    # download or ffmpeg step failed — voiceover_broll._download
+                    # already retries once internally, so this is a harder
+                    # failure (dead URL, corrupt file, unsupported codec, or a
+                    # CPU-contention ffmpeg timeout — every block in a cast
+                    # bakes concurrently, see voiceover_broll._BROLL_CONCURRENCY_LIMIT).
+                    # Fall back to the avatar-idle Ken Burns clip rather than
+                    # leaving the block with nothing baked at all, matching the
+                    # "must still emit a video clip for the slot" contract.
+                    try:
+                        async with factory() as _vo_fallback_session:
+                            idle_url = await resolve_avatar_idle_image(
+                                cast_id, _vo_fallback_session, r2,
+                            )
+                        if idle_url:
+                            video_bytes = await voiceover_broll.render_ken_burns_from_image(
+                                image_url=idle_url, slot_s=render_s,
+                                width=cw, height=ch, fps=fps,
+                            )
+                            broll_source = "ken_burns_avatar_idle_after_failure"
+                            broll_error = None  # fallback succeeded — not a failure anymore
+                    except Exception as fallback_e:
+                        sentry_sdk.capture_exception(fallback_e)
+                        logger.warning(
+                            "Voiceover block %s avatar-idle fallback also "
+                            "failed: %s", block_id, fallback_e,
+                        )
+                        video_bytes = None
+                        broll_error = (
+                            f"{broll_error} | fallback also failed: "
+                            f"{type(fallback_e).__name__}: {fallback_e}"
+                        )
 
             if not video_bytes:
+                if broll_error is None:
+                    broll_error = "no B-roll source resolved (no product/parallel_media/stock_media_url/avatar-idle available)"
                 logger.warning(
-                    "Voiceover block %s could not resolve any B-roll source — "
-                    "skipping bake (slot will fall back to compose background)",
-                    block_id,
+                    "Voiceover block %s could not produce a bake (%s) — "
+                    "skipping (slot will fall back to compose background)",
+                    block_id, broll_error,
                 )
                 now = datetime.now(timezone.utc)
+                # Real elapsed time + the actual failure reason, not a fake
+                # 0.0s/instant timestamp — the previous version stamped
+                # started_at=completed_at=now regardless of how long the
+                # attempt actually ran, which made a 30s ffmpeg timeout
+                # indistinguishable from an instant failure in block_statuses
+                # and cost real time to root-cause.
                 await _update_block_status(render_id, block_id,
-                    state="done", provider="voice",
-                    started_at=now, completed_at=now, duration_s=0.0)
+                    state="done", provider="voice", error=broll_error[:300],
+                    started_at=bake_start, completed_at=now,
+                    duration_s=max((now - bake_start).total_seconds(), 0.0))
                 completed_count += 1
                 pct = int(5 + (completed_count / len(pending_jobs)) * 85)
                 await _update_render(render_id,
@@ -4510,6 +4743,22 @@ async def _render_async(task, render_id: str):
                     progress_step=f"Block {completed_count}/{len(pending_jobs)}",
                 )
                 return primary_id, None
+
+            # Record the exact audio used for this block's bake so the
+            # post-bake rewrite step (originally lipsync-only — see
+            # _rewrite_mux_audio_to_lipsync) also refreshes THIS block's A1
+            # timeline src. Voiceover blocks have no lipsync feed so they
+            # were never covered by that rewrite; their compose-time
+            # props.src stayed frozen at whatever the Arrange-phase timeline
+            # last saved — which drifts stale the moment the block's TTS is
+            # regenerated (confirmed: a real cast had a saved src pointing at
+            # an 8.4s-old TTS file while the live variant's current audio was
+            # a different, 6.5s file — a different SENTENCE playing during
+            # compose than the one actually muxed into the bake, landing
+            # right on top of the next block's narration and sounding like
+            # two voices at once).
+            if audio_url:
+                lipsync_audio_by_block[block_id] = audio_url
 
             # Mux the narration onto the silent B-roll so the concat-copy
             # compose pass sees a uniform a/v layout (and the audio rides the
@@ -6377,7 +6626,18 @@ async def _render_async(task, render_id: str):
     # user a "retry" path; surviving baked clips remain in R2 for reuse.
     if failed_blocks:
         n = len(failed_blocks)
-        msg = f"AI render failed for {n} of {total} avatar blocks — please retry."
+        too_short_ids = [bid for bid, err in failed_blocks if "clip_too_short" in err]
+        if too_short_ids and len(too_short_ids) == n:
+            plural = n != 1
+            msg = (
+                f"{n} clip{'s' if plural else ''} on your timeline "
+                f"{'are' if plural else 'is'} too short to render — the voiceover "
+                f"doesn't fit in the time given. Open the editor, extend the clip"
+                f"{'s' if plural else ''} (drag the edge out) so {'they are' if plural else 'it is'} "
+                f"long enough for its spoken line, then render again."
+            )
+        else:
+            msg = f"AI render failed for {n} of {total} avatar blocks — please retry."
         logger.warning(
             "Render %s: %d/%d blocks failed; marking render FAILED. ids=%s",
             render_id, n, total, [b for b, _ in failed_blocks],
@@ -6402,10 +6662,16 @@ async def _render_async(task, render_id: str):
         measured_durations = await _measure_baked_block_durations(
             timeline, baked_urls, render_id,
         )
-        if measured_durations:
+        # Fill in voiceover blocks _measure_baked_block_durations couldn't
+        # cover (no baked clip to probe — e.g. the bake failed) with the
+        # real audio-driven duration their bake targeted. A successful
+        # measurement is more precise (it reflects the actual encoded
+        # clip) so it wins on conflict; this dict only fills gaps.
+        combined_durations = {**voiceover_real_durations, **measured_durations}
+        if combined_durations:
             _remeasured_tl, _re_rewritten, _ = _apply_real_block_durations(
                 timeline,
-                block_durations=measured_durations,
+                block_durations=combined_durations,
                 render_id=render_id,
                 fps=30,
             )
@@ -6478,10 +6744,27 @@ async def _render_async(task, render_id: str):
         progress_step="Composing final video",
     )
 
-    # Build the composition payload for the GPU worker
-    # Compute render dimensions from quality
-    rw, rh = {"480p": (480, 848), "720p": (720, 1280), "1080p": (1080, 1920)}.get(render_size, (480, 848))
-    overlay_elements = extract_overlay_elements(timeline, render_width=rw, render_height=rh)
+    # Build the composition payload for the GPU worker.
+    #
+    # Overlay coordinates MUST be scaled to whatever canvas the compose pass
+    # actually builds — and that canvas is ALWAYS timeline.compositionWidth/
+    # Height (see worker_ffmpeg_compose._canvas_size and this file's own
+    # _canvas_dims_for_render, used to normalize every baked block clip).
+    # Neither of those ever downscales by "quality" — there is no code path
+    # that renders the final canvas at a lower resolution than the editor's.
+    # This used to derive render_width/height from a 480p/720p/1080p quality
+    # lookup instead, which for a "hd" render silently produced a 720x1280
+    # target while the real canvas stayed 1080x1920 (sx=sy=0.667) — every
+    # full-canvas overlay (B-roll video/stock image) came out scaled to only
+    # 2/3 width, leaving a gap on the far side that let the underlying baked
+    # clip show through behind it. Confirmed by extracting an actual frame
+    # from rnd_b559ae23ee62: the same stock photo appeared twice — once
+    # correctly scaled on the left ~2/3, and again (the baked B-roll clip,
+    # visible through the gap) cropped differently on the right ~1/3.
+    cw_for_overlays, ch_for_overlays, _ = _canvas_dims_for_render(timeline)
+    overlay_elements = extract_overlay_elements(
+        timeline, render_width=cw_for_overlays, render_height=ch_for_overlays,
+    )
     logger.info("Render %s: %d overlay elements extracted from timeline", render_id, len(overlay_elements))
 
     # NOTE: Captions are authored by the frontend (editorStarterMapping.ts) and live

@@ -118,6 +118,26 @@ def test_motion_clip_at_slot_within_tolerance_accepted():
         assert reason == ClipValidationReason.OK
 
 
+def test_motion_clip_short_slot_two_frame_undershoot_accepted():
+    # rnd_5404e2add641 / blk_acab62acb226: a 2.5s slot is short enough that
+    # the 1% percentage tolerance (2.475s) is TIGHTER than the 2-frame
+    # rounding guard (2.5 - 2/30 = 2.433s) — exactly the case the floor is
+    # supposed to fall back to the looser bound for. A clip landing 1 frame
+    # short (2.467s, from a real head-trim + topup rounding chain) must be
+    # accepted, not rejected — the bug (floor = max(...) instead of min(...))
+    # picked the stricter percentage floor here and rejected it.
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = os.path.join(tmp, "c.mp4")
+        _synth_clip(clip, duration_s=2.467)
+        reason = _run(
+            validate_baked_clip(
+                clip, block_id="blk", render_id="r",
+                require_audio=False, is_motion=True, slot_duration_s=2.5,
+            )
+        )
+        assert reason == ClipValidationReason.OK
+
+
 def test_speaking_clip_not_subject_to_motion_gate():
     # A 1.07s SPEAKING clip is NOT failed by the motion gate (is_motion=False);
     # it clears the lenient 0.5s structural floor. Its own audio-relative
