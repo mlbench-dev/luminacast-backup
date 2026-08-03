@@ -1397,12 +1397,24 @@ export const goLiveApi = {
 // backend so the UI can show a "Connect your account" prompt.
 export const socialApi = {
   listProfiles: () =>
-    api.get<Array<{ id: string; platform: string; label?: string; handle?: string }>>(
+    // Zernio's GET /accounts shape (see docs.zernio.com/api/openapi):
+    // {_id, platform, username, displayName, profileUrl, isActive, ...} —
+    // NOT {id, label, handle}, which never matched anything real and made
+    // every connected account look unconnected on the frontend.
+    api.get<Array<{ _id: string; platform: string; username?: string; displayName?: string; isActive?: boolean }>>(
       "/social/profiles"
     ).then((r) => r.data),
   connectPlatform: (platform: string, redirectUri?: string) =>
     api.post<{ auth_url: string; platform: string }>(
       "/social/connect", { platform, redirect_uri: redirectUri },
+    ).then((r) => r.data),
+  // The OAuth redirect only ever carries a generic error code
+  // ("connection_failed") — this looks up Zernio's activity log for the
+  // real reason (e.g. "no YouTube channel on this Google account").
+  // Best-effort: detail is null when nothing recent is found.
+  getConnectError: (platform: string) =>
+    api.get<{ detail: string | null }>(
+      "/social/connect-error", { params: { platform } },
     ).then((r) => r.data),
   generateCaption: (data: { cast_id: string; platform: string }) =>
     api.post<{ caption: string; hashtags: string[]; first_comment: string | null }>(
@@ -1424,6 +1436,8 @@ export const socialApi = {
     }).then((r) => r.data),
   getPost: (postId: string) =>
     api.get<Record<string, any>>(`/social/posts/${postId}`).then((r) => r.data),
+  getPendingCommentCount: () =>
+    api.get<{ count: number }>("/social/comments/pending-count").then((r) => r.data),
   deletePost: (postId: string) =>
     api.delete(`/social/posts/${postId}`).then((r) => r.data),
   getComments: (postId: string) =>

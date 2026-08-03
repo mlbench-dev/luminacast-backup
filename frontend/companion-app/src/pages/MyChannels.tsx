@@ -23,6 +23,7 @@ import { cdnUrl } from "@/lib/cdn";
 import { cn } from "@/lib/cn";
 import { toast } from "@/hooks/useToast";
 import { PlatformIcon, PLATFORMS, platformLabel } from "@/components/distribute/PlatformIcon";
+import { oneLineSummary } from "@/lib/oneLineSummary";
 
 /**
  * My Channels — unified page for every connected publishing destination.
@@ -53,10 +54,29 @@ export default function SocialChannelsPage() {
     function onMessage(ev: MessageEvent) {
       if (typeof ev.data !== "object" || ev.data === null) return;
       if ((ev.data as any).type !== "zernio-connected") return;
+      // "zernio-connected" is just the message channel's name — it fires
+      // for a failed/declined OAuth too, with the real outcome carried in
+      // status/error. Ignoring those meant every attempt (including a
+      // declined authorization) showed a false "Channel connected" toast.
+      const { platform, status, error } = ev.data as any;
+      if (error || status !== "ok") {
+        // Zernio's real explanation (from the connect-error lookup) can
+        // read like a support article — fine on the callback popup, which
+        // has room, but needs collapsing to fit a toast.
+        const description = error
+          ? oneLineSummary(error)
+          : `Failed to connect ${platformLabel(platform)}.`;
+        toast({
+          title: "Could not connect",
+          description,
+          variant: "destructive",
+        });
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ["social-channels"] });
       toast({
         title: "Channel connected",
-        description: `${platformLabel((ev.data as any).platform)} ready to publish.`,
+        description: `${platformLabel(platform)} ready to publish.`,
         variant: "success",
       });
     }
@@ -140,7 +160,11 @@ function ChannelCard({
 
   const reconnect = useCallback(async () => {
     try {
-      const res = await socialApi.connectPlatform(channel.platform);
+      // Without an explicit redirect_uri the backend falls back to a
+      // hardcoded production callback URL, which breaks the OAuth
+      // round-trip on any other origin (localhost, staging).
+      const redirectUri = `${window.location.origin}/integrations/zernio/callback`;
+      const res = await socialApi.connectPlatform(channel.platform, redirectUri);
       const w = 540, h = 720;
       const left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
       const top = window.screenY + Math.max(0, (window.outerHeight - h) / 2);
@@ -303,7 +327,11 @@ function ChannelCard({
 function ConnectChannelModal({ onClose }: { onClose: () => void }) {
   const startOAuth = async (platformId: string) => {
     try {
-      const res = await socialApi.connectPlatform(platformId);
+      // Without an explicit redirect_uri the backend falls back to a
+      // hardcoded production callback URL, which breaks the OAuth
+      // round-trip on any other origin (localhost, staging).
+      const redirectUri = `${window.location.origin}/integrations/zernio/callback`;
+      const res = await socialApi.connectPlatform(platformId, redirectUri);
       const w = 540, h = 720;
       const left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
       const top = window.screenY + Math.max(0, (window.outerHeight - h) / 2);

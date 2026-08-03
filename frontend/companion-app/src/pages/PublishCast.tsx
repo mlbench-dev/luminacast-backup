@@ -5,6 +5,7 @@ import { Send, Sparkles, Calendar, Loader2, Check, AlertTriangle, Link2 } from "
 import { Button } from "@/components/ui/button";
 import { castsApi, socialApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
+import { oneLineSummary } from "@/lib/oneLineSummary";
 
 type Platform = "tiktok" | "instagram" | "youtube" | "linkedin" | "facebook";
 
@@ -49,10 +50,30 @@ export default function PublishCast() {
     function onMessage(ev: MessageEvent) {
       if (typeof ev.data !== "object" || ev.data === null) return;
       if ((ev.data as any).type !== "zernio-connected") return;
+      // "zernio-connected" is just the message channel's name — it fires
+      // for a failed/declined OAuth too, with the real outcome carried in
+      // status/error. Ignoring those meant every attempt (including the
+      // user closing the popup without authorizing) showed a false
+      // "Account connected" success toast.
+      const { platform, status, error } = ev.data as any;
+      if (error || status !== "ok") {
+        // Zernio's real explanation (from the connect-error lookup) can
+        // read like a support article — fine on the callback popup, which
+        // has room, but needs collapsing to fit a toast.
+        const description = error
+          ? oneLineSummary(error)
+          : `Failed to connect ${platform || "platform"}.`;
+        toast({
+          title: "Could not connect",
+          description,
+          variant: "destructive",
+        });
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ["social-profiles"] });
       toast({
         title: "Account connected",
-        description: `Connected ${(ev.data as any).platform || "platform"}.`,
+        description: `Connected ${platform || "platform"}.`,
         variant: "success",
       });
     }
@@ -60,9 +81,24 @@ export default function PublishCast() {
     return () => window.removeEventListener("message", onMessage);
   }, [queryClient]);
 
+  // Which platform's connect flow is in flight — connectPlatform() now also
+  // resolves the Zernio workspace profile server-side before returning the
+  // auth URL, so the request can take a moment; the button needs a visible
+  // pending state or a slow click looks like nothing happened.
+  const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
+
   const handleConnect = useCallback(async (platform: string) => {
+    setConnectingPlatform(platform);
     try {
-      const res = await socialApi.connectPlatform(platform);
+      // Without an explicit redirect_uri, the backend falls back to its
+      // hardcoded production callback URL — so testing this flow anywhere
+      // other than production (localhost, staging) sends Zernio's OAuth
+      // redirect to a domain the current tab never opened, and the
+      // "zernio-connected" postMessage never reaches this window's opener
+      // relationship. Always point back at whatever origin is actually
+      // running this page.
+      const redirectUri = `${window.location.origin}/integrations/zernio/callback`;
+      const res = await socialApi.connectPlatform(platform, redirectUri);
       // Open Zernio's OAuth URL in a centered popup.
       const w = 540, h = 720;
       const left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
@@ -85,6 +121,8 @@ export default function PublishCast() {
         description: err?.response?.data?.detail || err.message,
         variant: "destructive",
       });
+    } finally {
+      setConnectingPlatform(null);
     }
   }, []);
   const zernioMissing =
@@ -120,7 +158,7 @@ export default function PublishCast() {
   const accountByPlatform = useMemo(() => {
     const map: Record<string, string | undefined> = {};
     (profiles || []).forEach((p) => {
-      if (p.platform && !map[p.platform]) map[p.platform] = p.id;
+      if (p.platform && !map[p.platform]) map[p.platform] = p._id;
     });
     return map;
   }, [profiles]);
@@ -237,16 +275,22 @@ export default function PublishCast() {
             const active = selectedPlatforms.includes(p.value);
             const connected = !!accountByPlatform[p.value];
             if (!connected) {
+              const connecting = connectingPlatform === p.value;
               return (
                 <button
                   key={p.value}
                   onClick={() => handleConnect(p.value)}
-                  className="relative rounded-md border border-dashed border-white/15 px-3 py-2 text-sm text-white/60 hover:border-accent/60 hover:text-white transition"
+                  disabled={connecting}
+                  className="relative rounded-md border border-dashed border-white/15 px-3 py-2 text-sm text-white/60 hover:border-accent/60 hover:text-white transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:border-white/15 disabled:hover:text-white/60"
                   title={`Connect ${p.label} via Zernio`}
                 >
                   <span className="flex items-center gap-1.5">
-                    <Link2 className="h-3.5 w-3.5" />
-                    Connect {p.label}
+                    {connecting ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Link2 className="h-3.5 w-3.5" />
+                    )}
+                    {connecting ? "Connecting…" : `Connect ${p.label}`}
                   </span>
                 </button>
               );
@@ -255,7 +299,7 @@ export default function PublishCast() {
               <button
                 key={p.value}
                 onClick={() => togglePlatform(p.value)}
-                className={`relative rounded-md border px-3 py-2 text-sm transition ${
+                className={`relative rounded-md border px-3 py-2 text-sm transition cursor-pointer ${
                   active
                     ? "border-accent bg-accent/10 text-white"
                     : "border-white/10 text-white/70 hover:border-white/20"

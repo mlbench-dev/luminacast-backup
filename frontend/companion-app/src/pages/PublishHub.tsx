@@ -51,17 +51,17 @@ export default function PublishHub() {
     setParams(next, { replace: true });
   };
 
-  // Pending-comment count powers the badge on the Comments tab.
-  const { data: posts } = useQuery({
-    queryKey: ["social-posts"],
-    queryFn: () => socialApi.listPosts(),
+  // Pending-comment count powers the badge on the Comments tab. Previously
+  // approximated as "the user has any posts at all", which is true for
+  // nearly every active user regardless of actual unread comments — the
+  // dot never turned off. Now backed by a real count of comments with
+  // reply_status === "pending" across all of the user's posts.
+  const { data: pendingCommentData } = useQuery({
+    queryKey: ["pending-comment-count"],
+    queryFn: () => socialApi.getPendingCommentCount(),
+    refetchInterval: 60_000,
   });
-  // We approximate "pending" = posts that have at least one comment with
-  // reply_status === "pending". Since the list endpoint doesn't currently
-  // return per-post comment counts, we fall back to showing a dot rather
-  // than an exact number when posts.length > 0. (The Comments tab itself
-  // fetches per-post comments and shows precise counts.)
-  const pendingHint = (posts?.length || 0) > 0;
+  const pendingHint = (pendingCommentData?.count || 0) > 0;
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">

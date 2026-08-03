@@ -229,6 +229,30 @@ async def connect_platform(
     return {"auth_url": auth_url, "platform": req.platform}
 
 
+@router.get("/connect-error")
+async def get_connect_error(
+    platform: str,
+    user: User = Depends(get_current_user),
+):
+    """Best-effort detailed reason for a recent failed platform connect.
+
+    Zernio's OAuth redirect back to our callback only ever carries a
+    generic error code (e.g. "connection_failed") — the real explanation
+    (e.g. "no YouTube channel on this Google account") only exists in
+    their activity log. The callback page calls this right after landing
+    on an error so it can show something actionable instead of a bare
+    code. Returns {"detail": null} rather than erroring when nothing
+    recent is found — this is a nice-to-have enrichment, not load-bearing.
+    """
+    svc = _require_zernio()
+    try:
+        detail = await svc.get_recent_connection_error(platform)
+    except Exception:
+        logger.exception("Zernio get_recent_connection_error failed")
+        detail = None
+    return {"detail": detail}
+
+
 # \u2500\u2500 Posts \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 
@@ -287,11 +311,15 @@ async def create_social_post(
         if render is None:
             raise HTTPException(400, "Cast has no ready render to publish.")
 
-    media_url = (
-        getattr(render, "final_video_url", None)
-        or getattr(render, "output_url", None)
-        or getattr(render, "video_url", None)
-    )
+    # CastRender has none of final_video_url/output_url/video_url — those
+    # names never existed on the model (confirmed against models/cast_render.py:
+    # the only relevant column is output_video_r2_key, a storage KEY, not a
+    # full URL). Every publish attempt was hitting this getattr(..., None)
+    # fallback chain and unconditionally raising "no video URL" regardless
+    # of whether the render actually had one.
+    from services.r2_storage import get_r2_storage_service
+    r2_key = getattr(render, "output_video_r2_key", None)
+    media_url = get_r2_storage_service().get_public_url(r2_key) if r2_key else None
     if not media_url:
         raise HTTPException(400, "Render is ready but has no video URL.")
 
@@ -320,6 +348,22 @@ async def create_social_post(
         )
     except Exception as exc:
         logger.exception("Zernio.create_post failed")
+        # httpx.HTTPStatusError's str() is just "Client error '400 Bad
+        # Request' for url '...'" — Zernio's actual reason lives in the
+        # response body, which create_post now logs but doesn't raise with.
+        # Pull it out here so both the persisted row and the error shown to
+        # the user say WHY, not just that it failed.
+        detail = str(exc)
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                body = response.json()
+                detail = (
+                    (body.get("error") or body.get("message"))
+                    if isinstance(body, dict) else None
+                ) or detail
+            except Exception:
+                pass
         # Persist a failed-status row so the user can retry.
         post = SocialPost(
             id=f"spo_{uuid.uuid4().hex[:12]}",
@@ -331,29 +375,63 @@ async def create_social_post(
             media_url=media_url,
             platforms=platform_payload,
             status="failed",
-            error_message=str(exc)[:500],
+            error_message=str(detail)[:500],
         )
         db.add(post)
         await db.commit()
-        raise HTTPException(502, f"Zernio error: {exc}")
+        raise HTTPException(502, f"Zernio error: {detail}")
+
+    # Zernio's create-post response nests everything under "post" (see
+    # PostCreateResponse in their OpenAPI spec) — reading "id" / "platformPostIds"
+    # directly off the top-level result reads fields that don't exist there
+    # at all; they were always None (confirmed live: a real successful 201
+    # logged "Zernio post created: None"). That also
+    # meant a genuinely-published immediate post was hardcoded to our own
+    # "publishing" status instead of the "published" Zernio actually
+    # returned — the Published tab filters on status === "published", so
+    # every real publish was invisible there, stuck showing as if still in
+    # progress forever (nothing ever bulk-refreshes status from Zernio;
+    # only the single-post detail endpoint does).
+    zpost = result.get("post") or {}
+    zernio_status = zpost.get("status")
+    platform_post_ids = {
+        pl.get("platform"): pl.get("platformPostId")
+        for pl in (zpost.get("platforms") or [])
+        if pl.get("platform") and pl.get("platformPostId")
+    }
+    zernio_published_at = zpost.get("publishedAt")
 
     post = SocialPost(
         id=f"spo_{uuid.uuid4().hex[:12]}",
         user_id=user.id,
         cast_id=req.cast_id,
         render_id=getattr(render, "id", None),
-        zernio_post_id=str(result.get("id") or "") or None,
+        zernio_post_id=str(zpost.get("_id") or "") or None,
         caption=full_caption,
         hashtags=req.hashtags,
         media_url=media_url,
         platforms=platform_payload,
         scheduled_for=(
+            # SocialPost.scheduled_for/published_at are naive DateTime
+            # columns (TIMESTAMP WITHOUT TIME ZONE) — asyncpg rejects a
+            # tz-aware value outright (DataError: can't subtract
+            # offset-naive and offset-aware datetimes), which was turning
+            # every successful Zernio publish into a 500 on our own insert
+            # right after the post had already gone out. Normalize to UTC
+            # then strip tzinfo, matching the convention used elsewhere in
+            # this codebase (e.g. routers/admin.py, services/runpod.py).
             datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00"))
+            .astimezone(timezone.utc).replace(tzinfo=None)
             if scheduled_iso else None
         ),
-        status="scheduled" if scheduled_iso else "publishing",
-        platform_post_ids=result.get("platformPostIds") or {},
-        published_at=None if scheduled_iso else datetime.now(timezone.utc),
+        status=zernio_status or ("scheduled" if scheduled_iso else "publishing"),
+        platform_post_ids=platform_post_ids,
+        published_at=(
+            datetime.fromisoformat(zernio_published_at.replace("Z", "+00:00"))
+            .astimezone(timezone.utc).replace(tzinfo=None)
+            if zernio_published_at
+            else (None if scheduled_iso else datetime.now(timezone.utc).replace(tzinfo=None))
+        ),
     )
     db.add(post)
     await db.commit()
@@ -372,7 +450,7 @@ async def create_social_post(
             quantity_unit="posts",
             resource_type="social_post",
             resource_id=post.id,
-            provider_job_id=str(result.get("id") or "") or None,
+            provider_job_id=str(zpost.get("_id") or "") or None,
         )
         await db.commit()
     except Exception as _exc:
@@ -380,6 +458,77 @@ async def create_social_post(
         _sentry.capture_exception(_exc)
 
     return _post_to_dict(post)
+
+
+@router.get("/comments/pending-count")
+async def get_pending_comment_count(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Count of comments awaiting a reply, across all of the user's posts.
+
+    Powers the dot on the Publish hub's Comments tab. Previously that dot
+    was approximated as "the user has at least one post at all" — which is
+    true for essentially every active user regardless of whether they have
+    any unanswered comments, so it just stayed on permanently.
+    """
+    from sqlalchemy import func as _func
+    count = (
+        await db.execute(
+            select(_func.count(SocialComment.id))
+            .join(SocialPost, SocialComment.social_post_id == SocialPost.id)
+            .where(
+                SocialPost.user_id == user.id,
+                SocialComment.reply_status == "pending",
+            )
+        )
+    ).scalar_one()
+    return {"count": int(count or 0)}
+
+
+async def _apply_zernio_post_refresh(svc, p: SocialPost, raw: dict) -> None:
+    """Pull fresh status/ids/published-time from Zernio into a SocialPost.
+
+    Mutates ``p`` in place; caller is responsible for committing. ``raw``
+    is the direct return value of ``svc.get_post()`` — GET /v1/posts/{id}
+    nests everything under "post" (same PostCreateResponse shape used
+    everywhere else in Zernio's API), so it's unwrapped here rather than
+    trusting the caller to do it. This helper previously read
+    raw.get("status") / raw.get("platformPostIds") directly on the
+    still-nested response, which are fields that don't exist at that
+    level — every refresh silently did nothing, which is exactly why a
+    post could sit at "publishing" in our DB forever even though this
+    endpoint existed specifically to catch that up.
+    """
+    z = raw.get("post") or {}
+    z_status = z.get("status")
+    if z_status:
+        p.status = z_status
+    platform_post_ids = {
+        pl.get("platform"): pl.get("platformPostId")
+        for pl in (z.get("platforms") or [])
+        if pl.get("platform") and pl.get("platformPostId")
+    }
+    if platform_post_ids:
+        p.platform_post_ids = platform_post_ids
+    if z.get("publishedAt") and not p.published_at:
+        try:
+            # published_at is a naive DateTime column — see the
+            # create_social_post fix for why this must be stripped of
+            # tzinfo before assignment.
+            p.published_at = (
+                datetime.fromisoformat(z["publishedAt"].replace("Z", "+00:00"))
+                .astimezone(timezone.utc).replace(tzinfo=None)
+            )
+        except Exception:
+            pass
+    if p.zernio_post_id:
+        try:
+            a = await svc.get_post_analytics(p.zernio_post_id)
+            if a:
+                p.analytics = a
+        except Exception:
+            pass
 
 
 @router.get("/posts")
@@ -392,6 +541,31 @@ async def list_social_posts(
     if cast_id:
         q = q.where(SocialPost.cast_id == cast_id)
     rows = (await db.execute(q.order_by(SocialPost.created_at.desc()))).scalars().all()
+
+    # Opportunistically catch up any post still sitting in a non-terminal
+    # state (publishing is genuinely async on Zernio's side — a freshly
+    # created post can take several seconds to flip to "published", and
+    # until now NOTHING ever re-checked it: only the single-post detail
+    # endpoint refreshed from Zernio, which the Published tab's bulk list
+    # view never calls). That's why a post could publish successfully and
+    # still sit invisible under a "published" filter indefinitely.
+    stale = [p for p in rows if p.status in ("publishing", "scheduled") and p.zernio_post_id]
+    if stale:
+        from services.zernio import get_zernio_service
+        svc = get_zernio_service()
+        if svc is not None:
+            import asyncio
+
+            async def _refresh_one(p: SocialPost) -> None:
+                try:
+                    raw = await svc.get_post(p.zernio_post_id)
+                    await _apply_zernio_post_refresh(svc, p, raw)
+                except Exception as exc:
+                    logger.warning("Zernio refresh failed for %s: %s", p.id, exc)
+
+            await asyncio.gather(*(_refresh_one(p) for p in stale))
+            await db.commit()
+
     return [_post_to_dict(p) for p in rows]
 
 
@@ -411,25 +585,8 @@ async def get_social_post(
         svc = get_zernio_service()
         if svc is not None:
             try:
-                z = await svc.get_post(p.zernio_post_id)
-                p.platform_post_ids = z.get("platformPostIds") or p.platform_post_ids
-                z_status = z.get("status")
-                if z_status:
-                    p.status = z_status
-                if z.get("publishedAt") and not p.published_at:
-                    try:
-                        p.published_at = datetime.fromisoformat(
-                            z["publishedAt"].replace("Z", "+00:00")
-                        )
-                    except Exception:
-                        pass
-                # Pull analytics if present.
-                try:
-                    a = await svc.get_post_analytics(p.zernio_post_id)
-                    if a:
-                        p.analytics = a
-                except Exception:
-                    pass
+                raw = await svc.get_post(p.zernio_post_id)
+                await _apply_zernio_post_refresh(svc, p, raw)
                 await db.commit()
             except Exception as exc:
                 logger.warning("Zernio refresh failed for %s: %s", p.id, exc)
@@ -525,13 +682,15 @@ async def _refresh_comments_for_post(db: AsyncSession, post: SocialPost) -> int:
         platform = raw.get("platform") or "tiktok"
         author = raw.get("author") or {}
         created_iso = raw.get("createdAt") or raw.get("created_at")
+        # SocialComment.created_at is a naive DateTime column — same
+        # tz-aware-into-naive-column mismatch fixed above for SocialPost.
         try:
             created_at = (
-                datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
+                datetime.fromisoformat(created_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
                 if created_iso else datetime.now(timezone.utc)
-            )
+            ).replace(tzinfo=None)
         except Exception:
-            created_at = datetime.now(timezone.utc)
+            created_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # AI suggestion.
         ai = {"suggested_reply": None, "is_prompt_injection": False, "action": "suggest"}
@@ -625,7 +784,8 @@ async def reply_to_comment(
 
     c.actual_reply = text
     c.reply_status = "sent"
-    c.replied_at = datetime.now(timezone.utc)
+    # replied_at is a naive DateTime column — same fix as SocialPost above.
+    c.replied_at = datetime.now(timezone.utc).replace(tzinfo=None)
     await db.commit()
     return _comment_to_dict(c)
 
@@ -698,7 +858,5 @@ async def generate_caption_endpoint(
             .order_by(Block.position)
         )
     ).scalars().all()
-    cast.blocks = blocks_rows  # attach for the AI helper
-
     from services.social_ai import generate_caption
-    return await generate_caption(cast, product, req.platform)
+    return await generate_caption(blocks_rows, product, req.platform)
