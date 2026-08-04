@@ -727,15 +727,33 @@ def _run_ffmpeg_compose(req):
             for j, a in enumerate(normalized_audios):
                 in_idx = a_input_start + j
                 delay_ms = max(0, int(round(a["s"] * 1000)))
+                logger.info(
+                    "[audio_mix_debug] track=%d block_id=%s s=%.3f e=%.3f "
+                    "dur=%.3f delay_ms=%d path=%s",
+                    j, a.get("block_id"), a.get("s", 0.0), a.get("e", 0.0),
+                    a.get("dur", 0.0), delay_ms, a.get("path"),
+                )
                 label = f"a{j}d"
                 filter_parts.append(
                     f"[{in_idx}:a]adelay={delay_ms}|{delay_ms},apad[{label}]"
                 )
                 mix_inputs.append(f"[{label}]")
             mix_in = "".join(mix_inputs)
+            # normalize=0: these tracks are time-disjoint (each is delayed +
+            # padded to its own [s,e] slot — confirmed contiguous, never
+            # overlapping) rather than genuinely simultaneous sources like
+            # music+dialogue. amix's default normalize=1 divides EVERY
+            # input's volume by the total input count regardless of how many
+            # are actually non-silent at a given instant, so a 10-block cast
+            # had every voice flattened to ~1/10 volume uniformly. The
+            # dynaudnorm pass after it was then aggressively re-normalizing
+            # loudness on a rolling window to compensate — which, right at a
+            # block boundary, can pull a quiet trailing artifact from the
+            # ending block up into audibility just as the next block's
+            # dialogue starts, sounding like two voices briefly overlapping.
             filter_parts.append(
                 f"{mix_in}amix=inputs={len(mix_inputs)}:"
-                f"duration=longest:dropout_transition=0,"
+                f"duration=longest:dropout_transition=0:normalize=0,"
                 f"dynaudnorm=p=0.95[base_a]"
             )
             base_a_label = "[base_a]"

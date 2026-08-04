@@ -1109,8 +1109,9 @@ _PRODUCT_CONTENT_TYPES = {"product_showcase", "review", "live_selling"}
 
 
 def _scene_is_product_display(scene: dict) -> bool:
-    """True when a scene already puts the product on screen via a split_h half
-    (product occupying the non-face region) or an explicit product role."""
+    """True when a scene already puts the product on screen via a PIP corner
+    bubble (product/b-roll filling the full canvas behind a small avatar
+    overlay), a legacy split_h half, or an explicit product role."""
     if not isinstance(scene, dict):
         return False
     from layouts.primitives import LayoutPrimitive, coerce_to_primitive
@@ -1119,18 +1120,16 @@ def _scene_is_product_display(scene: dict) -> bool:
     block_type = (scene.get("block_type") or "").strip().lower()
     content_role = (scene.get("content_role") or "").strip().lower()
     layout = coerce_to_primitive(scene.get("pip_layout"))
+    is_product_layout = layout in (
+        LayoutPrimitive.PIP_QUARTER_BR.value,
+        LayoutPrimitive.SPLIT_H.value,
+    )
 
-    if content_role == "product" and layout == LayoutPrimitive.SPLIT_H.value:
+    if content_role == "product" and is_product_layout:
         return True
-    if (
-        category in _PRODUCT_DISPLAY_CATEGORIES
-        and layout == LayoutPrimitive.SPLIT_H.value
-    ):
+    if category in _PRODUCT_DISPLAY_CATEGORIES and is_product_layout:
         return True
-    if (
-        block_type in _PRODUCT_DISPLAY_BLOCK_TYPES
-        and layout == LayoutPrimitive.SPLIT_H.value
-    ):
+    if block_type in _PRODUCT_DISPLAY_BLOCK_TYPES and is_product_layout:
         return True
     return False
 
@@ -1154,9 +1153,12 @@ def _is_product_cast(content_type: dict | None, products: list[dict] | None) -> 
 
 
 def _build_injected_product_scene(products: list[dict] | None) -> dict:
-    """A split_h product-display beat: avatar on one half, the product clip on
-    the other. The stock_media_query lets auto_populate resolve a placeholder
-    clip when no product asset is attached yet (vision-rerank is a later step).
+    """A product-display beat: the product clip fills the full canvas with the
+    avatar riding as a small bottom-right PIP bubble, instead of a 50/50
+    split — a split crops tightly enough that neither the avatar's mic nor
+    much of their expression stays in frame. The stock_media_query lets
+    auto_populate resolve a placeholder clip when no product asset is
+    attached yet (vision-rerank is a later step).
     """
     from layouts.primitives import LayoutPrimitive
 
@@ -1168,7 +1170,7 @@ def _build_injected_product_scene(products: list[dict] | None) -> dict:
         "block_type": "product",
         "category": "pip_talking_head",
         "content_role": "product",
-        "pip_layout": LayoutPrimitive.SPLIT_H.value,
+        "pip_layout": LayoutPrimitive.PIP_QUARTER_BR.value,
         "mood": "energetic",
         "energy_level": "medium",
         "transition_in": "cut",
@@ -1184,9 +1186,11 @@ def _build_injected_product_scene(products: list[dict] | None) -> dict:
 
 
 def _build_injected_broll_scene(products: list[dict] | None) -> dict:
-    """A non-speaking b-roll/demo beat cutting to descriptive footage. split_h
-    keeps the avatar visible alongside the footage; the resolver fills the
-    non-face half from stock_media_url (placeholder OK)."""
+    """A non-speaking b-roll/demo beat cutting to descriptive footage. The
+    footage fills the full canvas with the avatar riding as a small
+    bottom-right PIP bubble (instead of a 50/50 split) so the demo clip gets
+    full-frame attention; the resolver fills the content from
+    stock_media_url (placeholder OK)."""
     from layouts.primitives import LayoutPrimitive
 
     product_name = ""
@@ -1196,7 +1200,7 @@ def _build_injected_broll_scene(products: list[dict] | None) -> dict:
     return {
         "block_type": "product_demo",
         "category": "stock_video",
-        "pip_layout": LayoutPrimitive.SPLIT_H.value,
+        "pip_layout": LayoutPrimitive.PIP_QUARTER_BR.value,
         "mood": "informative",
         "energy_level": "medium",
         "transition_in": "cut",
@@ -2806,16 +2810,28 @@ def _product_for_block(block: dict, products: list[dict] | None) -> dict | None:
     return products[0]
 
 
-def _parallel_clip_entry(best: dict, file: dict) -> dict:
-    """Shape a chosen Pexels video into a parallel_media overlay entry."""
+def _parallel_clip_entry(
+    best: dict, file: dict, *, start_offset_s: float = 0, duration_s: float | None = None,
+) -> dict:
+    """Shape a chosen Pexels video into a parallel_media overlay entry.
+
+    ``start_offset_s``/``duration_s`` default to 0/None, correct for the
+    single-clip case (one entry in the array, no staggering needed). Callers
+    placing MULTIPLE clips in the same block's parallel_media array (see
+    ``_attach_multi_angle``) MUST pass explicit, distinct offsets — the
+    frontend (editorStarterMapping.ts) only auto-staggers sequential clips
+    when start_offset_s is absent; an explicit 0 on every clip (the previous
+    bug here) defeats that fallback and stacks every clip at t=0, so only
+    the last-composited one is ever visible instead of a sequential montage.
+    """
     return {
         "kind": "video",
         "url": file["link"],
         "thumbnail": best.get("image"),
         "pexels_id": str(best.get("id")) if best.get("id") else None,
         "source": "pexels",
-        "start_offset_s": 0,
-        "duration_s": None,
+        "start_offset_s": start_offset_s,
+        "duration_s": duration_s,
         "ai_suggested": True,
     }
 
@@ -3068,12 +3084,23 @@ async def auto_populate_stock_media(
             ([f"{base} hands using"] + queries),
         ]
         beat_text = _block_beat_text(block, base)
+        try:
+            duration = float(block.get("estimated_duration_seconds") or 0)
+        except (TypeError, ValueError) as exc:
+            import sentry_sdk
+            sentry_sdk.capture_exception(exc)
+            duration = 0.0
+        slot = duration / len(angle_queries) if duration > 0 else None
         clips: list[dict] = []
-        for aq in angle_queries:
+        for idx, aq in enumerate(angle_queries):
             resolved = await fetcher(aq, beat_text, i)
             if resolved:
                 best, file = resolved
-                clips.append(_parallel_clip_entry(best, file))
+                clips.append(_parallel_clip_entry(
+                    best, file,
+                    start_offset_s=(idx * slot) if slot else 0,
+                    duration_s=slot,
+                ))
         # Need at least two distinct clips to be worth a jump cut; otherwise
         # leave the single-clip overlay already attached above.
         unique = {c["url"] for c in clips}

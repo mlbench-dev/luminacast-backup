@@ -978,8 +978,16 @@ async def validate_baked_clip(
             # the percentage tolerance is tighter than two frames on a short
             # slot. The head-trim top-up should make this fallback unnecessary,
             # but it guards the frame-boundary rounding that motivated PR-H2.
+            #
+            # Bug: this used max(), which picks whichever floor is HIGHER
+            # (stricter) — exactly backwards. When the percentage tolerance
+            # is tighter than the 2-frame allowance (any slot below ~3.3s at
+            # 30fps), max() silently threw away the 2-frame guard and
+            # enforced the tighter bound instead, rejecting clips the guard
+            # was written to protect. min() picks the more lenient of the
+            # two, matching the stated intent.
             fps = float(_VALIDATE_FRAME_FLOOR_FPS)
-            floor = max(
+            floor = min(
                 slot * (1.0 - _MOTION_DURATION_FLOOR_TOLERANCE),
                 slot - (2.0 / fps if fps > 0 else 0.0),
             )

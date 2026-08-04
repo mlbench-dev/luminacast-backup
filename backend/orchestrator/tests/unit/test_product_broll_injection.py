@@ -40,11 +40,13 @@ def test_product_cast_missing_beats_gets_injection():
     assert any(_scene_is_product_display(s) for s in out)
     assert any(_scene_is_broll(s) for s in out)
 
-    # Injected beats reuse the Step-5 split_h primitive — no invented layouts.
+    # Injected beats use a bottom-right PIP bubble over fullscreen content —
+    # a 50/50 split_h crops tightly enough that neither the avatar's mic nor
+    # much of their expression survives in frame.
     injected = [s for s in out if s.get("injected")]
     assert {s["injected"] for s in injected} == {"product_display", "broll"}
     for s in injected:
-        assert s["pip_layout"] == LayoutPrimitive.SPLIT_H.value
+        assert s["pip_layout"] == LayoutPrimitive.PIP_QUARTER_BR.value
         # Each injected beat carries a query so auto_populate can resolve a clip.
         assert s.get("stock_media_query")
 

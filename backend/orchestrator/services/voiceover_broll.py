@@ -43,19 +43,69 @@ def _derive_timeout_s(slot_s: float) -> float:
     """Per-clip ffmpeg timeout derived from the slot duration.
 
     A Ken-Burns/loop pass is a single-input re-encode whose wall time scales
-    with output length. Budget ~6x real-time plus a 30s floor for process
+    with output length. Budget ~6x real-time plus a 60s floor for process
     spin-up so a short slot still gets a usable timeout. No hardcoded render
     timeouts — this is the only place the value is computed.
+
+    The floor was 30s until every block in a cast was found to dispatch
+    concurrently (tasks/cast_render.py runs all blocks via asyncio.gather) —
+    a real render commonly bakes 3-5 of these clips at once alongside the
+    AI-cascade blocks, and on an 8-core dev machine that's enough libx264
+    contention to blow a 30s budget on a plain ~5s clip even though the same
+    encode takes 1-2s in isolation. Reproduced directly: running 5 of a real
+    cast's voiceover/stock blocks concurrently timed out 3 of them at exactly
+    30.0s while 2 finished fine. Paired with _BROLL_CONCURRENCY_LIMIT below,
+    which caps how many of these encodes fight for CPU at once in the first
+    place — the bigger floor is headroom, not the primary fix.
     """
-    return max(30.0, float(slot_s or 0.0) * 6.0)
+    return max(60.0, float(slot_s or 0.0) * 6.0)
+
+
+# Caps how many B-roll ffmpeg encodes (Ken-Burns / video-to-slot) run at once
+# across the whole process. Every block in a cast dispatches concurrently
+# (tasks/cast_render.py's asyncio.gather), and libx264 encodes are CPU-bound —
+# letting all of them race for cores at once is what produced the timeouts
+# above. This does not affect the AI-cascade (WaveSpeed/fal) blocks, which
+# are network-bound, not CPU-bound, and already serialize the on-prem GPU
+# separately via render_dispatcher's own semaphore.
+_BROLL_CONCURRENCY_LIMIT = max(2, (os.cpu_count() or 4) // 2)
+_broll_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_broll_semaphore() -> asyncio.Semaphore:
+    global _broll_semaphore
+    if _broll_semaphore is None:
+        _broll_semaphore = asyncio.Semaphore(_BROLL_CONCURRENCY_LIMIT)
+    return _broll_semaphore
 
 
 async def _download(url: str, dest_path: str, *, timeout_s: float) -> None:
-    async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=True) as http:
-        resp = await http.get(url)
-        resp.raise_for_status()
-        with open(dest_path, "wb") as fh:
-            fh.write(resp.content)
+    """Download ``url`` to ``dest_path``, retrying once on a transient failure.
+
+    A full cast render fires many concurrent downloads at once (TTS audio,
+    every block's B-roll source, avatar-cascade payloads), which occasionally
+    trips a single connection reset / timeout even though the same URL
+    downloads fine in isolation — the caller has no fallback for this block
+    once it raises (it skips the bake entirely, landing the slot on the
+    canvas background), so one retry is cheap insurance against exactly that
+    class of blip. Matches the retry-once pattern already used for TTS
+    generation (tasks/generate_cast.py).
+    """
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=True) as http:
+                resp = await http.get(url)
+                resp.raise_for_status()
+                with open(dest_path, "wb") as fh:
+                    fh.write(resp.content)
+            return
+        except Exception as e:
+            last_exc = e
+            if attempt == 1:
+                await asyncio.sleep(1.5)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _ken_burns_filter(width: int, height: int, fps: int, slot_s: float) -> str:
@@ -163,11 +213,15 @@ async def _run_ffmpeg(cmd: list[str], *, timeout_s: float, what: str) -> None:
             cmd, capture_output=True, text=True, timeout=timeout_s, check=False,
         )
 
-    try:
-        result = await asyncio.to_thread(_run)
-    except subprocess.TimeoutExpired as e:
-        sentry_sdk.capture_exception(e)
-        raise
+    # Gate the actual CPU-bound encode behind a concurrency limit — see
+    # _BROLL_CONCURRENCY_LIMIT. The download that precedes this call is not
+    # gated (it's I/O-bound and isn't what starved these processes of CPU).
+    async with _get_broll_semaphore():
+        try:
+            result = await asyncio.to_thread(_run)
+        except subprocess.TimeoutExpired as e:
+            sentry_sdk.capture_exception(e)
+            raise
     if result.returncode != 0:
         raise RuntimeError(
             f"{what} ffmpeg failed (rc={result.returncode}): "

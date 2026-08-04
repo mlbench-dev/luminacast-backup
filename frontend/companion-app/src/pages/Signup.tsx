@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useAuthStore } from "@/stores/authStore";
 import { toast } from "@/hooks/useToast";
+import { validatePassword, PASSWORD_REQUIREMENTS_TEXT } from "@/lib/passwordValidation";
 import axios from "axios";
 
 export function SignupPage() {
@@ -17,6 +18,11 @@ export function SignupPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      toast({ title: "Weak password", description: passwordError, variant: "destructive" });
+      return;
+    }
     try {
       await register(email, password, tiktokHandle || undefined);
       toast({ title: "Account created", description: "Welcome to Luminacast!", variant: "success" });
@@ -72,6 +78,7 @@ export function SignupPage() {
                     className="pl-10"
                   />
                 </div>
+                <p className="text-xs text-text-muted">{PASSWORD_REQUIREMENTS_TEXT}</p>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
                   <Input

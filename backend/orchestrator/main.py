@@ -421,6 +421,22 @@ app.add_middleware(
 from middleware.request_context import RequestContextMiddleware
 app.add_middleware(RequestContextMiddleware)
 
+# Without this, an OpenRouterError (e.g. "insufficient credits") propagates
+# as an unhandled exception — FastAPI's default handler turns that into a
+# content-free 500, so every LLM failure looked identical to the user
+# regardless of cause ("script generation failed" with no reason). Convert
+# it here, once, for every endpoint that touches OpenRouter, instead of
+# wrapping each of the 10+ call sites individually.
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from services.openrouter import OpenRouterError
+
+
+@app.exception_handler(OpenRouterError)
+async def _openrouter_error_handler(request: Request, exc: OpenRouterError):
+    status_code = 503 if exc.status_code >= 500 else 502
+    return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
 # Register routers
 from routers import auth, avatar, casts, stream, chat, products, analytics, admin, layouts, channels, webhooks, product_discovery
 from routers import avatar_backgrounds

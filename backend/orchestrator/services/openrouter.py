@@ -13,6 +13,21 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
+class OpenRouterError(RuntimeError):
+    """Raised when OpenRouter rejects a request with a clear upstream reason
+    (insufficient credits, invalid key, rate limit, ...). Carries the
+    original HTTP status so callers/handlers can decide how to respond,
+    and a human-readable message extracted from OpenRouter's own error body
+    instead of the raw httpx traceback text — without this, every failure
+    surfaced to the user as a bare "generation failed" with no indication
+    of why (e.g. a 402 "insufficient credits" looked identical to a genuine
+    bug)."""
+
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        super().__init__(message)
+
+
 def _log(level: str, service: str, message: str, **kwargs):
     logger.log(
         getattr(logging, level.upper()),
@@ -28,10 +43,30 @@ def _log(level: str, service: str, message: str, **kwargs):
     )
 
 
+_NON_RETRYABLE_STATUS_CODES = {400, 401, 402, 403, 404}
+
+
 async def _retry_async(func, *args, max_retries=3, base_delay=2.0, **kwargs):
     for attempt in range(max_retries):
         try:
             return await func(*args, **kwargs)
+        except OpenRouterError as e:
+            # Retrying an insufficient-credits or bad-auth error can't ever
+            # succeed — it just makes the user wait ~14s (2+4+8s of backoff)
+            # to see the same failure. Fail fast for anything that isn't a
+            # transient upstream issue (5xx, rate limit).
+            if e.status_code in _NON_RETRYABLE_STATUS_CODES:
+                raise
+            if attempt == max_retries - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            _log(
+                "warning",
+                func.__module__ or "service",
+                f"Retry {attempt + 1}/{max_retries}: {e}",
+                delay=delay,
+            )
+            await asyncio.sleep(delay)
         except Exception as e:
             if attempt == max_retries - 1:
                 raise
@@ -102,7 +137,27 @@ class OpenRouterService:
                     "temperature": temperature,
                 },
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                # OpenRouter's error body is the only place the REAL reason
+                # lives (e.g. "Insufficient credits. Add more using
+                # https://openrouter.ai/settings/credits" for a 402). Left
+                # to raise_for_status(), that message never leaves this
+                # function — it becomes a bare httpx.HTTPStatusError, which
+                # (with no global handler for it) FastAPI turns into a
+                # content-free 500, and the user sees only "generation
+                # failed" with nothing indicating why. Surface it instead.
+                try:
+                    body = response.json()
+                    upstream_msg = (
+                        (body.get("error") or {}).get("message")
+                        if isinstance(body, dict) else None
+                    ) or response.text
+                except Exception:
+                    upstream_msg = response.text
+                raise OpenRouterError(
+                    response.status_code,
+                    f"OpenRouter: {upstream_msg}".strip(),
+                )
             return response.json()
 
     async def generate_text(
