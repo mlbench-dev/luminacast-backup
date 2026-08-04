@@ -146,7 +146,7 @@ ABSOLUTE RULES:
 
 
 async def generate_caption(
-    cast: Any,
+    blocks: Any,
     product: Any,
     platform: str,
 ) -> dict[str, Any]:
@@ -158,7 +158,7 @@ async def generate_caption(
     """
     # Collect available script text from active variants.
     script_parts: list[str] = []
-    blocks = getattr(cast, "blocks", None) or []
+    blocks = blocks or []
     for blk in blocks:
         variants = getattr(blk, "variants", None) or []
         for v in variants:

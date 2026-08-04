@@ -243,6 +243,29 @@ def test_voiceover_branch_bakes_instead_of_returning_none():
     assert "return primary_id, baked_key" in branch
 
 
+def test_voiceover_branch_registers_audio_for_stale_src_rewrite():
+    """Bug: voiceover blocks have no lipsync feed, so they were never covered
+    by _rewrite_mux_audio_to_lipsync's post-bake refresh of the compose-time
+    A1 element's props.src — that rewrite only fires for block_ids present in
+    lipsync_audio_by_block. Confirmed against a real cast: a voiceover
+    block's saved timeline audio src pointed at an 8.4s-old TTS file while
+    the live variant's current audio was a different 6.5s file — two
+    different sentences, one baked into the clip and a stale different one
+    played separately at compose time, overlapping the next block's
+    narration and sounding like two voices talking at once.
+
+    The branch must record its audio_url into lipsync_audio_by_block (the
+    same dict the lipsync rewrite step reads) so its A1 element gets
+    refreshed to the CURRENT audio just like lipsync-driven blocks do."""
+    src = CAST_RENDER_PATH.read_text(encoding="utf-8")
+    branch = _voiceover_branch(src)
+    assert "lipsync_audio_by_block[block_id] = audio_url" in branch, (
+        "voiceover branch must register its audio_url so the post-bake "
+        "rewrite step refreshes the compose-time A1 src instead of leaving "
+        "a stale Arrange-timeline URL in place"
+    )
+
+
 def test_voiceover_branch_has_no_engine_names_in_user_strings():
     """progress_step strings must stay free of engine names (RULES.md)."""
     src = CAST_RENDER_PATH.read_text(encoding="utf-8")

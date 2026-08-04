@@ -96,6 +96,15 @@ async def _import_async(cast_id: str) -> dict:
                 file_size_bytes=len(content),
                 original_filename=f"pexels_{blk.stock_media_pexels_id or blk.id}.{ext}",
             ))
+            # Flush the new UserVideoAsset row before pointing the block's
+            # FK at it. blk.user_video_asset_id = asset_id is a bare scalar
+            # assignment (not an ORM relationship reference), so SQLAlchemy
+            # has no object-graph link telling it the block's UPDATE depends
+            # on this INSERT — without an explicit flush here it isn't
+            # guaranteed to emit the INSERT first, and Postgres checks the
+            # FK constraint immediately per statement (not deferred),
+            # raising ForeignKeyViolationError on the UPDATE.
+            await db.flush()
             blk.user_video_asset_id = asset_id
             imported += 1
             await db.commit()

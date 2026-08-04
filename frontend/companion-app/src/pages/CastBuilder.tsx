@@ -74,7 +74,7 @@ export function CastBuilderPage() {
         // Stay on editor — render progress is shown inline in the Finalize button
         setPhase("editor");
       }
-    }).catch(() => {});
+    }).catch(() => { });
   }, [loadedCast?.id]);
 
   const initialLoadDoneRef = useRef(false);
@@ -91,7 +91,7 @@ export function CastBuilderPage() {
       if (loadedCast.status === CastStatus.GENERATION_FAILED) {
         setError(loadedCast.generation_error || "Generation failed");
         if (loadedCast.progress_step?.toLowerCase().includes("tts") ||
-            loadedCast.progress_step?.toLowerCase().includes("audio")) {
+          loadedCast.progress_step?.toLowerCase().includes("audio")) {
           setPhase("audio_generating");
         } else {
           setPhase("editor");
@@ -217,8 +217,8 @@ export function CastBuilderPage() {
           const pct = active.progress_percent || 0;
           const step = active.progress_step || (
             active.status === "queued" ? `Queued #${active.queue_position || "..."}` :
-            active.status === "composing" ? "Composing final video..." :
-            `Baking ${active.baking_chunks_completed || 0}/${active.baking_chunks_total || "?"}...`
+              active.status === "composing" ? "Composing final video..." :
+                `Baking ${active.baking_chunks_completed || 0}/${active.baking_chunks_total || "?"}...`
           );
           setRenderStatus({
             status: "rendering",
@@ -294,6 +294,33 @@ export function CastBuilderPage() {
         );
         if (!proceed) return;
       } catch { /* confirm blocked — proceed anyway */ }
+    }
+
+    const MIN_SPEAKING_SLOT_S = 1.5;
+    try {
+      const regions = arrangePhaseRef.current?.getBlockRegions?.() || [];
+      const shortBlocks = regions
+        .map((r) => {
+          const block = (cast.blocks || []).find((b) => b.id === r.block_id);
+          const ttsSeconds = block?.variants?.find((v) => v.tts_duration_seconds)?.tts_duration_seconds;
+          const slotSeconds = r.end_s - r.start_s;
+          return { block, slotSeconds, ttsSeconds };
+        })
+        .filter((x) => x.ttsSeconds && x.slotSeconds < MIN_SPEAKING_SLOT_S);
+
+      if (shortBlocks.length > 0) {
+        const names = shortBlocks
+          .map((x) => `${x.slotSeconds.toFixed(2)}s clip (needs ~${x.ttsSeconds!.toFixed(1)}s)`)
+          .join(", ");
+        toast({
+          title: shortBlocks.length === 1 ? "A clip is too short to render" : "Some clips are too short to render",
+          description: `${names} — extend it on the timeline (drag its edge out) so it's long enough for the voiceover, then render again.`,
+          variant: "destructive",
+        });
+        return;
+      }
+    } catch (preflightErr) {
+      console.warn("Pre-flight duration check failed, proceeding anyway:", preflightErr);
     }
 
     setRendering(true);

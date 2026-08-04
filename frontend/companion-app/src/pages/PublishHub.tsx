@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { socialApi, castsApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { toast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 import { PlatformIcon, platformLabel } from "@/components/distribute/PlatformIcon";
 
 /**
@@ -37,7 +38,31 @@ import { PlatformIcon, platformLabel } from "@/components/distribute/PlatformIco
  * URL: /publish  with optional ?tab=schedule|published|comments
  */
 
-type Tab = "schedule" | "published" | "comments";
+type Tab = "schedule" | "scheduled" | "publishing" | "published" | "comments";
+
+const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".m4v"];
+
+/** post.media_url is the render's actual video file, not a still image —
+ * an <img> tag can't decode video and silently shows a broken-image icon.
+ * Detect video URLs and render a muted <video> instead, which browsers
+ * paint with the first frame as a static preview even without playback. */
+function MediaThumb({ url, className }: { url: string; className?: string }) {
+  const isVideo = VIDEO_EXTENSIONS.some((ext) =>
+    url.split("?", 1)[0].toLowerCase().endsWith(ext),
+  );
+  if (isVideo) {
+    return (
+      <video
+        src={url}
+        className={className}
+        muted
+        playsInline
+        preload="metadata"
+      />
+    );
+  }
+  return <img src={url} alt="" className={className} />;
+}
 
 export default function PublishHub() {
   const [params, setParams] = useSearchParams();
@@ -51,17 +76,17 @@ export default function PublishHub() {
     setParams(next, { replace: true });
   };
 
-  // Pending-comment count powers the badge on the Comments tab.
-  const { data: posts } = useQuery({
-    queryKey: ["social-posts"],
-    queryFn: () => socialApi.listPosts(),
+  // Pending-comment count powers the badge on the Comments tab. Previously
+  // approximated as "the user has any posts at all", which is true for
+  // nearly every active user regardless of actual unread comments — the
+  // dot never turned off. Now backed by a real count of comments with
+  // reply_status === "pending" across all of the user's posts.
+  const { data: pendingCommentData } = useQuery({
+    queryKey: ["pending-comment-count"],
+    queryFn: () => socialApi.getPendingCommentCount(),
+    refetchInterval: 60_000,
   });
-  // We approximate "pending" = posts that have at least one comment with
-  // reply_status === "pending". Since the list endpoint doesn't currently
-  // return per-post comment counts, we fall back to showing a dot rather
-  // than an exact number when posts.length > 0. (The Comments tab itself
-  // fetches per-post comments and shows precise counts.)
-  const pendingHint = (posts?.length || 0) > 0;
+  const pendingHint = (pendingCommentData?.count || 0) > 0;
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
@@ -82,10 +107,22 @@ export default function PublishHub() {
           label="Schedule"
         />
         <TabButton
+          active={tab === "scheduled"}
+          onClick={() => setTabAndUrl("scheduled")}
+          icon={<Calendar className="w-3.5 h-3.5" />}
+          label="Scheduled"
+        />
+        <TabButton
           active={tab === "published"}
           onClick={() => setTabAndUrl("published")}
           icon={<Send className="w-3.5 h-3.5" />}
           label="Published"
+        />
+        <TabButton
+          active={tab === "publishing"}
+          onClick={() => setTabAndUrl("publishing")}
+          icon={<Loader2 className="w-3.5 h-3.5" />}
+          label="Publishing"
         />
         <TabButton
           active={tab === "comments"}
@@ -97,6 +134,8 @@ export default function PublishHub() {
       </div>
 
       {tab === "schedule" && <ScheduleTab />}
+      {tab === "scheduled" && <ScheduledTab />}
+      {tab === "publishing" && <PublishingTab />}
       {tab === "published" && <PublishedTab />}
       {tab === "comments" && <CommentsTab />}
     </div>
@@ -141,7 +180,7 @@ function ScheduleTab() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const navigate = useNavigate();
 
-  const { data: posts, isLoading } = useQuery({
+  const { data: posts, isLoading: postsLoading } = useQuery({
     queryKey: ["social-posts"],
     queryFn: () => socialApi.listPosts(),
   });
@@ -149,10 +188,16 @@ function ScheduleTab() {
   // CHANGE 4 — fetch fully-rendered casts so the user can publish or
   // schedule them straight from this hub. Previously the only path here
   // was via per-cast /publish/:id; now PublishCard sits inline.
-  const { data: readyData } = useQuery({
+  const { data: readyData, isLoading: readyLoading } = useQuery({
     queryKey: ["ready-casts"],
     queryFn: () => castsApi.list({ status: "ready", has_render: true, include_clips: true }),
   });
+
+  // Both queries gate the same screen — tracking only `posts`' loading
+  // state let the "Ready to Publish" section (or the "nothing scheduled"
+  // empty state) render before readyData had actually arrived, then pop
+  // in a moment later once it did. Wait for both before showing anything.
+  const isLoading = postsLoading || readyLoading;
   const readyCasts: any[] = (readyData as any)?.casts || [];
 
   const scheduled = (posts || []).filter(
@@ -166,6 +211,14 @@ function ScheduleTab() {
   const postsForDay = scheduled.filter((p) =>
     isSameDay(new Date(p.scheduled_for), selectedDate),
   );
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16 text-white/40 text-sm">
+        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Loading…
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -188,11 +241,7 @@ function ScheduleTab() {
         scheduledDates={scheduledDates}
       />
 
-      {isLoading ? (
-        <div className="flex items-center justify-center py-10 text-white/40 text-sm">
-          <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Loading…
-        </div>
-      ) : postsForDay.length > 0 ? (
+      {postsForDay.length > 0 ? (
         <div className="space-y-2">
           {postsForDay.map((p) => (
             <ScheduledPostCard key={p.id} post={p} />
@@ -302,7 +351,7 @@ function ScheduledPostCard({ post }: { post: any }) {
       <div className="flex items-start gap-3">
         <div className="w-12 h-20 rounded-lg bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
           {post.media_url ? (
-            <img src={post.media_url} alt="" className="w-full h-full object-cover" />
+            <MediaThumb url={post.media_url} className="w-full h-full object-cover" />
           ) : (
             <Send className="w-4 h-4 text-white/30" />
           )}
@@ -348,7 +397,11 @@ function ScheduledPostCard({ post }: { post: any }) {
             size="sm"
             variant="ghost"
             onClick={async () => {
-              if (!window.confirm("Cancel this scheduled post?")) return;
+              if (!(await confirmAction({
+                title: "Cancel this scheduled post?",
+                confirmButtonText: "Cancel post",
+                cancelButtonText: "Keep it",
+              }))) return;
               try {
                 await socialApi.deletePost(post.id);
                 toast({ title: "Cancelled" });
@@ -410,13 +463,14 @@ function PublishCard({ cast }: { cast: any }) {
   // avatar is acting in this cast.
   const avatarThumb: string | null = cast.avatar_thumbnail_url || null;
   const avatarName: string = cast.avatar_name || "Avatar";
+  console.log(cast)
 
   return (
     <div className="p-4 bg-white/[0.03] border border-white/[0.07] rounded-xl">
       <div className="flex gap-4 mb-4">
         <div className="w-20 h-36 rounded-lg overflow-hidden bg-white/5 flex-shrink-0 relative">
-          {cast.thumbnail_url ? (
-            <img src={cast.thumbnail_url} className="w-full h-full object-cover" />
+          {cast.final_video_url ? (
+            <MediaThumb url={cast.final_video_url} className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Film className="w-6 h-6 text-white/10" />
@@ -538,6 +592,96 @@ function PublishCard({ cast }: { cast: any }) {
 }
 
 
+// ── Scheduled tab ────────────────────────────────────────────────────────
+
+function ScheduledTab() {
+  const { data: posts, isLoading } = useQuery({
+    queryKey: ["social-posts", "scheduled"],
+    queryFn: () => socialApi.listPosts({ status: "scheduled" }),
+  });
+
+  const sorted = useMemo(
+    () =>
+      [...(posts || [])].sort(
+        (a, b) =>
+          new Date(a.scheduled_for).getTime() -
+          new Date(b.scheduled_for).getTime(),
+      ),
+    [posts],
+  );
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-10 text-white/40 text-sm">
+        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Loading…
+      </div>
+    );
+  }
+
+  if (sorted.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-sm text-white/50">
+        Nothing scheduled yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {sorted.map((p) => (
+        <ScheduledPostCard key={p.id} post={p} />
+      ))}
+    </div>
+  );
+}
+
+
+// ── Publishing tab ───────────────────────────────────────────────────────
+
+function PublishingTab() {
+  const { data: posts, isLoading } = useQuery({
+    queryKey: ["social-posts", "publishing"],
+    queryFn: () => socialApi.listPosts({ status: "publishing" }),
+    // Posts actually move through this state — poll while any are visible
+    // so it self-clears without a manual refresh once Zernio finishes.
+    refetchInterval: 5000,
+  });
+
+  const sorted = useMemo(
+    () =>
+      [...(posts || [])].sort(
+        (a, b) =>
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      ),
+    [posts],
+  );
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-10 text-white/40 text-sm">
+        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Loading…
+      </div>
+    );
+  }
+
+  if (sorted.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-sm text-white/50">
+        Nothing publishing right now.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {sorted.map((p) => (
+        <ScheduledPostCard key={p.id} post={p} />
+      ))}
+    </div>
+  );
+}
+
+
 // ── Published tab ────────────────────────────────────────────────────────
 
 function PublishedTab() {
@@ -619,7 +763,7 @@ function PublishedPostCard({ post, onChanged }: { post: any; onChanged: () => vo
       <div className="flex items-start gap-3">
         <div className="w-12 h-20 rounded-lg bg-white/10 flex items-center justify-center shrink-0 overflow-hidden">
           {post.media_url ? (
-            <img src={post.media_url} alt="" className="w-full h-full object-cover" />
+            <MediaThumb url={post.media_url} className="w-full h-full object-cover" />
           ) : (
             <Send className="w-4 h-4 text-white/30" />
           )}
@@ -678,7 +822,11 @@ function PublishedPostCard({ post, onChanged }: { post: any; onChanged: () => vo
             size="sm"
             variant="ghost"
             onClick={async () => {
-              if (!window.confirm("Delete this post (also removes it on every platform)?")) return;
+              if (!(await confirmAction({
+                title: "Delete this post?",
+                text: "This also removes it on every platform it was posted to.",
+                confirmButtonText: "Delete",
+              }))) return;
               try {
                 await socialApi.deletePost(post.id);
                 toast({ title: "Post deleted" });

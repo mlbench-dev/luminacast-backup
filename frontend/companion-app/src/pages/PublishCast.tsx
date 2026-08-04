@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Send, Sparkles, Calendar, Loader2, Check, AlertTriangle, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { castsApi, socialApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
+import { oneLineSummary } from "@/lib/oneLineSummary";
 
 type Platform = "tiktok" | "instagram" | "youtube" | "linkedin" | "facebook";
 
@@ -23,9 +24,18 @@ const PLATFORMS: { value: Platform; label: string }[] = [
  * preview video URL, lets the user pick platforms + caption + schedule,
  * then calls POST /social/posts which talks to Zernio.
  */
+// The Schedule tab's inline PublishCard (PublishHub.tsx) uses its own
+// looser platform keys (e.g. "instagram_reels") when handing off here via
+// query params — collapse to this page's base Platform keys.
+function normalizePlatform(raw: string): Platform | null {
+  const base = raw.split("_")[0] as Platform;
+  return PLATFORMS.some((p) => p.value === base) ? base : null;
+}
+
 export default function PublishCast() {
   const { castId } = useParams<{ castId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const cid = castId || "";
 
   const { data: cast } = useQuery({
@@ -49,10 +59,30 @@ export default function PublishCast() {
     function onMessage(ev: MessageEvent) {
       if (typeof ev.data !== "object" || ev.data === null) return;
       if ((ev.data as any).type !== "zernio-connected") return;
+      // "zernio-connected" is just the message channel's name — it fires
+      // for a failed/declined OAuth too, with the real outcome carried in
+      // status/error. Ignoring those meant every attempt (including the
+      // user closing the popup without authorizing) showed a false
+      // "Account connected" success toast.
+      const { platform, status, error } = ev.data as any;
+      if (error || status !== "ok") {
+        // Zernio's real explanation (from the connect-error lookup) can
+        // read like a support article — fine on the callback popup, which
+        // has room, but needs collapsing to fit a toast.
+        const description = error
+          ? oneLineSummary(error)
+          : `Failed to connect ${platform || "platform"}.`;
+        toast({
+          title: "Could not connect",
+          description,
+          variant: "destructive",
+        });
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ["social-profiles"] });
       toast({
         title: "Account connected",
-        description: `Connected ${(ev.data as any).platform || "platform"}.`,
+        description: `Connected ${platform || "platform"}.`,
         variant: "success",
       });
     }
@@ -60,9 +90,24 @@ export default function PublishCast() {
     return () => window.removeEventListener("message", onMessage);
   }, [queryClient]);
 
+  // Which platform's connect flow is in flight — connectPlatform() now also
+  // resolves the Zernio workspace profile server-side before returning the
+  // auth URL, so the request can take a moment; the button needs a visible
+  // pending state or a slow click looks like nothing happened.
+  const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
+
   const handleConnect = useCallback(async (platform: string) => {
+    setConnectingPlatform(platform);
     try {
-      const res = await socialApi.connectPlatform(platform);
+      // Without an explicit redirect_uri, the backend falls back to its
+      // hardcoded production callback URL — so testing this flow anywhere
+      // other than production (localhost, staging) sends Zernio's OAuth
+      // redirect to a domain the current tab never opened, and the
+      // "zernio-connected" postMessage never reaches this window's opener
+      // relationship. Always point back at whatever origin is actually
+      // running this page.
+      const redirectUri = `${window.location.origin}/integrations/zernio/callback`;
+      const res = await socialApi.connectPlatform(platform, redirectUri);
       // Open Zernio's OAuth URL in a centered popup.
       const w = 540, h = 720;
       const left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
@@ -85,21 +130,35 @@ export default function PublishCast() {
         description: err?.response?.data?.detail || err.message,
         variant: "destructive",
       });
+    } finally {
+      setConnectingPlatform(null);
     }
   }, []);
   const zernioMissing =
     profilesError && (profilesErr as any)?.response?.status === 503;
 
-  const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>(["tiktok"]);
-  const [caption, setCaption] = useState("");
+  // Arriving from the Schedule tab's inline PublishCard (PublishHub.tsx)
+  // carries the user's selections as query params — platforms, mode
+  // (now/later), and the picked datetime — specifically so they don't have
+  // to redo them here. None of these were being read; this page always
+  // silently reset to its own defaults (Post now, no platforms preselected).
+  const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>(() => {
+    const raw = searchParams.get("platforms");
+    if (!raw) return ["tiktok"];
+    const mapped = raw.split(",").map(normalizePlatform).filter((p): p is Platform => !!p);
+    return mapped.length ? mapped : ["tiktok"];
+  });
+  const [caption, setCaption] = useState(() => searchParams.get("caption") || "");
   const [hashtags, setHashtags] = useState<string[]>([]);
   const [hashtagInput, setHashtagInput] = useState("");
   const [firstComment, setFirstComment] = useState("");
 
   const [generatingCaption, setGeneratingCaption] = useState(false);
 
-  const [postNow, setPostNow] = useState(true);
-  const [scheduledAt, setScheduledAt] = useState<string>(""); // datetime-local
+  const [postNow, setPostNow] = useState(() => searchParams.get("mode") !== "later");
+  // datetime-local value — the source (PublishHub's PublishCard) uses the
+  // same input type, so the raw query value is already in the right shape.
+  const [scheduledAt, setScheduledAt] = useState<string>(() => searchParams.get("at") || "");
   const [submitting, setSubmitting] = useState(false);
 
   // Auto-generate the caption on first load, once we have the cast.
@@ -113,17 +172,32 @@ export default function PublishCast() {
         setHashtags(res.hashtags || []);
         setFirstComment(res.first_comment || "");
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setGeneratingCaption(false));
   }, [cid, cast]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const accountByPlatform = useMemo(() => {
     const map: Record<string, string | undefined> = {};
     (profiles || []).forEach((p) => {
-      if (p.platform && !map[p.platform]) map[p.platform] = p.id;
+      if (p.platform && !map[p.platform]) map[p.platform] = p._id;
     });
     return map;
   }, [profiles]);
+
+  // A platform preselected via the ?platforms= query param (from the
+  // Schedule tab handoff) can be one the user never actually connected —
+  // sending that to Zernio puts a null accountId in the platforms array,
+  // which 400s the ENTIRE post, not just that one platform ("Invalid
+  // input: expected string, received null", param platforms.N.accountId).
+  // Once we know which accounts are really connected, drop anything
+  // preselected that isn't.
+  useEffect(() => {
+    if (!profiles) return; // still loading — don't clear based on no data yet
+    setSelectedPlatforms((sel) => {
+      const filtered = sel.filter((p) => !!accountByPlatform[p]);
+      return filtered.length === sel.length ? sel : filtered;
+    });
+  }, [profiles, accountByPlatform]);
 
   const togglePlatform = (p: Platform) =>
     setSelectedPlatforms((sel) =>
@@ -185,7 +259,11 @@ export default function PublishCast() {
           ? "Your post is being published."
           : `Will post at ${new Date(scheduledAt).toLocaleString()}.`,
       });
-      navigate("/published");
+      // /published is the old standalone page — /publish now has its own
+      // Published tab (with the opportunistic Zernio status refresh), so
+      // route there instead of the redundant page.
+      navigate(postNow ? "/publish?tab=published" : "/publish?tab=scheduled");
+    
     } catch (err: any) {
       toast({
         title: "Could not publish",
@@ -237,16 +315,22 @@ export default function PublishCast() {
             const active = selectedPlatforms.includes(p.value);
             const connected = !!accountByPlatform[p.value];
             if (!connected) {
+              const connecting = connectingPlatform === p.value;
               return (
                 <button
                   key={p.value}
                   onClick={() => handleConnect(p.value)}
-                  className="relative rounded-md border border-dashed border-white/15 px-3 py-2 text-sm text-white/60 hover:border-accent/60 hover:text-white transition"
+                  disabled={connecting}
+                  className="relative rounded-md border border-dashed border-white/15 px-3 py-2 text-sm text-white/60 hover:border-accent/60 hover:text-white transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:border-white/15 disabled:hover:text-white/60"
                   title={`Connect ${p.label} via Zernio`}
                 >
                   <span className="flex items-center gap-1.5">
-                    <Link2 className="h-3.5 w-3.5" />
-                    Connect {p.label}
+                    {connecting ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Link2 className="h-3.5 w-3.5" />
+                    )}
+                    {connecting ? "Connecting…" : `Connect ${p.label}`}
                   </span>
                 </button>
               );
@@ -255,11 +339,10 @@ export default function PublishCast() {
               <button
                 key={p.value}
                 onClick={() => togglePlatform(p.value)}
-                className={`relative rounded-md border px-3 py-2 text-sm transition ${
-                  active
+                className={`relative rounded-md border px-3 py-2 text-sm transition cursor-pointer ${active
                     ? "border-accent bg-accent/10 text-white"
                     : "border-white/10 text-white/70 hover:border-white/20"
-                }`}
+                  }`}
               >
                 {p.label}
               </button>
@@ -338,21 +421,19 @@ export default function PublishCast() {
         <div className="flex gap-3">
           <button
             onClick={() => setPostNow(true)}
-            className={`flex-1 rounded-md border px-3 py-2 text-sm ${
-              postNow
+            className={`flex-1 rounded-md border px-3 py-2 text-sm ${postNow
                 ? "border-accent bg-accent/10 text-white"
                 : "border-white/10 text-white/70 hover:border-white/20"
-            }`}
+              }`}
           >
             Post now
           </button>
           <button
             onClick={() => setPostNow(false)}
-            className={`flex-1 rounded-md border px-3 py-2 text-sm ${
-              !postNow
+            className={`flex-1 rounded-md border px-3 py-2 text-sm ${!postNow
                 ? "border-accent bg-accent/10 text-white"
                 : "border-white/10 text-white/70 hover:border-white/20"
-            }`}
+              }`}
           >
             Schedule
           </button>
