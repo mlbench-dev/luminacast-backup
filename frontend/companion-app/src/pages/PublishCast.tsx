@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Send, Sparkles, Calendar, Loader2, Check, AlertTriangle, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,9 +24,18 @@ const PLATFORMS: { value: Platform; label: string }[] = [
  * preview video URL, lets the user pick platforms + caption + schedule,
  * then calls POST /social/posts which talks to Zernio.
  */
+// The Schedule tab's inline PublishCard (PublishHub.tsx) uses its own
+// looser platform keys (e.g. "instagram_reels") when handing off here via
+// query params — collapse to this page's base Platform keys.
+function normalizePlatform(raw: string): Platform | null {
+  const base = raw.split("_")[0] as Platform;
+  return PLATFORMS.some((p) => p.value === base) ? base : null;
+}
+
 export default function PublishCast() {
   const { castId } = useParams<{ castId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const cid = castId || "";
 
   const { data: cast } = useQuery({
@@ -128,16 +137,28 @@ export default function PublishCast() {
   const zernioMissing =
     profilesError && (profilesErr as any)?.response?.status === 503;
 
-  const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>(["tiktok"]);
-  const [caption, setCaption] = useState("");
+  // Arriving from the Schedule tab's inline PublishCard (PublishHub.tsx)
+  // carries the user's selections as query params — platforms, mode
+  // (now/later), and the picked datetime — specifically so they don't have
+  // to redo them here. None of these were being read; this page always
+  // silently reset to its own defaults (Post now, no platforms preselected).
+  const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>(() => {
+    const raw = searchParams.get("platforms");
+    if (!raw) return ["tiktok"];
+    const mapped = raw.split(",").map(normalizePlatform).filter((p): p is Platform => !!p);
+    return mapped.length ? mapped : ["tiktok"];
+  });
+  const [caption, setCaption] = useState(() => searchParams.get("caption") || "");
   const [hashtags, setHashtags] = useState<string[]>([]);
   const [hashtagInput, setHashtagInput] = useState("");
   const [firstComment, setFirstComment] = useState("");
 
   const [generatingCaption, setGeneratingCaption] = useState(false);
 
-  const [postNow, setPostNow] = useState(true);
-  const [scheduledAt, setScheduledAt] = useState<string>(""); // datetime-local
+  const [postNow, setPostNow] = useState(() => searchParams.get("mode") !== "later");
+  // datetime-local value — the source (PublishHub's PublishCard) uses the
+  // same input type, so the raw query value is already in the right shape.
+  const [scheduledAt, setScheduledAt] = useState<string>(() => searchParams.get("at") || "");
   const [submitting, setSubmitting] = useState(false);
 
   // Auto-generate the caption on first load, once we have the cast.
@@ -151,7 +172,7 @@ export default function PublishCast() {
         setHashtags(res.hashtags || []);
         setFirstComment(res.first_comment || "");
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setGeneratingCaption(false));
   }, [cid, cast]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -162,6 +183,21 @@ export default function PublishCast() {
     });
     return map;
   }, [profiles]);
+
+  // A platform preselected via the ?platforms= query param (from the
+  // Schedule tab handoff) can be one the user never actually connected —
+  // sending that to Zernio puts a null accountId in the platforms array,
+  // which 400s the ENTIRE post, not just that one platform ("Invalid
+  // input: expected string, received null", param platforms.N.accountId).
+  // Once we know which accounts are really connected, drop anything
+  // preselected that isn't.
+  useEffect(() => {
+    if (!profiles) return; // still loading — don't clear based on no data yet
+    setSelectedPlatforms((sel) => {
+      const filtered = sel.filter((p) => !!accountByPlatform[p]);
+      return filtered.length === sel.length ? sel : filtered;
+    });
+  }, [profiles, accountByPlatform]);
 
   const togglePlatform = (p: Platform) =>
     setSelectedPlatforms((sel) =>
@@ -223,7 +259,11 @@ export default function PublishCast() {
           ? "Your post is being published."
           : `Will post at ${new Date(scheduledAt).toLocaleString()}.`,
       });
-      navigate("/published");
+      // /published is the old standalone page — /publish now has its own
+      // Published tab (with the opportunistic Zernio status refresh), so
+      // route there instead of the redundant page.
+      navigate(postNow ? "/publish?tab=published" : "/publish?tab=scheduled");
+    
     } catch (err: any) {
       toast({
         title: "Could not publish",
@@ -299,11 +339,10 @@ export default function PublishCast() {
               <button
                 key={p.value}
                 onClick={() => togglePlatform(p.value)}
-                className={`relative rounded-md border px-3 py-2 text-sm transition cursor-pointer ${
-                  active
+                className={`relative rounded-md border px-3 py-2 text-sm transition cursor-pointer ${active
                     ? "border-accent bg-accent/10 text-white"
                     : "border-white/10 text-white/70 hover:border-white/20"
-                }`}
+                  }`}
               >
                 {p.label}
               </button>
@@ -382,21 +421,19 @@ export default function PublishCast() {
         <div className="flex gap-3">
           <button
             onClick={() => setPostNow(true)}
-            className={`flex-1 rounded-md border px-3 py-2 text-sm ${
-              postNow
+            className={`flex-1 rounded-md border px-3 py-2 text-sm ${postNow
                 ? "border-accent bg-accent/10 text-white"
                 : "border-white/10 text-white/70 hover:border-white/20"
-            }`}
+              }`}
           >
             Post now
           </button>
           <button
             onClick={() => setPostNow(false)}
-            className={`flex-1 rounded-md border px-3 py-2 text-sm ${
-              !postNow
+            className={`flex-1 rounded-md border px-3 py-2 text-sm ${!postNow
                 ? "border-accent bg-accent/10 text-white"
                 : "border-white/10 text-white/70 hover:border-white/20"
-            }`}
+              }`}
           >
             Schedule
           </button>

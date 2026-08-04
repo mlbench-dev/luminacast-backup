@@ -104,27 +104,46 @@ class ZernioService:
 
     # \u2500\u2500 Comments \u2500\u2500
 
-    async def get_comments(self, post_id: str) -> list[dict[str, Any]]:
+    async def get_comments(self, post_id: str, account_id: str) -> list[dict[str, Any]]:
+        """GET /v1/inbox/comments/{postId}?accountId=...
+
+        Confirmed against the OpenAPI spec: comments live under the unified
+        inbox, not a /posts/{id}/comments path. That path doesn't exist \u2014
+        hitting it returned HTTP 200 with Zernio's own dashboard HTML (their
+        Next.js app's catch-all route), which silently defeated
+        resp.raise_for_status() (200 is "success") and only broke on
+        resp.json() one line later. The caller swallowed that as a generic
+        exception and logged a warning, so comments never synced and the UI
+        just showed an empty "no comments" state with no visible error \u2014
+        confirmed against a real TikTok post with an actual comment on it
+        that never appeared. accountId is required by this endpoint (each
+        platform connection has its own comment thread).
+        """
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
             resp = await client.get(
-                f"{ZERNIO_BASE}/posts/{post_id}/comments",
+                f"{ZERNIO_BASE}/inbox/comments/{post_id}",
                 headers=self.headers,
+                params={"accountId": account_id},
             )
             resp.raise_for_status()
             data = resp.json()
-            # Zernio may return either a list or {comments: [...]} \u2014 normalize.
-            if isinstance(data, dict) and "comments" in data:
-                return data["comments"]
-            return data if isinstance(data, list) else []
+            return (data.get("comments") or []) if isinstance(data, dict) else []
 
     async def reply_to_comment(
-        self, post_id: str, comment_id: str, text: str
+        self, post_id: str, account_id: str, message: str, comment_id: str | None = None,
     ) -> dict[str, Any]:
+        """POST /v1/inbox/comments/{postId} \u2014 same corrected path/shape as
+        get_comments above: accountId + message in the body, and the field
+        is "message" not "content". comment_id is optional (omit to reply
+        on the post itself rather than a specific comment)."""
+        body: dict[str, Any] = {"accountId": account_id, "message": message}
+        if comment_id:
+            body["commentId"] = comment_id
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
             resp = await client.post(
-                f"{ZERNIO_BASE}/posts/{post_id}/comments/{comment_id}/reply",
+                f"{ZERNIO_BASE}/inbox/comments/{post_id}",
                 headers=self.headers,
-                json={"content": text},
+                json=body,
             )
             resp.raise_for_status()
             return resp.json()

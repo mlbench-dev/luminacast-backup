@@ -2,71 +2,34 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
-  MessageSquare, Check, X, Edit, Loader2, ShieldAlert,
+  MessageSquare, Check, X, Edit, Loader2, ShieldAlert, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { socialApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
 
 /**
- * Comments manager.
+ * Comments manager - /comments/:postId, the comment-by-comment review UI.
  *
- * Two routes:
- *   /comments              \u2192 list of all your published posts (pick one)
- *   /comments/:postId      \u2192 the comment-by-comment review UI
+ * The bare /comments list-picker route was retired (redirects to
+ * /publish?tab=comments -- see App.tsx) since the Publish hub's Comments
+ * tab links straight into a specific post now; this component only ever
+ * receives a postId.
  *
- * The review UI shows AI-suggested replies for each comment with three
- * actions: Send, Edit, Skip. Prompt-injection attempts are auto-flagged and
- * rendered as a no-op row instead of letting them through to the LLM.
+ * Shows AI-suggested replies for each comment with three actions: Send,
+ * Edit, Skip. Prompt-injection attempts are auto-flagged and rendered as a
+ * no-op row instead of letting them through to the LLM.
  */
 export default function Comments() {
-  const { postId } = useParams<{ postId?: string }>();
-  return postId ? <PostCommentsView postId={postId} /> : <PostsListView />;
-}
-
-
-function PostsListView() {
-  const navigate = useNavigate();
-  const { data: posts } = useQuery({
-    queryKey: ["social-posts"],
-    queryFn: () => socialApi.listPosts(),
-  });
-
-  return (
-    <div className="max-w-4xl mx-auto p-6 space-y-4">
-      <div className="flex items-center gap-2">
-        <MessageSquare className="h-5 w-5 text-accent" />
-        <h1 className="text-xl font-semibold text-white">Comments</h1>
-      </div>
-      {!posts || posts.length === 0 ? (
-        <div className="rounded-md border border-dashed border-white/10 p-8 text-center text-sm text-white/50">
-          No published posts yet.
-        </div>
-      ) : (
-        <ul className="space-y-2">
-          {posts.map((p) => (
-            <li
-              key={p.id}
-              onClick={() => navigate(`/comments/${p.id}`)}
-              className="rounded-xl border border-white/10 bg-white/[0.03] p-4 cursor-pointer hover:border-white/20"
-            >
-              <p className="text-sm text-white line-clamp-1">{p.caption || p.id}</p>
-              <p className="text-xs text-white/40 mt-1">
-                {(p.platforms || []).map((pl: any) => pl.platform).join(" · ")}
-              </p>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+  const { postId } = useParams<{ postId: string }>();
+  return <PostCommentsView postId={postId!} />;
 }
 
 
 function PostCommentsView({ postId }: { postId: string }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data: comments, isLoading } = useQuery({
+  const { data: comments, isLoading, isFetching, refetch } = useQuery({
     queryKey: ["social-comments", postId],
     queryFn: () => socialApi.getComments(postId),
     refetchInterval: 30000,
@@ -90,9 +53,20 @@ function PostCommentsView({ postId }: { postId: string }) {
           <MessageSquare className="h-5 w-5 text-accent" />
           <h1 className="text-xl font-semibold text-white">Comments</h1>
         </div>
-        <Button size="sm" variant="outline" onClick={() => navigate("/comments")}>
-          Back to list
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isFetching ? "animate-spin" : ""}`} />
+            Fetch now
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => navigate("/publish?tab=comments")}>
+            Back to list
+          </Button>
+        </div>
       </div>
 
       <div className="text-xs text-white/50">
@@ -105,7 +79,7 @@ function PostCommentsView({ postId }: { postId: string }) {
         </div>
       ) : !comments || comments.length === 0 ? (
         <div className="rounded-md border border-dashed border-white/10 p-8 text-center text-sm text-white/50">
-          No comments yet. Comments are pulled from Zernio every 5 minutes.
+          No comments yet. This page refreshes from Zernio automatically every 30 seconds — hit "Fetch now" to check immediately.
         </div>
       ) : (
         <ul className="space-y-3">

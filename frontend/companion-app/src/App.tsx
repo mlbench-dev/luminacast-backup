@@ -34,7 +34,6 @@ import { DashboardPage } from "@/pages/Dashboard";
 import GoLive from "@/pages/GoLive";
 import LiveMonitor from "@/pages/LiveMonitor";
 import PublishCast from "@/pages/PublishCast";
-import Published from "@/pages/Published";
 import Comments from "@/pages/Comments";
 import PublishHub from "@/pages/PublishHub";
 import SocialChannelsPage from "@/pages/MyChannels";
@@ -72,8 +71,11 @@ export default function App() {
                 <Route path="/publish/:castId" element={<PublishCast />} />
                 {/* /distribute → /publish for bookmarks (renamed in CHANGE 1) */}
                 <Route path="/distribute" element={<Navigate to="/publish" replace />} />
-                <Route path="/published" element={<Published />} />
-                <Route path="/comments" element={<Comments />} />
+                {/* /published and bare /comments retired — both folded into
+                    /publish's tabs. Redirect (not delete) so old bookmarks
+                    still land somewhere useful, matching /distribute above. */}
+                <Route path="/published" element={<Navigate to="/publish?tab=published" replace />} />
+                <Route path="/comments" element={<Navigate to="/publish?tab=comments" replace />} />
                 <Route path="/comments/:postId" element={<Comments />} />
                 {/* Unified My Channels (CHANGE 2). Old paths redirect for bookmarks. */}
                 <Route path="/channels" element={<SocialChannelsPage />} />

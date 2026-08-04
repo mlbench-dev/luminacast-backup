@@ -1430,9 +1430,9 @@ export const socialApi = {
     scheduled_for?: string | null;
     publish_now?: boolean;
   }) => api.post<Record<string, any>>("/social/posts", data).then((r) => r.data),
-  listPosts: (castId?: string) =>
+  listPosts: (opts?: { castId?: string; status?: string }) =>
     api.get<Array<Record<string, any>>>("/social/posts", {
-      params: castId ? { cast_id: castId } : undefined,
+      params: { cast_id: opts?.castId, status: opts?.status },
     }).then((r) => r.data),
   getPost: (postId: string) =>
     api.get<Record<string, any>>(`/social/posts/${postId}`).then((r) => r.data),

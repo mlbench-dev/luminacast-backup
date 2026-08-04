@@ -690,6 +690,14 @@ async def list_casts(
         d = CastResponse.model_validate(cast).model_dump()
         d["avatar_thumbnail_url"] = thumb_url
         d["avatar_name"] = avatar_name
+        if cast.status == CastStatus.READY and cast.final_video_url:
+            d["render_status"] = "ready"
+        elif cast.status in (CastStatus.GENERATING_VIDEOS, CastStatus.GENERATING):
+            d["render_status"] = "composing"
+        elif cast.status == CastStatus.GENERATION_FAILED:
+            d["render_status"] = "failed"
+        else:
+            d["render_status"] = None
         # Legacy field — MyCasts.tsx reads cast.avatar?.face_ref_key directly.
         d["avatar"] = (
             {"id": avatar.id, "name": avatar.name, "face_ref_key": avatar.face_ref_key}

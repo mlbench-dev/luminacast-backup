@@ -43,13 +43,13 @@ def _post_to_dict(p: SocialPost) -> dict[str, Any]:
         "hashtags": p.hashtags or [],
         "media_url": p.media_url,
         "platforms": p.platforms or [],
-        "scheduled_for": p.scheduled_for.isoformat() if p.scheduled_for else None,
+        "scheduled_for": p.scheduled_for.isoformat() + "Z" if p.scheduled_for else None,
         "status": p.status,
         "platform_post_ids": p.platform_post_ids or {},
         "analytics": p.analytics or {},
         "error_message": p.error_message,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
-        "published_at": p.published_at.isoformat() if p.published_at else None,
+        "created_at": p.created_at.isoformat() + "Z" if p.created_at else None,
+        "published_at": p.published_at.isoformat() + "Z" if p.published_at else None,
     }
 
 
@@ -334,6 +334,19 @@ async def create_social_post(
     if not req.publish_now and req.scheduled_for:
         scheduled_iso = req.scheduled_for
 
+    # A platform entry with no accountId (e.g. the client preselected a
+    # platform the user never actually connected an account for) reaches
+    # Zernio as a null and 400s the ENTIRE request with a cryptic
+    # "platforms.N.accountId: expected string, received null" — fail fast
+    # here with a message that actually names the platform.
+    missing = [p.platform for p in req.platforms if not p.accountId]
+    if missing:
+        raise HTTPException(
+            400,
+            f"No connected account for: {', '.join(missing)}. "
+            "Connect it first or remove it from this post.",
+        )
+
     platform_payload = [
         {"platform": p.platform, "accountId": p.accountId} for p in req.platforms
     ]
@@ -399,7 +412,22 @@ async def create_social_post(
         for pl in (zpost.get("platforms") or [])
         if pl.get("platform") and pl.get("platformPostId")
     }
+    # Same nested-shape gap as _apply_zernio_post_refresh: Zernio doesn't
+    # always put publishedAt at the top level — a real TikTok response had
+    # it only under platforms[i].publishedAt. Falling back to the naive
+    # datetime.now() below for immediate posts happened to look right by
+    # coincidence (server time is close to actual publish time), not
+    # because this was reading the real value — check the nested location
+    # too so we store what Zernio actually reported.
     zernio_published_at = zpost.get("publishedAt")
+    if not zernio_published_at:
+        platform_dates = [
+            pl.get("publishedAt")
+            for pl in (zpost.get("platforms") or [])
+            if pl.get("publishedAt")
+        ]
+        if platform_dates:
+            zernio_published_at = min(platform_dates)
 
     post = SocialPost(
         id=f"spo_{uuid.uuid4().hex[:12]}",
@@ -511,13 +539,28 @@ async def _apply_zernio_post_refresh(svc, p: SocialPost, raw: dict) -> None:
     }
     if platform_post_ids:
         p.platform_post_ids = platform_post_ids
-    if z.get("publishedAt") and not p.published_at:
+    # Zernio's top-level post.publishedAt is only sometimes populated —
+    # a real TikTok scheduled-post response had no top-level publishedAt
+    # at all; it only existed nested under platforms[i].publishedAt (per
+    # platform, set once that platform's own publish finished). Fall back
+    # to the earliest per-platform publishedAt when the top-level one is
+    # missing, or this silently never fires for posts shaped this way.
+    z_published_at = z.get("publishedAt")
+    if not z_published_at:
+        platform_dates = [
+            pl.get("publishedAt")
+            for pl in (z.get("platforms") or [])
+            if pl.get("publishedAt")
+        ]
+        if platform_dates:
+            z_published_at = min(platform_dates)
+    if z_published_at and not p.published_at:
         try:
             # published_at is a naive DateTime column — see the
             # create_social_post fix for why this must be stripped of
             # tzinfo before assignment.
             p.published_at = (
-                datetime.fromisoformat(z["publishedAt"].replace("Z", "+00:00"))
+                datetime.fromisoformat(z_published_at.replace("Z", "+00:00"))
                 .astimezone(timezone.utc).replace(tzinfo=None)
             )
         except Exception:
@@ -534,12 +577,15 @@ async def _apply_zernio_post_refresh(svc, p: SocialPost, raw: dict) -> None:
 @router.get("/posts")
 async def list_social_posts(
     cast_id: Optional[str] = None,
+    status: Optional[str] = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     q = select(SocialPost).where(SocialPost.user_id == user.id)
     if cast_id:
         q = q.where(SocialPost.cast_id == cast_id)
+    if status:
+        q = q.where(SocialPost.status == status)
     rows = (await db.execute(q.order_by(SocialPost.created_at.desc()))).scalars().all()
 
     # Opportunistically catch up any post still sitting in a non-terminal
@@ -549,7 +595,17 @@ async def list_social_posts(
     # endpoint refreshed from Zernio, which the Published tab's bulk list
     # view never calls). That's why a post could publish successfully and
     # still sit invisible under a "published" filter indefinitely.
-    stale = [p for p in rows if p.status in ("publishing", "scheduled") and p.zernio_post_id]
+    stale = [
+        p for p in rows
+        if p.zernio_post_id and (
+            p.status in ("publishing", "scheduled")
+            # Zernio can flip status to "published" before publishedAt is
+            # backfilled (e.g. TikTok URLs arrive later via webhook) — keep
+            # retrying these too, or they get stuck showing "—" forever
+            # since they no longer match the check above.
+            or (p.status == "published" and not p.published_at)
+        )
+    ]
     if stale:
         from services.zernio import get_zernio_service
         svc = get_zernio_service()
@@ -633,13 +689,33 @@ async def _refresh_comments_for_post(db: AsyncSession, post: SocialPost) -> int:
     if svc is None:
         return 0
 
-    try:
-        remote = await svc.get_comments(post.zernio_post_id)
-    except Exception as exc:
-        import sentry_sdk as _sentry
-        _sentry.capture_exception(exc)
-        logger.warning("Zernio.get_comments failed: %s", exc)
+    # Comments are scoped per connected account, not per post — a post
+    # crossposted to N platforms has N separate comment threads. platforms
+    # is exactly [{platform, accountId}, ...] already, one entry per
+    # platform this post went to.
+    platform_accounts = [
+        (pl.get("platform"), pl.get("accountId"))
+        for pl in (post.platforms or [])
+        if pl.get("platform") and pl.get("accountId")
+    ]
+    if not platform_accounts:
         return 0
+
+    remote: list[dict] = []
+    for platform, account_id in platform_accounts:
+        try:
+            items = await svc.get_comments(post.zernio_post_id, account_id)
+        except Exception as exc:
+            import sentry_sdk as _sentry
+            _sentry.capture_exception(exc)
+            logger.warning(
+                "Zernio.get_comments failed for post=%s platform=%s: %s",
+                post.id, platform, exc,
+            )
+            continue
+        for item in items:
+            item.setdefault("platform", platform)
+        remote.extend(items)
 
     # Index existing platform_comment_ids to avoid duplicates.
     existing = (
@@ -674,14 +750,18 @@ async def _refresh_comments_for_post(db: AsyncSession, post: SocialPost) -> int:
 
     new_count = 0
     for raw in remote:
-        # Zernio shape: {id, platform, author: {name, handle}, text, createdAt, ...}
-        platform_comment_id = str(raw.get("id") or raw.get("commentId") or "")
+        # Real /v1/inbox/comments/{postId} shape (per the OpenAPI spec):
+        # {id, message, createdTime, from: {name, username, isOwner}, platform, ...}.
+        # NOT {text, author: {name, handle}, createdAt} — that was guessed
+        # against a path that doesn't exist and never returned real data to
+        # validate the shape against.
+        platform_comment_id = str(raw.get("id") or "")
         if not platform_comment_id or platform_comment_id in seen:
             continue
-        text = raw.get("text") or raw.get("content") or ""
+        text = raw.get("message") or ""
         platform = raw.get("platform") or "tiktok"
-        author = raw.get("author") or {}
-        created_iso = raw.get("createdAt") or raw.get("created_at")
+        author = raw.get("from") or {}
+        created_iso = raw.get("createdTime")
         # SocialComment.created_at is a naive DateTime column — same
         # tz-aware-into-naive-column mismatch fixed above for SocialPost.
         try:
@@ -707,8 +787,8 @@ async def _refresh_comments_for_post(db: AsyncSession, post: SocialPost) -> int:
             social_post_id=post.id,
             platform=platform,
             platform_comment_id=platform_comment_id,
-            author_name=author.get("name") or raw.get("authorName"),
-            author_handle=author.get("handle") or raw.get("authorHandle"),
+            author_name=author.get("name"),
+            author_handle=author.get("username"),
             text=text,
             ai_suggested_reply=ai.get("suggested_reply"),
             reply_status="flagged" if ai.get("is_prompt_injection") else "pending",
@@ -776,8 +856,18 @@ async def reply_to_comment(
     if not p.zernio_post_id or not c.platform_comment_id:
         raise HTTPException(400, "Comment is missing platform identifiers; cannot reply.")
 
+    # Replying requires the accountId for the SPECIFIC platform this
+    # comment came from — a crossposted post has one comment thread per
+    # platform, each under a different connected account.
+    account_id = next(
+        (pl.get("accountId") for pl in (p.platforms or []) if pl.get("platform") == c.platform),
+        None,
+    )
+    if not account_id:
+        raise HTTPException(400, f"No connected {c.platform} account found for this post.")
+
     try:
-        await svc.reply_to_comment(p.zernio_post_id, c.platform_comment_id, text)
+        await svc.reply_to_comment(p.zernio_post_id, account_id, text, comment_id=c.platform_comment_id)
     except Exception as exc:
         logger.exception("Zernio reply failed")
         raise HTTPException(502, f"Zernio error: {exc}")

@@ -136,6 +136,7 @@ class CastResponse(BaseModel):
     user_video_ids: Optional[List[str]] = None
     avatar_thumbnail_url: Optional[str] = None
     avatar_name: Optional[str] = None
+    render_status: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
