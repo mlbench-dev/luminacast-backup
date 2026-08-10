@@ -46,6 +46,7 @@ import type {
   DiscoverResponse,
   CategoryTree,
   EffectsConfig,
+  TeamRole,
 } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL || "/api";
@@ -184,6 +185,49 @@ export const authApi = {
     api.post<MessageResponse>("/auth/forgot-password", data).then((r) => r.data),
   resetPassword: (data: ResetPasswordRequest) =>
     api.post<MessageResponse>("/auth/reset-password", data).then((r) => r.data),
+};
+
+// ── Teams ──
+
+export interface TeamMemberDto {
+  id: string;
+  email: string;
+  display_name?: string | null;
+  role: TeamRole;
+  status: "pending" | "active" | "revoked";
+  invited_at: string;
+  accepted_at?: string | null;
+}
+
+export interface WorkspaceOptionDto {
+  owner_id: string;
+  owner_label: string;
+  role?: TeamRole | null;
+  is_own: boolean;
+}
+
+export const teamsApi = {
+  listMembers: () =>
+    api.get<{ members: TeamMemberDto[] }>("/teams/members").then((r) => r.data.members),
+  invite: (data: { email: string; role: TeamRole }) =>
+    api.post<TeamMemberDto>("/teams/invite", data).then((r) => r.data),
+  changeRole: (memberId: string, role: TeamRole) =>
+    api.patch<TeamMemberDto>(`/teams/members/${memberId}/role`, { role }).then((r) => r.data),
+  revoke: (memberId: string) =>
+    api.delete(`/teams/members/${memberId}`).then((r) => r.data),
+  previewInvite: (token: string) =>
+    api
+      .get<{ email: string; owner_label: string; role: TeamRole; requires_password: boolean }>(
+        "/teams/accept-invite/preview",
+        { params: { token } },
+      )
+      .then((r) => r.data),
+  acceptInvite: (data: { token: string; password?: string }) =>
+    api.post<TokenResponse>("/teams/accept-invite", data).then((r) => r.data),
+  myWorkspaces: () =>
+    api.get<{ workspaces: WorkspaceOptionDto[] }>("/teams/my-workspaces").then((r) => r.data.workspaces),
+  switchWorkspace: (ownerId: string) =>
+    api.post<TokenResponse>("/teams/switch-workspace", { owner_id: ownerId }).then((r) => r.data),
 };
 
 // ── User profile (custom interests, etc) ──
@@ -537,7 +581,26 @@ export const castsApi = {
     api.post<{ task_id: string; block_id: string; cost_cents: number; quality: string }>(
       `/casts/${castId}/blocks/${blockId}/render`, data,
     ).then(r => r.data),
+
+  // Teams — review/approval workflow
+  submitForReview: (castId: string) =>
+    api.post<{ cast_id: string; approval_status: string }>(`/casts/${castId}/submit-for-review`).then(r => r.data),
+  approveCast: (castId: string) =>
+    api.post<{ cast_id: string; approval_status: string }>(`/casts/${castId}/approve`).then(r => r.data),
+  rejectReview: (castId: string, reason?: string) =>
+    api.post<{ cast_id: string; approval_status: string }>(`/casts/${castId}/reject-review`, { reason }).then(r => r.data),
+  reviewQueue: () =>
+    api.get<{ casts: ReviewQueueCast[] }>("/casts/review-queue").then(r => r.data.casts),
 };
+
+export interface ReviewQueueCast {
+  id: string;
+  name?: string;
+  description?: string;
+  submitted_for_review_at: string | null;
+  submitted_by: string | null;
+  submitted_by_name: string | null;
+}
 
 // ── Products ──
 

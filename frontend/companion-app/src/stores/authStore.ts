@@ -1,7 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { User, UserRole } from "@/lib/types";
-import { authApi, setAuthToken, extractErrorMessage } from "@/lib/api";
+import type { User, UserRole, TeamRole } from "@/lib/types";
+import { authApi, teamsApi, setAuthToken, extractErrorMessage } from "@/lib/api";
+
+const TEAM_ROLE_RANK: Record<TeamRole, number> = {
+  viewer: 0,
+  creator: 1,
+  publisher: 2,
+} as Record<TeamRole, number>;
 
 interface AuthState {
   token: string | null;
@@ -16,6 +22,12 @@ interface AuthState {
   hydrate: () => void;
   isAuthenticated: () => boolean;
   hasRole: (role: UserRole) => boolean;
+  // Cosmetic UI gating only — the backend enforces every one of these
+  // independently (routers/auth.py's require_role/require_owner). True
+  // when the caller is the workspace owner OR holds at least `min` team
+  // role. Never trust this alone for anything that matters.
+  hasTeamRole: (min: TeamRole) => boolean;
+  switchWorkspace: (ownerId: string) => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -88,6 +100,21 @@ export const useAuthStore = create<AuthState>()(
 
       isAuthenticated: () => !!get().token,
       hasRole: (role) => get().user?.role === role,
+      hasTeamRole: (min) => {
+        const workspace = get().user?.workspace;
+        if (!workspace) return false;
+        if (workspace.is_own) return true;
+        const role = workspace.role;
+        if (!role) return false;
+        return TEAM_ROLE_RANK[role] >= TEAM_ROLE_RANK[min];
+      },
+      switchWorkspace: async (ownerId) => {
+        const res = await teamsApi.switchWorkspace(ownerId);
+        setAuthToken(res.access_token);
+        set({ token: res.access_token });
+        const user = await authApi.me();
+        set({ user });
+      },
     }),
     {
       name: "luminacast-auth",

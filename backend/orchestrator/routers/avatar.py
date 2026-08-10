@@ -11,11 +11,11 @@ from sqlalchemy import update as sa_update
 from pydantic import BaseModel
 from typing import Optional
 from database import get_db
-from models.user import User
+from models.user import User, TeamRole
 from models.avatar import Avatar, AvatarType, AvatarStatus, BodyShotSet
 from models.avatar_look import AvatarLook
 from models.voice_corpus import VoiceCorpusEntry
-from routers.auth import get_current_user
+from routers.auth import get_current_user, WorkspaceContext, require_role
 from services import audit_log
 from services.r2_storage import get_r2_storage_service
 from services.fish_audio import get_fish_audio_service
@@ -273,13 +273,14 @@ def _avatar_to_response(avatar: Avatar, voice_corpus_count: int = 0) -> AvatarRe
 @router.get("/list", response_model=AvatarListResponse)
 async def list_avatars(
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
     status: str | None = None,
 ):
     """List all avatars for the current user. Optional status filter (comma-separated)."""
     query = (
         select(Avatar)
-        .where(Avatar.user_id == user.id)
+        .where(Avatar.user_id == ctx.workspace_owner_id)
         .where(Avatar.id != "default")
         .order_by(Avatar.created_at.desc())
     )
@@ -323,6 +324,7 @@ async def list_avatars(
 async def clone_from_tiktok(
     req: CloneFromTikTokRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     if not req.consent_confirmed:
@@ -336,8 +338,7 @@ async def clone_from_tiktok(
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
-        user_id=user.id,
-        type=AvatarType.CLONE,
+        user_id=ctx.workspace_owner_id,        type=AvatarType.CLONE,
         status=AvatarStatus.PROCESSING,
         name=req.name or f"Clone from TikTok",
         tiktok_source_url=tiktok_url,
@@ -377,6 +378,7 @@ class CreateAvatarResponse(BaseModel):
 async def create_avatar(
     req: CreateAvatarRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Create an Avatar record ONLY — no Celery task launched.
@@ -394,8 +396,7 @@ async def create_avatar(
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
-        user_id=user.id,
-        type=AvatarType.CLONE,
+        user_id=ctx.workspace_owner_id,        type=AvatarType.CLONE,
         status=AvatarStatus.DRAFT,
         name=req.name or ("Clone from TikTok" if tiktok_url else "Clone Avatar"),
         tiktok_source_url=tiktok_url or None,
@@ -428,6 +429,7 @@ async def clone_with_media(
     photo: UploadFile | None = File(default=None),
     audio: UploadFile | None = File(default=None),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a clone avatar using uploaded photo and/or audio (camera, mic, or file upload)."""
@@ -449,7 +451,7 @@ async def clone_with_media(
             raise HTTPException(status_code=400, detail="Image file is too small.")
         if len(photo_bytes) > 10 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Image file is too large. Maximum 10MB.")
-        face_key = f"creators/{user.id}/avatar/{avatar_id}/face_ref.jpg"
+        face_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/face_ref.jpg"
         await r2.upload_bytes(photo_bytes, face_key, photo.content_type or "image/jpeg")
 
     # Upload audio if provided
@@ -465,7 +467,7 @@ async def clone_with_media(
         if len(audio_bytes) > 20 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Audio file is too large. Maximum 20MB.")
         ext = "webm" if "webm" in (audio.content_type or "") else "mp3"
-        voice_sample_key = f"creators/{user.id}/avatar/{avatar_id}/voice_sample.{ext}"
+        voice_sample_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/voice_sample.{ext}"
         await r2.upload_bytes(audio_bytes, voice_sample_key, audio.content_type or "audio/webm")
 
     # Normalize TikTok URL if provided
@@ -479,8 +481,7 @@ async def clone_with_media(
 
     avatar = Avatar(
         id=avatar_id,
-        user_id=user.id,
-        type=AvatarType.CLONE,
+        user_id=ctx.workspace_owner_id,        type=AvatarType.CLONE,
         status=AvatarStatus.PROCESSING,
         name=name or "Clone Avatar",
         face_ref_key=face_key,
@@ -513,13 +514,13 @@ async def clone_with_media(
 async def generate_digital(
     req: GenerateDigitalRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
-        user_id=user.id,
-        type=AvatarType.DIGITAL,
+        user_id=ctx.workspace_owner_id,        type=AvatarType.DIGITAL,
         status=AvatarStatus.PROCESSING,
         name=req.name or "AI Character",
         description=req.description,
@@ -536,7 +537,7 @@ async def generate_digital(
 
     from tasks.generate_avatar import generate_digital_avatar_task
     generate_digital_avatar_task.delay(
-        avatar_id, user.id,
+        avatar_id, ctx.workspace_owner_id,
         req.description or "", req.voice_style or "energetic",
         req.persona_preset or "energetic_beauty",
         req.background or "studio", req.camera_position or "waist_up",
@@ -550,10 +551,11 @@ async def generate_digital(
 async def get_avatar_status(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     from sqlalchemy import func as sa_func
@@ -681,11 +683,12 @@ async def _seed_body_motion_looks_from_body_shot_set(db: AsyncSession, avatar_id
 async def approve_avatar(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Approve the avatar after reviewing the test video. Makes it available for Casts."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if avatar.status != AvatarStatus.READY:
         raise HTTPException(status_code=400, detail="Avatar must be in 'ready' status to approve")
@@ -753,11 +756,12 @@ async def regenerate_avatar(
     avatar_id: str,
     req: RegenerateRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Regenerate the avatar's test video with optional new test script."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if avatar.status not in (AvatarStatus.READY, AvatarStatus.APPROVED, AvatarStatus.FAILED, AvatarStatus.FACE_CANDIDATES_READY, AvatarStatus.PROCESSING):
         raise HTTPException(status_code=400, detail="Cannot regenerate avatar in current status")
@@ -786,7 +790,7 @@ async def regenerate_avatar(
     # Launch regeneration task (only audio + video steps)
     from tasks.generate_avatar import regenerate_avatar_video_task
     regenerate_avatar_video_task.delay(
-        avatar_id, user.id,
+        avatar_id, ctx.workspace_owner_id,
         req.test_script or avatar.test_script or "",
     )
 
@@ -806,6 +810,7 @@ async def regenerate_avatar(
 async def reclone_voice(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-run only the voice cloning pipeline for an avatar.
@@ -814,7 +819,7 @@ async def reclone_voice(
     BS-RoFormer fell back to CPU and timed out, resulting in wrong gender voice).
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     if avatar.status not in (AvatarStatus.READY, AvatarStatus.FACE_CANDIDATES_READY, AvatarStatus.APPROVED):
@@ -825,7 +830,7 @@ async def reclone_voice(
 
     if avatar.video_ref_key:
         from tasks.generate_avatar import process_voice_pipeline_task
-        process_voice_pipeline_task.delay(avatar_id, user.id, avatar.video_ref_key, segment_start, segment_end)
+        process_voice_pipeline_task.delay(avatar_id, ctx.workspace_owner_id, avatar.video_ref_key, segment_start, segment_end)
     else:
         # audio-sample path — reuse the same clone helper used by /clone-voice
         r2 = get_r2_storage_service()
@@ -847,7 +852,7 @@ async def reclone_voice(
 
     # from tasks.generate_avatar import process_voice_pipeline_task
     # process_voice_pipeline_task.delay(
-    #     avatar_id, user.id,
+    #     avatar_id, ctx.workspace_owner_id,
     #     avatar.video_ref_key, segment_start, segment_end,
     # )
 
@@ -858,11 +863,12 @@ async def reclone_voice(
 async def stream_avatar_video(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Stream the avatar test video directly. Supports Range requests for smooth playback."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if not avatar.test_video_key:
         raise HTTPException(status_code=404, detail="No test video available")
@@ -893,11 +899,12 @@ async def stream_avatar_video(
 async def get_candidates(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return candidate frame URLs for an avatar in candidates_ready status."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if avatar.status != AvatarStatus.CANDIDATES_READY:
         raise HTTPException(status_code=400, detail="Avatar does not have candidate frames ready")
@@ -976,11 +983,12 @@ async def select_frame(
     avatar_id: str,
     req: SelectFrameRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Select a candidate frame URL and launch the remaining pipeline."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if avatar.status != AvatarStatus.CANDIDATES_READY:
         raise HTTPException(status_code=400, detail="Avatar is not awaiting frame selection")
@@ -1008,7 +1016,7 @@ async def select_frame(
     await db.commit()
 
     from tasks.generate_avatar import generate_from_selection_task
-    generate_from_selection_task.delay(avatar_id, user.id)
+    generate_from_selection_task.delay(avatar_id, ctx.workspace_owner_id)
     return _avatar_to_response(avatar)
 
 
@@ -1017,11 +1025,12 @@ async def capture_frame(
     avatar_id: str,
     frame: UploadFile = File(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a captured frame from the video scrubber and launch the remaining pipeline."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if avatar.status != AvatarStatus.CANDIDATES_READY:
         raise HTTPException(status_code=400, detail="Avatar is not awaiting frame capture")
@@ -1032,7 +1041,7 @@ async def capture_frame(
 
     from services.r2_storage import get_r2_storage_service
     r2 = get_r2_storage_service()
-    face_key = f"creators/{user.id}/avatar/{avatar_id}/face_ref.jpg"
+    face_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/face_ref.jpg"
     await r2.upload_bytes(frame_bytes, face_key, "image/jpeg")
 
     if not await _claim_avatar_for_generation(avatar, db, require_status=AvatarStatus.CANDIDATES_READY):
@@ -1047,7 +1056,7 @@ async def capture_frame(
     await db.commit()
 
     from tasks.generate_avatar import generate_from_selection_task
-    generate_from_selection_task.delay(avatar_id, user.id)
+    generate_from_selection_task.delay(avatar_id, ctx.workspace_owner_id)
     return _avatar_to_response(avatar)
 
 
@@ -1059,6 +1068,7 @@ async def capture_frame(
 async def fetch_videos(
     req: FetchVideosRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Fetch TikTok video metadata with server-side caching and pagination.
@@ -1188,8 +1198,7 @@ async def fetch_videos(
         job_id = f"scrape_{uuid.uuid4().hex[:12]}"
         cache_entry = ScrapingJob(
             id=job_id,
-            user_id=user.id,
-            platform="tiktok",
+            user_id=ctx.workspace_owner_id,            platform="tiktok",
             handle=tiktok_handle,
             normalized_url=tiktok_url,
             status="completed",
@@ -1285,6 +1294,7 @@ class DownloadVideoResponse(BaseModel):
 async def download_video(
     req: DownloadVideoRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Download a single TikTok video via yt-dlp, faststart it, upload to R2.
     Called when user selects a video from the gallery.
@@ -1295,8 +1305,8 @@ async def download_video(
     import hashlib
 
     video_hash = hashlib.md5(req.web_video_url.encode()).hexdigest()[:8]
-    tmp_video = os.path.join(tempfile.gettempdir(), f"dl_{user.id}_{video_hash}.mp4")
-    tmp_fast = os.path.join(tempfile.gettempdir(), f"dl_{user.id}_{video_hash}_fast.mp4")
+    tmp_video = os.path.join(tempfile.gettempdir(), f"dl_{ctx.workspace_owner_id}_{video_hash}.mp4")
+    tmp_fast = os.path.join(tempfile.gettempdir(), f"dl_{ctx.workspace_owner_id}_{video_hash}_fast.mp4")
 
     try:
         # Download via yt-dlp
@@ -1333,7 +1343,7 @@ async def download_video(
         # Upload to R2
         from services.r2_storage import get_r2_storage_service
         r2 = get_r2_storage_service()
-        video_r2_key = f"creators/{user.id}/videos/{video_hash}.mp4"
+        video_r2_key = f"creators/{ctx.workspace_owner_id}/videos/{video_hash}.mp4"
         await r2.upload_file(upload_path, video_r2_key, content_type="video/mp4")
         video_cdn_url = r2.get_public_url(video_r2_key)
 
@@ -1355,6 +1365,7 @@ async def process_segment(
     avatar_id: str,
     req: ProcessSegmentRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Receive a video segment selection and kick off image + voice pipelines in parallel.
@@ -1363,7 +1374,7 @@ async def process_segment(
     Voice pipeline: extract audio → BS-RoFormer → normalize → Fish Audio clone
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     if req.end_seconds <= req.start_seconds:
@@ -1387,11 +1398,11 @@ async def process_segment(
     from tasks.generate_avatar import process_image_pipeline_task, process_voice_pipeline_task
 
     process_image_pipeline_task.delay(
-        avatar_id, user.id,
+        avatar_id, ctx.workspace_owner_id,
         req.video_r2_key, req.start_seconds, req.end_seconds,
     )
     process_voice_pipeline_task.delay(
-        avatar_id, user.id,
+        avatar_id, ctx.workspace_owner_id,
         req.video_r2_key, req.start_seconds, req.end_seconds,
     )
 
@@ -1404,6 +1415,7 @@ async def edit_frame(
     avatar_id: str,
     req: EditFrameRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Edit a face candidate frame using FLUX Kontext Pro.
@@ -1413,7 +1425,7 @@ async def edit_frame(
     to R2 as the avatar's face_ref.jpg.
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     from services.flux_kontext import edit_avatar_frame
@@ -1423,7 +1435,7 @@ async def edit_frame(
     r2 = get_r2_storage_service()
 
     try:
-        edited_url = await edit_avatar_frame(req.frame_url, req.instructions, user_id=user.id)
+        edited_url = await edit_avatar_frame(req.frame_url, req.instructions, user_id=ctx.workspace_owner_id)
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise HTTPException(status_code=500, detail=f"Face editing failed: {str(e)[:200]}")
@@ -1437,7 +1449,7 @@ async def edit_frame(
             edited_bytes = resp.content
 
         ts = int(_time.time())
-        face_key = f"creators/{user.id}/avatar/{avatar_id}/face_ref_{ts}.jpg"
+        face_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/face_ref_{ts}.jpg"
         await r2.upload_bytes(edited_bytes, face_key, "image/jpeg", cache_control="no-cache, no-store, must-revalidate")
 
         avatar.face_ref_key = face_key
@@ -1454,7 +1466,7 @@ async def edit_frame(
             avatar.progress_percent = 80
             await db.commit()
             from tasks.generate_avatar import regenerate_avatar_video_task
-            regenerate_avatar_video_task.delay(avatar_id, user.id, avatar.test_script or "")
+            regenerate_avatar_video_task.delay(avatar_id, ctx.workspace_owner_id, avatar.test_script or "")
         else:
             # Voice still running -- advance to voice phase so its progress messages flow through
             avatar.active_phase = AvatarPhase.VOICE
@@ -1475,6 +1487,7 @@ async def edit_frame(
 async def get_face_candidates(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return scored face candidate URLs for this avatar.
@@ -1484,7 +1497,7 @@ async def get_face_candidates(
     voice_clone_progress so frontend can track both pipelines.
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     allowed = (
@@ -1530,6 +1543,7 @@ async def upload_face(
     avatar_id: str,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a manually captured frame as the face reference, bypassing auto face extraction.
@@ -1538,7 +1552,7 @@ async def upload_face(
     status to FACE_CANDIDATES_READY so the rest of the flow continues.
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     if file.content_type not in ("image/jpeg", "image/png", "image/webp", "image/jpg"):
@@ -1553,7 +1567,7 @@ async def upload_face(
     from services.r2_storage import get_r2_storage_service
     r2 = get_r2_storage_service()
 
-    face_key = f"creators/{user.id}/avatar/{avatar_id}/face_ref_manual.jpg"
+    face_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/face_ref_manual.jpg"
     await r2.upload_bytes(file_bytes, face_key, file.content_type or "image/jpeg")
 
     avatar.face_ref_key = face_key
@@ -1576,6 +1590,7 @@ async def upload_frame(
     avatar_id: str,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a manually captured video frame as a face candidate.
@@ -1584,7 +1599,7 @@ async def upload_frame(
     and adds to the candidate_frames array on the avatar.
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     if file.content_type not in ("image/jpeg", "image/png", "image/webp", "image/jpg"):
@@ -1601,7 +1616,7 @@ async def upload_frame(
     r2 = get_r2_storage_service()
 
     timestamp = int(time.time() * 1000)
-    r2_key = f"creators/{user.id}/avatar/{avatar_id}/manual_frame_{timestamp}.jpg"
+    r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/manual_frame_{timestamp}.jpg"
     await r2.upload_bytes(file_bytes, r2_key, file.content_type or "image/jpeg")
 
     # Add to candidate_frames array
@@ -1625,6 +1640,7 @@ async def select_face(
     avatar_id: str,
     req: SelectFaceRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Persist the user's chosen face candidate URL as face_ref_key on the Avatar.
@@ -1633,7 +1649,7 @@ async def select_face(
     going through the FLUX Kontext edit-frame endpoint (B-054).
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     from services.r2_storage import get_r2_storage_service
@@ -1662,7 +1678,7 @@ async def select_face(
         await db.commit()
         from tasks.generate_avatar import regenerate_avatar_video_task
         test_script = avatar.test_script or ""
-        regenerate_avatar_video_task.delay(avatar_id, user.id, test_script)
+        regenerate_avatar_video_task.delay(avatar_id, ctx.workspace_owner_id, test_script)
     else:
         # Voice still running -- advance to voice phase so its progress messages flow through
         avatar.active_phase = AvatarPhase.VOICE
@@ -1683,6 +1699,7 @@ class UploadVideoResponse(BaseModel):
 async def upload_video(
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Upload a video file for avatar cloning. Validates format, size, duration.
     Uploads to R2 and returns the key + CDN URL + duration.
@@ -1706,7 +1723,7 @@ async def upload_video(
         raise HTTPException(status_code=400, detail="File too small or empty.")
 
     # Save to temp file for ffprobe
-    tmp_path = os.path.join(tempfile.gettempdir(), f"upload_{user.id}_{uuid.uuid4().hex[:8]}.{ext}")
+    tmp_path = os.path.join(tempfile.gettempdir(), f"upload_{ctx.workspace_owner_id}_{uuid.uuid4().hex[:8]}.{ext}")
     try:
         with open(tmp_path, "wb") as f:
             f.write(contents)
@@ -1732,7 +1749,7 @@ async def upload_video(
         # Upload to R2
         from services.r2_storage import get_r2_storage_service
         r2 = get_r2_storage_service()
-        video_r2_key = f"creators/{user.id}/uploads/{uuid.uuid4().hex[:12]}.{ext}"
+        video_r2_key = f"creators/{ctx.workspace_owner_id}/uploads/{uuid.uuid4().hex[:12]}.{ext}"
         content_type = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm"}.get(ext, "video/mp4")
         await r2.upload_bytes(contents, video_r2_key, content_type)
         video_url = r2.get_public_url(video_r2_key)
@@ -1756,10 +1773,11 @@ async def update_avatar(
     avatar_id: str,
     update: dict = Body(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Avatar not found")
     # Whitelist of updatable fields
     allowed = {
@@ -1952,6 +1970,7 @@ async def analyze_style_dna(
     avatar_id: str,
     req: StyleDNARequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Analyze 1-3 creator videos to extract Style DNA for an avatar.
@@ -1963,7 +1982,7 @@ async def analyze_style_dna(
     import os
 
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     urls = [u.strip() for u in (req.urls or []) if u and u.strip()]
@@ -1987,10 +2006,10 @@ async def analyze_style_dna(
     for url in urls:
         try:
             # 1. download
-            video_path, _video_dur = await _download_video_for_style(url, user.id)
+            video_path, _video_dur = await _download_video_for_style(url, ctx.workspace_owner_id)
             tmp_files.append(video_path)
             await log_usage(
-                db, user_id=user.id, event_type="video_scrape",
+                db, user_id=ctx.workspace_owner_id, event_type="video_scrape",
                 provider="apify", provider_cost_usd=0.05,
                 quantity=1, quantity_unit="videos",
                 resource_type="avatar", resource_id=avatar.id,
@@ -2008,10 +2027,10 @@ async def analyze_style_dna(
             clean_audio = raw_audio
             if gpu_client is not None:
                 try:
-                    audio_key = f"creators/{user.id}/avatar/{avatar.id}/style_dna_input_{uuid.uuid4().hex[:8]}.wav"
+                    audio_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/style_dna_input_{uuid.uuid4().hex[:8]}.wav"
                     await r2.upload_file(raw_audio, audio_key, content_type="audio/wav")
                     audio_url = r2.get_public_url(audio_key)
-                    output_key = f"creators/{user.id}/avatar/{avatar.id}/style_dna_vocals_{uuid.uuid4().hex[:8]}.wav"
+                    output_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/style_dna_vocals_{uuid.uuid4().hex[:8]}.wav"
                     audio_size_bytes = os.path.getsize(raw_audio)
                     audio_duration_s = audio_size_bytes / (16000 * 2)  # mono 16-bit
                     gpu_result = await gpu_client.bs_roformer(
@@ -2032,7 +2051,7 @@ async def analyze_style_dna(
                         clean_audio = local_clean
                         tmp_files.append(local_clean)
                         await log_usage(
-                            db, user_id=user.id, event_type="voice_separation",
+                            db, user_id=ctx.workspace_owner_id, event_type="voice_separation",
                             provider="hostkey", provider_cost_usd=0.0,
                             quantity=audio_duration_s, quantity_unit="audio_seconds",
                             resource_type="avatar", resource_id=avatar.id,
@@ -2051,7 +2070,7 @@ async def analyze_style_dna(
             #    already backs the live-reference pipeline.
             transcript_text = ""
             transcript_duration = 0.0
-            transcribe_key = f"creators/{user.id}/avatar/{avatar.id}/style_dna_transcribe_{uuid.uuid4().hex[:8]}.wav"
+            transcribe_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/style_dna_transcribe_{uuid.uuid4().hex[:8]}.wav"
             await r2.upload_file(clean_audio, transcribe_key, content_type="audio/wav")
             transcribe_url = r2.get_public_url(transcribe_key)
 
@@ -2076,7 +2095,7 @@ async def analyze_style_dna(
             transcript_text = (whisper_result or {}).get("transcript", "") or ""
             transcript_duration = float((whisper_result or {}).get("duration_seconds", 0) or 0)
             await log_usage(
-                db, user_id=user.id, event_type="transcription",
+                db, user_id=ctx.workspace_owner_id, event_type="transcription",
                 provider=transcription_provider, provider_cost_usd=0.0,
                 quantity=transcript_duration, quantity_unit="audio_seconds",
                 resource_type="avatar", resource_id=avatar.id,
@@ -2123,7 +2142,7 @@ async def analyze_style_dna(
         )
         if voice_id_new:
             await log_usage(
-                db, user_id=user.id, event_type="voice_clone",
+                db, user_id=ctx.workspace_owner_id, event_type="voice_clone",
                 provider="hostkey", provider_cost_usd=0.0,
                 quantity=voice_duration_s, quantity_unit="audio_seconds",
                 resource_type="avatar", resource_id=avatar.id,
@@ -2173,7 +2192,7 @@ Analyze and return JSON:
                 total_tokens = int(usage.get("total_tokens", input_tokens + output_tokens) or 0)
                 cost = calculate_llm_cost("anthropic/claude-sonnet-4", input_tokens, output_tokens)
                 await log_usage(
-                    db, user_id=user.id, event_type="style_dna_analysis",
+                    db, user_id=ctx.workspace_owner_id, event_type="style_dna_analysis",
                     provider="openrouter", provider_cost_usd=cost,
                     quantity=total_tokens, quantity_unit="tokens",
                     resource_type="avatar", resource_id=avatar.id,
@@ -2245,6 +2264,7 @@ Analyze and return JSON:
 async def reset_style_dna(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Clear Style DNA so the user can re-analyze with different videos.
@@ -2254,7 +2274,7 @@ async def reset_style_dna(
     snapshot. Re-running analyze-style will overwrite it again.
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     avatar.style_dna = None
     await db.commit()
@@ -2265,10 +2285,11 @@ async def reset_style_dna(
 async def delete_avatar(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if avatar.id == "default":
         raise HTTPException(status_code=400, detail="Cannot delete default avatar")
@@ -2307,14 +2328,14 @@ class CreateAIAvatarResponse(BaseModel):
 async def create_ai_avatar(
     req: CreateAIAvatarRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Create an AI avatar record — no pipeline launched yet."""
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
-        user_id=user.id,
-        type=AvatarType.DIGITAL,
+        user_id=ctx.workspace_owner_id,        type=AvatarType.DIGITAL,
         status=AvatarStatus.PROCESSING,
         name=req.name or "AI Avatar",
         progress_step="Waiting for face and voice selection",
@@ -2345,6 +2366,7 @@ class GenerateFacesResponse(BaseModel):
 async def ai_generate_faces(
     req: GenerateFacesRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Generate 8 face images using FLUX Kontext Pro."""
     import fal_client
@@ -2412,6 +2434,7 @@ class AIEditFaceResponse(BaseModel):
 async def ai_edit_face(
     req: AIEditFaceRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Edit a generated face using FLUX Kontext Pro."""
     import fal_client
@@ -2456,11 +2479,12 @@ async def ai_select_face(
     avatar_id: str,
     req: AISelectFaceRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Set the selected face URL as the avatar's face_ref_key."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     # Download the fal.ai image and re-upload to R2 for persistence
@@ -2474,7 +2498,7 @@ async def ai_select_face(
             resp.raise_for_status()
             face_bytes = resp.content
 
-        face_key = f"creators/{user.id}/avatar/{avatar_id}/face_ref.jpg"
+        face_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/face_ref.jpg"
         await r2.upload_bytes(face_bytes, face_key, "image/jpeg")
         avatar.face_ref_key = face_key
         await db.commit()
@@ -2500,6 +2524,7 @@ async def ai_list_voices(
     gender: Optional[str] = None,
     search: Optional[str] = None,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
 ):
     """List voices from Fish Audio voice library."""
     import httpx
@@ -2579,6 +2604,7 @@ async def ai_preview_voice(
     avatar_id: str,
     req: PreviewVoiceRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Generate a TTS sample with a Fish Audio library voice."""
     from services.fish_audio import get_fish_audio_service
@@ -2591,7 +2617,7 @@ async def ai_preview_voice(
         tts_result = await fish.generate_tts(text=req.text, voice_id=req.voice_id)
         tmp_path = tts_result["tmp_path"]
         import os
-        preview_key = f"creators/{user.id}/avatar/{avatar_id}/voice_preview.mp3"
+        preview_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/voice_preview.mp3"
         await r2.upload_file(tmp_path, preview_key, content_type="audio/mpeg")
         try:
             os.unlink(tmp_path)
@@ -2615,11 +2641,12 @@ async def ai_select_voice(
     avatar_id: str,
     req: AISelectVoiceRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Set the selected voice ID on the avatar."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     avatar.voice_id = req.voice_id
@@ -2636,11 +2663,12 @@ async def ai_generate_preview(
     avatar_id: str,
     req: AIGeneratePreviewRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate TTS + InfiniteTalk test video for AI avatar."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     if not avatar.face_ref_key:
@@ -2668,7 +2696,7 @@ async def ai_generate_preview(
 
     # Launch the generate_from_selection_task which handles TTS + InfiniteTalk
     from tasks.generate_avatar import generate_from_selection_task
-    generate_from_selection_task.delay(avatar_id, user.id)
+    generate_from_selection_task.delay(avatar_id, ctx.workspace_owner_id)
 
     return {"status": "ok", "message": "Preview generation started"}
 
@@ -2693,7 +2721,7 @@ async def _clone_voice_for_avatar(
     r2 = get_r2_storage_service()
     fish = get_fish_audio_service()
 
-    voice_sample_key = f"creators/{user.id}/avatar/{avatar.id}/voice_sample.{ext}"
+    voice_sample_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/voice_sample.{ext}"
     await r2.upload_bytes(audio_bytes, voice_sample_key, content_type)
 
     try:
@@ -2715,11 +2743,12 @@ async def ai_clone_voice(
     avatar_id: str,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Clone a voice from an uploaded audio sample for AI avatar."""
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     audio_bytes = await file.read()
@@ -2751,6 +2780,7 @@ async def ai_clone_voice_from_corpus(
     avatar_id: str,
     req: CloneVoiceFromCorpusRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Clone a voice from one or more existing ready voice-corpus entries.
@@ -2764,7 +2794,7 @@ async def ai_clone_voice_from_corpus(
     import subprocess
 
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     ids: list[str] = []
@@ -2865,6 +2895,7 @@ class GenerateDescriptionRequest(BaseModel):
 async def generate_description(
     req: GenerateDescriptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Generate a detailed face description from a short hint.
 
@@ -2932,6 +2963,7 @@ _ACCENT_LABELS = {
 async def generate_voice_description(
     req: GenerateVoiceDescriptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a voice description that matches the avatar's face description
@@ -2948,7 +2980,7 @@ async def generate_voice_description(
     from services.ai_prompts import get_prompt
 
     avatar = await db.get(Avatar, req.avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     openrouter = get_openrouter_service()
@@ -3081,6 +3113,7 @@ class GenerateVoicePreviewsRequest(BaseModel):
 async def generate_voice_previews(
     req: GenerateVoicePreviewsRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate 4 voice preview samples via ElevenLabs Voice Design.
@@ -3170,7 +3203,7 @@ async def generate_voice_previews(
     result_previews = []
     for p in previews:
         audio_bytes = base64.b64decode(p["audio_base_64"])
-        r2_key = f"creators/{user.id}/avatar/{req.avatar_id}/voice_preview_{p['index']}.mp3"
+        r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{req.avatar_id}/voice_preview_{p['index']}.mp3"
         await r2.upload_bytes(audio_bytes, r2_key, "audio/mpeg")
 
         result_previews.append({
@@ -3191,6 +3224,7 @@ class ApproveVoiceRequest(BaseModel):
 async def approve_voice(
     req: ApproveVoiceRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Approve a voice preview and train Fish Audio with it.
@@ -3209,7 +3243,7 @@ async def approve_voice(
     from services.r2_storage import get_r2_storage_service
 
     avatar = await db.get(Avatar, req.avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     el = get_elevenlabs_service()
@@ -3258,7 +3292,7 @@ async def approve_voice(
     with open(tmp_path, "wb") as f:
         f.write(training_audio)
 
-    training_key = f"creators/{user.id}/avatar/{req.avatar_id}/voice_training_sample.mp3"
+    training_key = f"creators/{ctx.workspace_owner_id}/avatar/{req.avatar_id}/voice_training_sample.mp3"
     await r2.upload_bytes(training_audio, training_key, "audio/mpeg")
 
     # Step 3: Clone with Fish Audio
@@ -3349,13 +3383,14 @@ IMPERFECTION_PHRASES = {
 async def rewrite_description(
     req: RewriteDescriptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Rewrite avatar description. Chip toggles are instant (template-based).
     LLM call only when regenerate=true (Surprise Me / Regenerate)."""
     try:
         avatar = await db.get(Avatar, req.avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
 
         # Save target audience if provided
@@ -3392,8 +3427,7 @@ async def rewrite_description(
                 if _u:
                     await log_usage(
                         db,
-                        user_id=user.id,
-                        event_type="script_generation",
+                        user_id=ctx.workspace_owner_id,                        event_type="script_generation",
                         provider="openrouter",
                         provider_cost_usd=calculate_llm_cost(
                             CREATIVE_DESCRIPTION_MODEL,
@@ -3442,13 +3476,14 @@ class GenerateBodyDescriptionRequest(BaseModel):
 async def generate_body_description(
     req: GenerateBodyDescriptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a body description from avatar description + target audience.
     Uses LLM to create a consistent body description anchored to the face description."""
     try:
         avatar = await db.get(Avatar, req.avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
 
         if not avatar.face_ref_key:
@@ -3491,8 +3526,7 @@ async def generate_body_description(
             if _u:
                 await log_usage(
                     db,
-                    user_id=user.id,
-                    event_type="script_generation",
+                    user_id=ctx.workspace_owner_id,                    event_type="script_generation",
                     provider="openrouter",
                     provider_cost_usd=calculate_llm_cost(
                         CREATIVE_DESCRIPTION_MODEL,
@@ -4334,6 +4368,7 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
 async def generate_body_shots(
     req: GenerateBodyShotsRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Kick off the body shots pipeline as a background job.
@@ -4350,7 +4385,7 @@ async def generate_body_shots(
     from models.avatar import BodyShotSet
 
     avatar = await db.get(Avatar, req.avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
     if not avatar.face_ref_key:
         raise HTTPException(status_code=400, detail="Face image required")
@@ -4369,7 +4404,7 @@ async def generate_body_shots(
     # Schedule background work. asyncio.create_task runs on the same event loop
     # as the request handler; once we return, the response is sent and the
     # task continues. The task opens its own DB session.
-    asyncio.create_task(_run_body_shots_pipeline(set_id, avatar.id, user.id))
+    asyncio.create_task(_run_body_shots_pipeline(set_id, avatar.id, ctx.workspace_owner_id))
 
     return {"set_id": set_id, "status": "running"}
 
@@ -4378,6 +4413,7 @@ async def generate_body_shots(
 async def get_body_shot_set(
     set_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Poll endpoint for the body shots async job.
@@ -4393,7 +4429,7 @@ async def get_body_shot_set(
         raise HTTPException(status_code=404, detail="Body shot set not found")
 
     avatar = await db.get(Avatar, bss.avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Body shot set not found")
 
     r2 = get_r2_storage_service()
@@ -4420,6 +4456,7 @@ async def get_body_shot_set(
 async def get_latest_body_shot_set(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return the most recent BodyShotSet for an avatar, or null if none.
@@ -4434,7 +4471,7 @@ async def get_latest_body_shot_set(
     from sqlalchemy import select as _select
 
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     row = (
@@ -4479,6 +4516,7 @@ class RegenerateBodyShotRequest(BaseModel):
 async def regenerate_body_shot(
     req: RegenerateBodyShotRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Regenerate a single body shot angle using canonical front as Kontext reference (Phase D v3).
@@ -4498,7 +4536,7 @@ async def regenerate_body_shot(
 
     try:
         avatar = await db.get(Avatar, req.avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
         if not avatar.face_ref_key or not avatar.body_description:
             raise HTTPException(status_code=400, detail="Face and body description required")
@@ -4518,7 +4556,7 @@ async def regenerate_body_shot(
         if not bss:
             raise HTTPException(status_code=404, detail="Body shot set not found")
 
-        canonical_key = f"creators/{user.id}/avatar/{avatar.id}/body_shots/{req.set_id}/canonical.jpg"
+        canonical_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/canonical.jpg"
         canonical_url = r2.get_public_url(canonical_key)
 
         # Re-use the wardrobe summary extracted by the original pipeline run if
@@ -4621,7 +4659,7 @@ async def regenerate_body_shot(
             img_resp.raise_for_status()
             img_bytes = img_resp.content
 
-        r2_key = f"creators/{user.id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}.jpg"
+        r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}.jpg"
         await r2.upload_bytes(img_bytes, r2_key, "image/jpeg")
 
         # Update the BodyShotSet record
@@ -4673,13 +4711,14 @@ async def regenerate_body_shot(
 async def get_locked_voice_audio(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return the avatar's locked_test_script synthesized with the locked voice_id.
     Cached in R2 — generate once, return cached after."""
     try:
         avatar = await db.get(Avatar, avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
         if not avatar.voice_id:
             raise HTTPException(status_code=400, detail="Voice not locked yet")
@@ -4693,7 +4732,7 @@ async def get_locked_voice_audio(
         fish = get_fish_audio_service()
 
         # Check for cached audio
-        cache_key = f"creators/{user.id}/avatar/{avatar_id}/locked_voice.mp3"
+        cache_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/locked_voice.mp3"
         cached_url = r2.get_public_url(cache_key)
 
         # Check if cache exists by trying HEAD
@@ -4744,12 +4783,13 @@ class SaveTargetAudienceRequest(BaseModel):
 async def save_target_audience(
     req: SaveTargetAudienceRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Save target audience for an avatar."""
     try:
         avatar = await db.get(Avatar, req.avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
 
         avatar.target_audience = req.target_audience
@@ -4777,12 +4817,13 @@ class SaveSetupRequest(BaseModel):
 async def save_setup(
     req: SaveSetupRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Save consolidated Setup page data: target_audience + name + description + gender + body_description."""
     try:
         avatar = await db.get(Avatar, req.avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
 
         avatar.target_audience = req.target_audience
@@ -4817,6 +4858,7 @@ class RewriteAudienceDescriptionRequest(BaseModel):
 async def rewrite_audience_description(
     req: RewriteAudienceDescriptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Generate an audience description from all audience fields.
     Cached 60s to avoid spamming during rapid toggling."""
@@ -4872,6 +4914,7 @@ class RewriteAvatarNameAndDescriptionRequest(BaseModel):
 async def rewrite_avatar_identity(
     req: RewriteAvatarNameAndDescriptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Single LLM call: returns name + description + body_description."""
     try:
@@ -4939,6 +4982,7 @@ async def lock_test_script(
     avatar_id: str,
     req: LockTestScriptRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Lock the test script as the single source of truth for all downstream voice playback.
@@ -4952,7 +4996,7 @@ async def lock_test_script(
     """
     try:
         avatar = await db.get(Avatar, avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
 
         avatar.locked_test_script = req.test_script
@@ -4970,13 +5014,14 @@ async def lock_test_script(
 async def regenerate_preview_video(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Trigger a real talking-head preview render using InfiniteTalk.
     Uses locked face image + locked voice audio + locked_test_script."""
     try:
         avatar = await db.get(Avatar, avatar_id)
-        if not avatar or avatar.user_id != user.id:
+        if not avatar or avatar.user_id != ctx.workspace_owner_id:
             raise HTTPException(status_code=404, detail="Avatar not found")
         if not avatar.face_ref_key:
             raise HTTPException(status_code=400, detail="Face image required")
@@ -5002,7 +5047,7 @@ async def regenerate_preview_video(
             text=avatar.locked_test_script,
             voice_id=avatar.voice_id,
         )
-        audio_key = tts_result.get("audio_key") or f"creators/{user.id}/avatar/{avatar_id}/preview_audio.mp3"
+        audio_key = tts_result.get("audio_key") or f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/preview_audio.mp3"
         lipsync_audio_key = tts_result.get("lipsync_audio_key") or audio_key
         if tts_result.get("tmp_path"):
             import os
@@ -5049,8 +5094,7 @@ async def regenerate_preview_video(
             poll_interval=5,
             audio_duration_s=tts_duration,
             quality="480p",
-            user_id=user.id,
-        )
+            user_id=ctx.workspace_owner_id,        )
 
         output = result.get("output")
         if not output:
@@ -5067,7 +5111,7 @@ async def regenerate_preview_video(
             vid_resp.raise_for_status()
             video_bytes = vid_resp.content
 
-        preview_key = f"creators/{user.id}/avatar/{avatar_id}/preview_video.mp4"
+        preview_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/preview_video.mp4"
         await r2.upload_bytes(video_bytes, preview_key, "video/mp4")
 
         avatar.preview_video_key = preview_key
@@ -5101,6 +5145,7 @@ async def regenerate_preview_video(
 async def get_avatar_render_jobs(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return full per-step pipeline history for an avatar.
@@ -5108,7 +5153,7 @@ async def get_avatar_render_jobs(
     Used by PipelineProgressView to hydrate state on page return.
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     from services.pipeline_tracker import get_pipeline_state
@@ -5126,6 +5171,7 @@ async def get_avatar_render_jobs(
 async def resume_pipeline(
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-dispatch only the failed/stalled step. Smart resume.
@@ -5133,7 +5179,7 @@ async def resume_pipeline(
     Returns {resumed_from_step, render_job_id} or {status: "already_complete"}.
     """
     avatar = await db.get(Avatar, avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
     from services.pipeline_tracker import (
@@ -5184,7 +5230,7 @@ async def resume_pipeline(
     await db.commit()
 
     # Re-dispatch the Celery task for this step
-    _dispatch_step_task(avatar, user.id, failed_job_type, new_job_id)
+    _dispatch_step_task(avatar, ctx.workspace_owner_id, failed_job_type, new_job_id)
 
     return {
         "resumed_from_step": failed_step_name,

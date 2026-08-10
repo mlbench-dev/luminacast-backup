@@ -159,6 +159,26 @@ class ZernioService:
                 return data["accounts"]
             return data if isinstance(data, list) else []
 
+    async def disconnect_account(self, account_id: str) -> None:
+        """Revoke a connected account on Zernio's side.
+
+        Without this, "disconnect" only ever removed our local row —
+        the account stayed connected on Zernio, so the next channel-list
+        reconciliation (list_profiles) just recreated it as active again.
+
+        A 404 here means the account is already gone on Zernio's side
+        (e.g. a previous disconnect attempt got this far and our local row
+        just never got updated to match) — that's the caller's desired end
+        state already, not a failure, so it's swallowed rather than raised.
+        """
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
+            resp = await client.delete(
+                f"{ZERNIO_BASE}/accounts/{account_id}", headers=self.headers
+            )
+            if resp.status_code == 404:
+                return
+            resp.raise_for_status()
+
     async def _get_default_profile_id(self, client: httpx.AsyncClient) -> str:
         """Resolve the Zernio *workspace* profile id required by the connect
         flow. This is a distinct concept from the "profiles" this codebase's
@@ -319,8 +339,6 @@ class ZernioService:
     # \u2500\u2500 Media \u2500\u2500
 
     async def upload_media(self, file_url: str) -> dict[str, Any]:
-        \
-        \
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT_SECONDS) as client:
             resp = await client.post(
                 f"{ZERNIO_BASE}/media/upload",

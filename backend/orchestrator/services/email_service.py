@@ -60,3 +60,27 @@ async def send_password_reset_email(to_email: str, reset_link: str) -> None:
     </div>
     """
     await send_email(to_email, subject, html_body, text_body)
+
+
+async def send_team_invite_email(
+    to_email: str, accept_link: str, owner_label: str, role: str,
+) -> None:
+    subject = f"{owner_label} invited you to their Luminacast workspace"
+    role_label = role.capitalize()
+    text_body = (
+        f"{owner_label} invited you to join their Luminacast workspace as a {role_label}.\n\n"
+        f"Accept the invite: {accept_link}\n\n"
+        "This link expires in 7 days."
+    )
+    html_body = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;color:#1a1a1a;">
+      <h2 style="margin-bottom:8px;">You're invited</h2>
+      <p><strong>{owner_label}</strong> invited you to join their Luminacast workspace as a <strong>{role_label}</strong>.</p>
+      <p style="margin:24px 0;">
+        <a href="{accept_link}" style="display:inline-block;padding:12px 24px;background:#6d28d9;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Accept Invite</a>
+      </p>
+      <p style="color:#666;font-size:13px;">This link expires in 7 days.</p>
+      <p style="color:#999;font-size:12px;">If the button doesn't work, copy and paste this link:<br>{accept_link}</p>
+    </div>
+    """
+    await send_email(to_email, subject, html_body, text_body)

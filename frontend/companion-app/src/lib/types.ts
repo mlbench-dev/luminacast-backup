@@ -6,6 +6,15 @@ export enum UserRole {
   ADMIN = "admin",
 }
 
+// Per-workspace Teams role — distinct from UserRole (account-holder /
+// global admin). Matches backend TeamRole (models/user.py) exactly,
+// lowercase on both sides.
+export enum TeamRole {
+  VIEWER = "viewer",
+  CREATOR = "creator",
+  PUBLISHER = "publisher",
+}
+
 export enum CastStatus {
   DRAFT = "DRAFT",
   OUTLINE_REVIEW = "OUTLINE_REVIEW",
@@ -102,6 +111,17 @@ export interface User {
   // `amazon_associate_tag` is the Amazon Associates tracking tag.
   tiktok_affiliate_id?: string | null;
   amazon_associate_tag?: string | null;
+  // Which workspace the current session's token is acting in — resolved
+  // server-side from the JWT's wsid claim on every /auth/me call. Cosmetic
+  // only on the frontend; the backend is the real enforcement point.
+  workspace?: WorkspaceInfo;
+}
+
+export interface WorkspaceInfo {
+  owner_id: string;
+  owner_label: string;
+  role?: TeamRole | null; // null when is_own is true
+  is_own: boolean;
 }
 
 export interface TokenResponse {

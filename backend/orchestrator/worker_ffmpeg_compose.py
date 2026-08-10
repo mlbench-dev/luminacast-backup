@@ -44,6 +44,12 @@ def _env_first(*names: str, default: str = "") -> str:
     return default
 
 
+# Local-dev escape hatch: some local ffmpeg builds (e.g. Homebrew without
+# --enable-libass) lack the `subtitles` filter entirely, which fails the
+# final compose step on an otherwise-correct render. Unset/false in
+# production — .env.local only, so Docker/prod workers are unaffected.
+SKIP_CAPTION_BURN_IN = _env_first("SKIP_CAPTION_BURN_IN").strip().lower() in ("1", "true", "yes")
+
 R2_ENDPOINT = _env_first("R2_ENDPOINT")
 # Orchestrator stack uses *_ID / *_ACCESS_KEY; legacy HOSTKEY worker used the short names.
 R2_ACCESS_KEY = _env_first("R2_ACCESS_KEY_ID", "R2_ACCESS_KEY")
@@ -908,14 +914,24 @@ def _run_ffmpeg_compose(req):
         )
         filter_parts.extend(overlay_parts)
 
-        if srt_path and os.path.exists(srt_path):
+        if srt_path and os.path.exists(srt_path) and not SKIP_CAPTION_BURN_IN:
             srt_path_escaped = srt_path.replace(":", r"\:").replace("'", r"\\'")
             sub_label = "[subtitled]"
+            # The commas inside force_style are literal ASS-style separators,
+            # not filtergraph filter separators — but ffmpeg's top-level
+            # filtergraph parser scans for unescaped commas even inside a
+            # single-quoted option value on some builds, misreading
+            # "...,FontSize=10,..." as the start of a new chained filter
+            # ("No option name near ..."). Backslash-escaping each comma
+            # keeps the outer parser from splitting on them.
+            force_style = (
+                "FontName=DejaVu Sans,FontSize=10,"
+                "PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,"
+                "BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=30"
+            ).replace(",", "\\,")
             filter_parts.append(
                 f"{current_label}subtitles={srt_path_escaped}"
-                f":force_style='FontName=DejaVu Sans,FontSize=10,"
-                f"PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,"
-                f"BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=30'"
+                f":force_style='{force_style}'"
                 f"{sub_label}"
             )
             current_label = sub_label

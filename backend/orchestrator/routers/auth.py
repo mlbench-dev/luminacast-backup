@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -10,10 +11,11 @@ from jose import jwt, JWTError
 from passlib.context import CryptContext
 from database import get_db
 from config import settings
-from models.user import User, UserRole
+from models.user import User, UserRole, TeamMember, TeamRole, TeamMemberStatus
 from schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse, UserResponse,
     ForgotPasswordRequest, ResetPasswordRequest, MessageResponse,
+    WorkspaceInfo,
 )
 import sentry_sdk
 from services import audit_log
@@ -89,6 +91,85 @@ async def require_creator_or_operator(user: User = Depends(get_current_user)) ->
     return user
 
 
+# ── Teams: workspace resolution ─────────────────────────────────────────
+#
+# `wsid` (workspace id) is a JWT claim carrying which owner's workspace the
+# caller is currently acting in — added alongside the existing sub/email/
+# role claims. Missing claim (every token minted before this feature, and
+# every token for a user who's never switched workspaces) means "acting as
+# myself" — fully backward compatible, no forced re-login.
+#
+# Team-member requests (wsid != sub) re-check TeamMember.status == "active"
+# on every single request rather than trusting the JWT claim alone — a
+# cached claim can't make "revoke cuts access immediately" true on its own,
+# and this is the one case where that guarantee actually matters. Owner
+# requests (wsid == sub, the overwhelming majority of traffic) skip that
+# lookup entirely: nothing revokes an owner's access to their own account.
+
+_TEAM_ROLE_RANK = {
+    TeamRole.VIEWER.value: 0,
+    TeamRole.CREATOR.value: 1,
+    TeamRole.PUBLISHER.value: 2,
+}
+
+
+@dataclass
+class WorkspaceContext:
+    workspace_owner_id: str  # scope every resource query by this
+    actor_user_id: str  # the real caller — use for audit/attribution fields only
+    actor_team_role: str | None  # None means the actor IS the workspace owner
+    is_owner: bool
+
+
+async def get_workspace_context(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceContext:
+    try:
+        payload = jwt.decode(credentials.credentials, settings.APP_SECRET_KEY, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    wsid = payload.get("wsid") or user.id
+    if wsid == user.id:
+        return WorkspaceContext(user.id, user.id, None, True)
+
+    tm = (
+        await db.execute(
+            select(TeamMember).where(
+                TeamMember.owner_id == wsid,
+                TeamMember.user_id == user.id,
+                TeamMember.status == TeamMemberStatus.ACTIVE.value,
+            )
+        )
+    ).scalar_one_or_none()
+    if not tm:
+        raise HTTPException(status_code=403, detail="You no longer have access to this workspace")
+    return WorkspaceContext(wsid, user.id, tm.role, False)
+
+
+def require_role(min_role: str):
+    """Dependency factory enforcing a minimum TeamRole. The owner always
+    passes — the client's role table puts them above all three roles."""
+
+    async def _dep(ctx: WorkspaceContext = Depends(get_workspace_context)) -> WorkspaceContext:
+        if ctx.is_owner:
+            return ctx
+        if _TEAM_ROLE_RANK.get(ctx.actor_team_role, -1) < _TEAM_ROLE_RANK[min_role]:
+            raise HTTPException(status_code=403, detail=f"Requires {min_role} role or higher")
+        return ctx
+
+    return _dep
+
+
+async def require_owner(ctx: WorkspaceContext = Depends(get_workspace_context)) -> WorkspaceContext:
+    """Team management, billing, admin — owner only, no team role qualifies."""
+    if not ctx.is_owner:
+        raise HTTPException(status_code=403, detail="Owner access required")
+    return ctx
+
+
 @router.post("/register", response_model=TokenResponse, status_code=201)
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     # Check duplicate
@@ -120,6 +201,30 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     return TokenResponse(access_token=token)
 
 
+async def _resolve_login_workspace(user: User, db: AsyncSession) -> str:
+    """Which workspace a fresh login should land in.
+
+    Defaults to the user's own workspace. If they last worked in someone
+    else's (an active team membership), land them back there instead of
+    forcing a manual switch on every login — but only if that membership
+    is still active; a revoked one silently falls back to "myself" rather
+    than erroring the whole login.
+    """
+    last = user.last_workspace_id
+    if not last or last == user.id:
+        return user.id
+    tm = (
+        await db.execute(
+            select(TeamMember).where(
+                TeamMember.owner_id == last,
+                TeamMember.user_id == user.id,
+                TeamMember.status == TeamMemberStatus.ACTIVE.value,
+            )
+        )
+    ).scalar_one_or_none()
+    return last if tm else user.id
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == req.email))
@@ -131,11 +236,13 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Account is disabled")
 
+    wsid = await _resolve_login_workspace(user, db)
     expire_hours = TOKEN_EXPIRE_HOURS_REMEMBER if req.remember_me else TOKEN_EXPIRE_HOURS
     token = create_access_token({
         "sub": user.id,
         "email": user.email,
         "role": user.role.value,
+        "wsid": wsid,
     }, expire_hours=expire_hours)
     try:
         await audit_log.record(
@@ -213,5 +320,25 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(user: User = Depends(get_current_user)):
-    return user
+async def get_me(
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    resp = UserResponse.model_validate(user)
+    if ctx.is_owner:
+        resp.workspace = WorkspaceInfo(
+            owner_id=user.id,
+            owner_label=user.display_name or user.email,
+            role=None,
+            is_own=True,
+        )
+    else:
+        owner = await db.get(User, ctx.workspace_owner_id)
+        resp.workspace = WorkspaceInfo(
+            owner_id=ctx.workspace_owner_id,
+            owner_label=(owner.display_name or owner.email) if owner else ctx.workspace_owner_id,
+            role=ctx.actor_team_role,
+            is_own=False,
+        )
+    return resp

@@ -24,6 +24,8 @@ import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
 import { formatCents } from "@/lib/billing";
 import { toast } from "@/hooks/useToast";
+import { useAuthStore } from "@/stores/authStore";
+import { TeamRole } from "@/lib/types";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: typeof Clock }> = {
   draft: { label: "Draft", color: "bg-gray-500/10 text-gray-400", icon: Clock },
@@ -59,6 +61,9 @@ function formatDuration(blocks: any[] | undefined): string {
 
 export function MyCastsPage() {
   const navigate = useNavigate();
+  // Cosmetic gate — routers/casts.py's require_role(CREATOR) on create_cast
+  // enforces this independently regardless of what's shown here.
+  const canCreate = useAuthStore((s) => s.hasTeamRole(TeamRole.CREATOR));
   const qc = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -118,9 +123,11 @@ export function MyCastsPage() {
           <h1 className="text-2xl font-bold text-text">My Casts</h1>
           <p className="text-sm text-text-dim">{casts.length} cast{casts.length !== 1 ? "s" : ""}</p>
         </div>
-        <Button onClick={() => navigate("/cast-builder/new")} className="gap-2 cursor-pointer">
-          <Plus className="h-4 w-4" /> New Cast
-        </Button>
+        {canCreate && (
+          <Button onClick={() => navigate("/cast-builder/new")} className="gap-2 cursor-pointer">
+            <Plus className="h-4 w-4" /> New Cast
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -134,9 +141,11 @@ export function MyCastsPage() {
           <Film className="mx-auto mb-3 h-10 w-10 text-text-muted" />
           <h3 className="text-lg font-semibold text-text">No casts yet</h3>
           <p className="mt-1 text-sm text-text-dim">Create your first AI-powered live selling cast</p>
-          <Button onClick={() => navigate("/cast-builder/new")} className="mt-4">
-            <Plus className="mr-1 h-4 w-4" /> Create Cast
-          </Button>
+          {canCreate && (
+            <Button onClick={() => navigate("/cast-builder/new")} className="mt-4">
+              <Plus className="mr-1 h-4 w-4" /> Create Cast
+            </Button>
+          )}
         </div>
       ) : (
         <div className="space-y-3">

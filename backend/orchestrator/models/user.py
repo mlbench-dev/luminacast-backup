@@ -39,18 +39,59 @@ class User(Base):
     tiktok_affiliate_id = Column(String(100), nullable=True)
     amazon_associate_tag = Column(String(100), nullable=True)
 
+    # Last workspace a user was operating in — a switcher hint only, not a
+    # source of truth (a stale/revoked owner_id here is harmless; the
+    # login flow re-validates it against live TeamMember rows). No FK:
+    # the pointed-to owner's account could be deleted without needing to
+    # touch every member who last happened to be viewing it.
+    last_workspace_id = Column(String, nullable=True)
+
     avatars = relationship("Avatar", back_populates="user")
-    casts = relationship("Cast", back_populates="user")
+    # Explicit foreign_keys: Cast also has submitted_by/approved_by FKs to
+    # users.id (Teams review workflow) — without this, SQLAlchemy can't
+    # tell which of the three columns backs this relationship.
+    casts = relationship("Cast", back_populates="user", foreign_keys="Cast.user_id")
     team_members = relationship("TeamMember", back_populates="owner", foreign_keys="TeamMember.owner_id")
+
+
+class TeamRole(str, enum.Enum):
+    """Per-workspace role for a TeamMember row.
+
+    Deliberately separate from UserRole (which means "account holder" /
+    global admin, not a workspace permission level) and deliberately
+    lowercase — UserRole's values are uppercase and the frontend compares
+    against a lowercase copy, a casing mismatch that silently breaks the
+    admin checks in Sidebar.tsx/ProtectedRoute.tsx. New code shouldn't
+    repeat that: backend and frontend TeamRole values match exactly.
+    """
+    VIEWER = "viewer"
+    CREATOR = "creator"
+    PUBLISHER = "publisher"
+
+
+class TeamMemberStatus(str, enum.Enum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    REVOKED = "revoked"
 
 
 class TeamMember(Base):
     __tablename__ = "team_members"
     id = Column(String, primary_key=True)  # prefix: tm_
     owner_id = Column(String, ForeignKey("users.id"), index=True)
-    user_id = Column(String, ForeignKey("users.id"), index=True)
-    role = Column(String, default="chat_operator")
+    # Null until the invitee accepts and gets a real User row of their own.
+    user_id = Column(String, ForeignKey("users.id"), index=True, nullable=True)
+    # The email the invite was sent to — needed to identify/display a
+    # still-pending row before user_id exists.
+    invited_email = Column(String, index=True, nullable=True)
+    role = Column(String, default=TeamRole.VIEWER.value)
+    status = Column(String(20), nullable=False, default=TeamMemberStatus.PENDING.value)
     invited_at = Column(DateTime, server_default=func.now())
+    accepted_at = Column(DateTime, nullable=True)
+    # Revoked rows are kept (never deleted) so access can be re-checked on
+    # every request without ambiguity, and so the member's history/audit
+    # trail survives being removed from the team.
+    revoked_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, onupdate=func.now(), nullable=True)
 
     owner = relationship("User", foreign_keys=[owner_id], back_populates="team_members")

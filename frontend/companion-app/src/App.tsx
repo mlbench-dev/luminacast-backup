@@ -11,12 +11,14 @@ import { LoginPage } from "@/pages/Login";
 import { SignupPage } from "@/pages/Signup";
 import { ForgotPasswordPage } from "@/pages/ForgotPassword";
 import { ResetPasswordPage } from "@/pages/ResetPassword";
+import { AcceptInvitePage } from "@/pages/AcceptInvite";
 import { CastBuilderPage } from "@/pages/CastBuilder";
 import { MyCastsPage } from "@/pages/MyCasts";
 import { CastDetailPage } from "@/pages/CastDetail";
 import { LiveControlPage } from "@/pages/LiveControl";
 import { SetupPage } from "@/pages/Setup";
 import { AnalyticsPage } from "@/pages/Analytics";
+import { ReviewQueuePage } from "@/pages/ReviewQueue";
 import { AdminPage } from "@/pages/Admin";
 import { StreamKeysPage } from "@/pages/settings/StreamKeys";
 import { MyChannelsPage } from "@/pages/settings/MyChannels";
@@ -54,6 +56,7 @@ export default function App() {
             <Route path="/register" element={<Navigate to="/signup" replace />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/accept-invite" element={<AcceptInvitePage />} />
             <Route path="/integrations/zernio/callback" element={<ZernioCallback />} />
 
             {/* Protected routes with sidebar layout */}
@@ -97,6 +100,7 @@ export default function App() {
                 <Route path="/my-videos" element={<MyVideosPage />} />
                 <Route path="/products" element={<ProductLibraryPage />} />
                 <Route path="/analytics" element={<AnalyticsPage />} />
+                <Route path="/review" element={<ReviewQueuePage />} />
                 {/* Settings sub-pages */}
                 <Route path="/settings/stream-keys" element={<StreamKeysPage />} />
                 <Route path="/settings/channels" element={<MyChannelsPage />} />

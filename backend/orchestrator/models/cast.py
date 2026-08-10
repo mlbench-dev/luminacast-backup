@@ -22,6 +22,24 @@ class CastStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
 
 
+class CastApprovalStatus(str, enum.Enum):
+    """Teams review workflow — deliberately separate from CastStatus.
+
+    CastStatus drives the render pipeline's own state machine (draft →
+    generating → ready → scheduled → live → completed) and is referenced
+    in 60+ places across routers/tasks; repurposing it for content review
+    would risk colliding with pipeline transitions that have nothing to
+    do with who's allowed to publish. This tracks only: has a Creator
+    submitted this for review, and has a Publisher approved it. Nothing
+    reaches Zernio unless this is APPROVED (enforced in
+    routers/social.py::create_social_post), independent of whatever
+    CastStatus the render pipeline is currently in.
+    """
+    DRAFT = "draft"
+    READY_FOR_REVIEW = "ready_for_review"
+    APPROVED = "approved"
+
+
 class CastQuality(str, enum.Enum):
     SIMPLE = "simple"
     HD = "hd"
@@ -36,6 +54,20 @@ class Cast(Base):
     channel_id = Column(String, ForeignKey("channels.id"), nullable=True, index=True)
     name = Column(String, nullable=True)
     status = Column(Enum(CastStatus, values_callable=lambda x: [e.value for e in x]), default=CastStatus.DRAFT, index=True)
+    # Teams review workflow — see CastApprovalStatus docstring. Separate
+    # from `status` above (the render pipeline's own state machine).
+    # native_enum=False: plain VARCHAR, matching what the migration actually
+    # created (unlike `status` above, there's no Postgres CREATE TYPE for
+    # this one — a native enum column here would require the DB to have a
+    # matching enum type, which doesn't exist).
+    approval_status = Column(
+        Enum(CastApprovalStatus, values_callable=lambda x: [e.value for e in x], native_enum=False, length=20),
+        default=CastApprovalStatus.DRAFT, index=True, nullable=False,
+    )
+    submitted_for_review_at = Column(DateTime, nullable=True)
+    submitted_by = Column(String, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by = Column(String, ForeignKey("users.id"), nullable=True)
     template_name = Column(String, nullable=True)
     # Stage-1 creative template the user picked at SetupPhase (see
     # services.cast_templates). Null = "Auto / let AI choose" — the outline
@@ -175,7 +207,10 @@ class Cast(Base):
     completed_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)
 
-    user = relationship("User", back_populates="casts")
+    # Explicit foreign_keys: submitted_by/approved_by are also FKs to
+    # users.id (Teams review workflow) — without this, SQLAlchemy can't
+    # tell which of the three columns backs this relationship.
+    user = relationship("User", back_populates="casts", foreign_keys=[user_id])
     avatar = relationship("Avatar")
     channel = relationship("Channel")
     blocks = relationship("Block", back_populates="cast", order_by="Block.position")
