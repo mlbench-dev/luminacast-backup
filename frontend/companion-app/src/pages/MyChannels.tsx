@@ -24,6 +24,9 @@ import { cn } from "@/lib/cn";
 import { toast } from "@/hooks/useToast";
 import { PlatformIcon, PLATFORMS, platformLabel } from "@/components/distribute/PlatformIcon";
 import { oneLineSummary } from "@/lib/oneLineSummary";
+import { confirmAction } from "@/lib/swal";
+import { useAuthStore } from "@/stores/authStore";
+import { TeamRole } from "@/lib/types";
 
 /**
  * My Channels — unified page for every connected publishing destination.
@@ -42,11 +45,21 @@ import { oneLineSummary } from "@/lib/oneLineSummary";
 export default function SocialChannelsPage() {
   const queryClient = useQueryClient();
   const [connectOpen, setConnectOpen] = useState(false);
+  // Connecting/disconnecting channels is Publisher-only per the Teams role
+  // table — cosmetic gate only, routers/social.py enforces this
+  // independently regardless of what's shown here.
+  const canManageChannels = useAuthStore((s) => s.hasTeamRole(TeamRole.PUBLISHER));
 
   const { data: channels = [], isLoading, refetch } = useQuery({
     queryKey: ["social-channels"],
     queryFn: () => socialApi.listChannels(),
   });
+
+  // Disconnected channels are kept in the DB (avatar_history / post stats
+  // survive for a future reconnect) but shouldn't clutter the list the
+  // user actively manages — reconnecting the same platform goes through
+  // "Connect Channel" same as any other new connection.
+  const visibleChannels = channels.filter((c) => c.status !== "disconnected");
 
   // Listen for the OAuth-callback popup posting a message back. Same
   // postMessage protocol the Publish page uses.
@@ -93,27 +106,29 @@ export default function SocialChannelsPage() {
             Connect your social accounts and storefronts. Videos publish to selected channels.
           </p>
         </div>
-        <Button onClick={() => setConnectOpen(true)} className="bg-accent hover:bg-accent/90">
-          <Plus className="w-4 h-4 mr-1.5" /> Connect Channel
-        </Button>
+        {canManageChannels && (
+          <Button onClick={() => setConnectOpen(true)} className="bg-accent hover:bg-accent/90">
+            <Plus className="w-4 h-4 mr-1.5" /> Connect Channel
+          </Button>
+        )}
       </header>
 
       {isLoading ? (
         <div className="flex items-center justify-center py-10 text-white/40 text-sm">
           <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Loading…
         </div>
-      ) : channels.length === 0 ? (
+      ) : visibleChannels.length === 0 ? (
         <EmptyState onConnect={() => setConnectOpen(true)} />
       ) : (
         <ul className="space-y-3">
-          {channels.map((c) => (
+          {visibleChannels.map((c) => (
             <ChannelCard key={c.id} channel={c} onChanged={refetch} />
           ))}
         </ul>
       )}
 
       {connectOpen && (
-        <ConnectChannelModal onClose={() => setConnectOpen(false)} />
+        <ConnectChannelModal channels={channels} onClose={() => setConnectOpen(false)} />
       )}
     </div>
   );
@@ -144,7 +159,12 @@ function ChannelCard({
   const [menuOpen, setMenuOpen] = useState(false);
 
   const disconnect = useCallback(async () => {
-    if (!window.confirm(`Disconnect ${channel.handle || channel.platform}?`)) return;
+    const confirmed = await confirmAction({
+      title: `Disconnect ${channel.handle || platformLabel(channel.platform)}?`,
+      text: "You can reconnect it later, but scheduled posts to this channel will fail until you do.",
+      confirmButtonText: "Disconnect",
+    });
+    if (!confirmed) return;
     try {
       await socialApi.disconnectChannel(channel.id);
       toast({ title: "Channel disconnected" });
@@ -324,7 +344,21 @@ function ChannelCard({
   );
 }
 
-function ConnectChannelModal({ onClose }: { onClose: () => void }) {
+function ConnectChannelModal({
+  channels,
+  onClose,
+}: {
+  channels: SocialChannel[];
+  onClose: () => void;
+}) {
+  // Zernio only supports one account per platform per connect flow — a
+  // second "Connect TikTok" would either fail or silently replace the
+  // first. Only an active channel blocks reconnecting; a disconnected
+  // one frees the platform up again.
+  const connectedPlatforms = new Set(
+    channels.filter((c) => c.status === "active").map((c) => c.platform),
+  );
+
   const startOAuth = async (platformId: string) => {
     try {
       // Without an explicit redirect_uri the backend falls back to a
@@ -377,19 +411,31 @@ function ConnectChannelModal({ onClose }: { onClose: () => void }) {
           Choose a platform — you'll authorize Luminacast to post on your behalf via Zernio.
         </p>
         <div className="grid grid-cols-2 gap-2">
-          {PLATFORMS.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => startOAuth(p.id)}
-              className="flex items-center gap-3 p-3 bg-white/[0.04] border border-white/10 rounded-xl hover:bg-white/[0.07] hover:border-white/20 transition text-left"
-            >
-              <PlatformIcon platform={p.id} className="w-9 h-9" />
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-white truncate">{p.name}</div>
-                <div className="text-[11px] text-white/40 truncate">{p.description}</div>
-              </div>
-            </button>
-          ))}
+          {PLATFORMS.map((p) => {
+            const connected = connectedPlatforms.has(p.id);
+            return (
+              <button
+                key={p.id}
+                disabled={connected}
+                onClick={() => startOAuth(p.id)}
+                title={connected ? `A ${p.name} account is already connected — disconnect it first to connect a different one.` : undefined}
+                className={cn(
+                  "flex items-center gap-3 p-3 border rounded-xl text-left transition",
+                  connected
+                    ? "bg-white/[0.02] border-white/5 opacity-50 cursor-not-allowed"
+                    : "bg-white/[0.04] border-white/10 hover:bg-white/[0.07] hover:border-white/20",
+                )}
+              >
+                <PlatformIcon platform={p.id} className="w-9 h-9" />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-white truncate">{p.name}</div>
+                  <div className="text-[11px] text-white/40 truncate">
+                    {connected ? "Already connected" : p.description}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Send, Sparkles, Calendar, Loader2, Check, AlertTriangle, Link2 } from "lucide-react";
@@ -42,6 +42,18 @@ export default function PublishCast() {
     queryKey: ["cast", cid],
     queryFn: () => castsApi.get(cid),
     enabled: !!cid,
+  });
+
+  // Editing an existing scheduled/failed post — carried via ?post_id= from
+  // the Publishing tab's Edit button. Zernio has no update endpoint (only
+  // create/get/delete), so "editing" means: load the original post's data
+  // to prefill this form, then on submit delete the old post and create a
+  // replacement with the edited fields.
+  const postId = searchParams.get("post_id");
+  const { data: existingPost } = useQuery({
+    queryKey: ["social-post", postId],
+    queryFn: () => socialApi.getPost(postId!),
+    enabled: !!postId,
   });
 
   const queryClient = useQueryClient();
@@ -161,9 +173,12 @@ export default function PublishCast() {
   const [scheduledAt, setScheduledAt] = useState<string>(() => searchParams.get("at") || "");
   const [submitting, setSubmitting] = useState(false);
 
-  // Auto-generate the caption on first load, once we have the cast.
+  // Auto-generate the caption on first load, once we have the cast. Skipped
+  // entirely when editing an existing post — its own caption is loaded via
+  // the hydration effect below instead, and an empty `caption` state while
+  // that fetch is still in flight must not race into generating a fresh one.
   useEffect(() => {
-    if (!cid || !cast || caption || generatingCaption) return;
+    if (!cid || !cast || caption || generatingCaption || postId) return;
     setGeneratingCaption(true);
     socialApi
       .generateCaption({ cast_id: cid, platform: selectedPlatforms[0] || "tiktok" })
@@ -175,6 +190,34 @@ export default function PublishCast() {
       .catch(() => { })
       .finally(() => setGeneratingCaption(false));
   }, [cid, cast]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Prefill the form from the post being edited. `caption` already has
+  // hashtags baked into its text at creation time (see backend
+  // create_social_post's full_caption), so the hashtag chips start empty
+  // here rather than duplicating them — the caption box shows exactly what
+  // was actually posted/scheduled. first_comment isn't persisted anywhere
+  // on SocialPost, so it can't be recovered here.
+  const hydratedFromPostRef = useRef(false);
+  useEffect(() => {
+    if (!existingPost || hydratedFromPostRef.current) return;
+    hydratedFromPostRef.current = true;
+    setCaption(existingPost.caption || "");
+    const platforms = (existingPost.platforms || [])
+      .map((p: any) => normalizePlatform(p.platform || ""))
+      .filter((p: Platform | null): p is Platform => !!p);
+    if (platforms.length) setSelectedPlatforms(platforms);
+    if (existingPost.scheduled_for) {
+      setPostNow(false);
+      // datetime-local input needs "YYYY-MM-DDTHH:mm" in local time.
+      const d = new Date(existingPost.scheduled_for);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      setScheduledAt(
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
+      );
+    } else {
+      setPostNow(true);
+    }
+  }, [existingPost]);
 
   const accountByPlatform = useMemo(() => {
     const map: Record<string, string | undefined> = {};
@@ -240,6 +283,12 @@ export default function PublishCast() {
     if (!canSubmit) return;
     setSubmitting(true);
     try {
+      // Zernio has no update endpoint — "editing" replaces the old post
+      // with a new one carrying the edited fields. Delete first so a
+      // create failure doesn't leave the user with two posts.
+      if (postId) {
+        await socialApi.deletePost(postId);
+      }
       const scheduledIso = postNow || !scheduledAt ? null : new Date(scheduledAt).toISOString();
       await socialApi.createPost({
         cast_id: cid,
@@ -254,7 +303,7 @@ export default function PublishCast() {
         publish_now: postNow,
       });
       toast({
-        title: postNow ? "Posting now" : "Scheduled",
+        title: postId ? "Post updated" : postNow ? "Posting now" : "Scheduled",
         description: postNow
           ? "Your post is being published."
           : `Will post at ${new Date(scheduledAt).toLocaleString()}.`,
@@ -279,7 +328,7 @@ export default function PublishCast() {
     <div className="max-w-4xl mx-auto p-6 space-y-5">
       <div className="flex items-center gap-2">
         <Send className="h-5 w-5 text-accent" />
-        <h1 className="text-xl font-semibold text-white">Publish</h1>
+        <h1 className="text-xl font-semibold text-white">{postId ? "Edit Post" : "Publish"}</h1>
         {cast?.name && (
           <span className="text-sm text-white/50">— {cast.name}</span>
         )}
@@ -460,6 +509,8 @@ export default function PublishCast() {
       >
         {submitting ? (
           <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Working…</>
+        ) : postId ? (
+          <><Check className="h-4 w-4 mr-2" /> Save changes</>
         ) : postNow ? (
           <><Send className="h-4 w-4 mr-2" /> Post now to {selectedPlatforms.length} platform{selectedPlatforms.length !== 1 ? "s" : ""}</>
         ) : (

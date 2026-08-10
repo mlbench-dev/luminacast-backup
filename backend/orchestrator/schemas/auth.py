@@ -64,6 +64,16 @@ class MessageResponse(BaseModel):
     message: str
 
 
+class WorkspaceInfo(BaseModel):
+    """The workspace the caller's current token is acting in — resolved
+    from the JWT's `wsid` claim. `is_own` is what the frontend's workspace
+    switcher and role-based UI hiding key off of."""
+    owner_id: str
+    owner_label: str
+    role: Optional[str] = None  # TeamRole value; null when is_own is True
+    is_own: bool
+
+
 class UserResponse(BaseModel):
     id: str
     email: str
@@ -76,5 +86,10 @@ class UserResponse(BaseModel):
     # whether to show the "Connect Amazon Associates" amber callout.
     tiktok_affiliate_id: Optional[str] = None
     amazon_associate_tag: Optional[str] = None
+    # Populated by GET /auth/me from the caller's current WorkspaceContext
+    # — not a plain model field passthrough (Cast/Product/etc. don't carry
+    # this), so it's set explicitly in the endpoint rather than relying on
+    # from_attributes.
+    workspace: Optional[WorkspaceInfo] = None
 
     model_config = {"from_attributes": True}

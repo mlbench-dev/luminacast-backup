@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -19,13 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from models.cast import Cast
+from models.cast import Cast, CastApprovalStatus
 from models.cast_render import CastRender, CastRenderStatus
 from models.product import Product
 from models.avatar import Avatar
 from models.social_post import SocialPost, SocialComment, SocialChannel
-from models.user import User
-from routers.auth import get_current_user
+from models.user import User, TeamRole
+from routers.auth import get_current_user, WorkspaceContext, require_role
 
 logger = logging.getLogger(__name__)
 
@@ -120,20 +121,109 @@ def _channel_to_dict(ch: SocialChannel) -> dict[str, Any]:
     }
 
 
-@router.get("/channels")
-async def list_channels(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List the user's connected social-media channels (with avatar info)."""
-    rows = (
+async def _fetch_channel_rows(db: AsyncSession, user_id: str) -> list[SocialChannel]:
+    return (
         await db.execute(
             select(SocialChannel)
-            .where(SocialChannel.user_id == user.id)
+            .where(SocialChannel.user_id == user_id)
             .options(selectinload(SocialChannel.primary_avatar))
             .order_by(SocialChannel.connected_at.desc())
         )
     ).scalars().all()
+
+
+@router.get("/channels")
+async def list_channels(
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
+    db: AsyncSession = Depends(get_db),
+):
+    """List the user's connected social-media channels (with avatar info).
+
+    Reconciles against Zernio — the actual source of truth for what's
+    connected — on every read: creates a local row for any Zernio account
+    with no match here, refreshes handle/follower_count/status on existing
+    rows, and marks rows "disconnected" when Zernio no longer reports them.
+    Nothing previously wrote to this table on connect, so without this the
+    local copy just drifts from reality (surfaced when a DB reset wiped
+    rows for accounts that were still connected on Zernio's side).
+    """
+    rows = await _fetch_channel_rows(db, ctx.workspace_owner_id)
+
+    try:
+        svc = _require_zernio()
+        zernio_accounts = await svc.list_profiles()
+    except HTTPException:
+        # Zernio not configured in this environment — DB is all we have.
+        return {"channels": [_channel_to_dict(c) for c in rows]}
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        logger.warning("Zernio channel reconciliation failed, returning DB state: %s", exc)
+        return {"channels": [_channel_to_dict(c) for c in rows]}
+
+    by_zernio_id = {ch.zernio_account_id: ch for ch in rows if ch.zernio_account_id}
+    seen_zernio_ids: set[str] = set()
+    changed = False
+
+    for acc in zernio_accounts:
+        zid = acc.get("_id") or acc.get("id")
+        platform = acc.get("platform")
+        if not zid or not platform:
+            continue
+        seen_zernio_ids.add(zid)
+
+        handle = acc.get("username") or acc.get("handle") or acc.get("screenName")
+        display_name = acc.get("displayName") or acc.get("name") or handle
+        follower_count = acc.get("followerCount") or acc.get("followers") or 0
+        profile_image_url = (
+            acc.get("profileImage") or acc.get("avatarUrl") or acc.get("profileImageUrl")
+        )
+        platform_account_id = acc.get("platformAccountId") or acc.get("accountId")
+
+        existing = by_zernio_id.get(zid)
+        if existing is None:
+            new_ch = SocialChannel(
+                id=f"sch_{uuid.uuid4().hex[:12]}",
+                user_id=ctx.workspace_owner_id,
+                platform=platform,
+                platform_account_id=platform_account_id,
+                handle=handle,
+                display_name=display_name,
+                follower_count=follower_count or 0,
+                profile_image_url=profile_image_url,
+                zernio_account_id=zid,
+                status="active",
+            )
+            db.add(new_ch)
+            changed = True
+        else:
+            if existing.status != "active":
+                existing.status = "active"
+                changed = True
+            if follower_count and existing.follower_count != follower_count:
+                existing.follower_count = follower_count
+                changed = True
+            if handle and existing.handle != handle:
+                existing.handle = handle
+                changed = True
+            if display_name and existing.display_name != display_name:
+                existing.display_name = display_name
+                changed = True
+
+    # Rows Zernio no longer reports were disconnected outside the app.
+    for ch in rows:
+        if (
+            ch.zernio_account_id
+            and ch.zernio_account_id not in seen_zernio_ids
+            and ch.status == "active"
+        ):
+            ch.status = "disconnected"
+            changed = True
+
+    if changed:
+        await db.commit()
+        rows = await _fetch_channel_rows(db, ctx.workspace_owner_id)
+
     return {"channels": [_channel_to_dict(c) for c in rows]}
 
 
@@ -141,12 +231,32 @@ async def list_channels(
 async def disconnect_channel(
     channel_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
     db: AsyncSession = Depends(get_db),
 ):
+    """Disconnect a channel — on Zernio's side, not just locally.
+
+    Previously this only deleted the local row, leaving the account still
+    connected on Zernio; the next /channels read (which reconciles against
+    Zernio) simply recreated it as active, making disconnect look broken.
+    We revoke on Zernio first, then mark the row disconnected (kept, not
+    deleted, so avatar_history/post stats survive a reconnect later).
+    """
     ch = await db.get(SocialChannel, channel_id)
-    if not ch or ch.user_id != user.id:
+    if not ch or ch.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Channel not found")
-    await db.delete(ch)
+
+    if ch.zernio_account_id:
+        try:
+            svc = _require_zernio()
+            await svc.disconnect_account(ch.zernio_account_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+            raise HTTPException(502, f"Could not disconnect on Zernio: {exc}")
+
+    ch.status = "disconnected"
     await db.commit()
     return {"ok": True}
 
@@ -156,6 +266,7 @@ async def check_avatar_consistency(
     channel_id: str,
     avatar_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Tell the frontend whether a channel has a different primary avatar.
@@ -166,7 +277,7 @@ async def check_avatar_consistency(
       "mismatch"     — channel.primary_avatar != avatar_id
     """
     ch = await db.get(SocialChannel, channel_id)
-    if not ch or ch.user_id != user.id:
+    if not ch or ch.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Channel not found")
     if not ch.primary_avatar_id:
         return {"status": "new_channel", "primary_avatar": None}
@@ -186,7 +297,10 @@ async def check_avatar_consistency(
 
 
 @router.get("/profiles")
-async def list_social_profiles(user: User = Depends(get_current_user)):
+async def list_social_profiles(
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
+):
     """List the user's connected social-media profiles via Zernio."""
     svc = _require_zernio()
     try:
@@ -205,6 +319,7 @@ class ConnectPlatformRequest(BaseModel):
 async def connect_platform(
     req: ConnectPlatformRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
 ):
     """Return an OAuth URL the frontend opens in a popup window.
 
@@ -233,6 +348,7 @@ async def connect_platform(
 async def get_connect_error(
     platform: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
 ):
     """Best-effort detailed reason for a recent failed platform connect.
 
@@ -277,6 +393,7 @@ class CreateSocialPostRequest(BaseModel):
 async def create_social_post(
     req: CreateSocialPostRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Create or schedule a SocialPost for a rendered cast.
@@ -290,8 +407,29 @@ async def create_social_post(
     svc = _require_zernio()
 
     cast = await db.get(Cast, req.cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
+
+    # Nothing reaches Zernio without approval. The owner can publish
+    # directly — treated as an implicit self-approval, since they're
+    # already allowed to approve anything and requiring an explicit
+    # submit→approve round-trip on their own solo work before every
+    # publish would break today's one-click flow for the (still by far
+    # most common) no-team case. A Publisher acting on someone else's
+    # workspace, though, must respect an actual prior approval — the
+    # review step only means something once more than one person is
+    # involved.
+    if cast.approval_status != CastApprovalStatus.APPROVED:
+        if ctx.is_owner:
+            cast.approval_status = CastApprovalStatus.APPROVED
+            cast.approved_at = datetime.utcnow()
+            cast.approved_by = ctx.actor_user_id
+            await db.commit()
+        else:
+            raise HTTPException(
+                403,
+                "This cast needs Publisher approval before it can be scheduled or published.",
+            )
 
     # Pick the render to publish: explicit render_id or the latest ready render.
     render: Optional[CastRender] = None
@@ -380,7 +518,7 @@ async def create_social_post(
         # Persist a failed-status row so the user can retry.
         post = SocialPost(
             id=f"spo_{uuid.uuid4().hex[:12]}",
-            user_id=user.id,
+            user_id=ctx.workspace_owner_id,
             cast_id=req.cast_id,
             render_id=getattr(render, "id", None),
             caption=full_caption,
@@ -431,7 +569,7 @@ async def create_social_post(
 
     post = SocialPost(
         id=f"spo_{uuid.uuid4().hex[:12]}",
-        user_id=user.id,
+        user_id=ctx.workspace_owner_id,
         cast_id=req.cast_id,
         render_id=getattr(render, "id", None),
         zernio_post_id=str(zpost.get("_id") or "") or None,
@@ -469,7 +607,7 @@ async def create_social_post(
         from services.usage_tracker import log_usage
         await log_usage(
             db,
-            user_id=user.id,
+            user_id=ctx.workspace_owner_id,
             event_type="social_publish",
             provider="zernio",
             provider_cost_usd=float(COST_RATES.get("zernio/per_post", 0.016))
@@ -491,6 +629,7 @@ async def create_social_post(
 @router.get("/comments/pending-count")
 async def get_pending_comment_count(
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Count of comments awaiting a reply, across all of the user's posts.
@@ -506,7 +645,7 @@ async def get_pending_comment_count(
             select(_func.count(SocialComment.id))
             .join(SocialPost, SocialComment.social_post_id == SocialPost.id)
             .where(
-                SocialPost.user_id == user.id,
+                SocialPost.user_id == ctx.workspace_owner_id,
                 SocialComment.reply_status == "pending",
             )
         )
@@ -579,9 +718,10 @@ async def list_social_posts(
     cast_id: Optional[str] = None,
     status: Optional[str] = None,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(SocialPost).where(SocialPost.user_id == user.id)
+    q = select(SocialPost).where(SocialPost.user_id == ctx.workspace_owner_id)
     if cast_id:
         q = q.where(SocialPost.cast_id == cast_id)
     if status:
@@ -629,10 +769,11 @@ async def list_social_posts(
 async def get_social_post(
     post_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     p = await db.get(SocialPost, post_id)
-    if not p or p.user_id != user.id:
+    if not p or p.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Post not found")
 
     # Refresh status from Zernio when we have a zernio_post_id.
@@ -654,10 +795,11 @@ async def get_social_post(
 async def delete_social_post(
     post_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     p = await db.get(SocialPost, post_id)
-    if not p or p.user_id != user.id:
+    if not p or p.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Post not found")
 
     # Best-effort delete on Zernio.
@@ -728,12 +870,14 @@ async def _refresh_comments_for_post(db: AsyncSession, post: SocialPost) -> int:
     # Pull cast + product for AI reply context.
     cast = await db.get(Cast, post.cast_id) if post.cast_id else None
     avatar = await db.get(Avatar, getattr(cast, "avatar_id", None)) if cast else None
+    # `cast.products` is a lazy-loaded relationship (models/cast.py) — a
+    # plain attribute access on an AsyncSession-bound object raises
+    # sqlalchemy.exc.MissingGreenlet instead of AttributeError, so
+    # getattr(cast, "products", None) doesn't actually avoid the lazy
+    # load or catch its failure; it crashed this endpoint with a 500 on
+    # every call. Go straight to the explicit eager-loaded query below.
     product = None
-    cast_products = getattr(cast, "products", None)
-    if cast_products and isinstance(cast_products, list) and cast_products:
-        # Avoid lazy-loading; fall back to first associated product if available.
-        product = cast_products[0]
-    if product is None and post.cast_id:
+    if post.cast_id:
         from models.cast import CastProduct
         cp_rows = (
             await db.execute(
@@ -807,11 +951,12 @@ async def _refresh_comments_for_post(db: AsyncSession, post: SocialPost) -> int:
 async def get_comments(
     post_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return all comments for a post, refreshing from Zernio first."""
     p = await db.get(SocialPost, post_id)
-    if not p or p.user_id != user.id:
+    if not p or p.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Post not found")
     await _refresh_comments_for_post(db, p)
     rows = (
@@ -834,12 +979,13 @@ async def reply_to_comment(
     comment_id: str,
     req: ReplyRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Approve and send a reply to a comment via Zernio."""
     svc = _require_zernio()
     p = await db.get(SocialPost, post_id)
-    if not p or p.user_id != user.id:
+    if not p or p.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Post not found")
     c = await db.get(SocialComment, comment_id)
     if not c or c.social_post_id != post_id:
@@ -885,10 +1031,11 @@ async def skip_comment(
     post_id: str,
     comment_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     p = await db.get(SocialPost, post_id)
-    if not p or p.user_id != user.id:
+    if not p or p.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Post not found")
     c = await db.get(SocialComment, comment_id)
     if not c or c.social_post_id != post_id:
@@ -910,11 +1057,12 @@ class GenerateCaptionRequest(BaseModel):
 async def generate_caption_endpoint(
     req: GenerateCaptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate an AI caption + hashtags + first_comment for a cast."""
     cast = await db.get(Cast, req.cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     # Resolve a representative product (first attached, if any).

@@ -615,7 +615,14 @@ function CloneUploadSubPhase({
       setVoiceStatus("processing");
       const ensuredAvatarId = avatarId || await ensureAvatarId();
       await avatarApi.cloneUploadVoice(ensuredAvatarId, file);
-      await qc.invalidateQueries({ queryKey: ["voice-corpus", ensuredAvatarId] }); 
+      await qc.invalidateQueries({ queryKey: ["voice-corpus", ensuredAvatarId] });
+      // CloneSourcePhase polls the same corpus data under a separate key
+      // ("voice-corpus-source") to gate the Continue button. That query's
+      // refetchInterval stops polling once it sees zero entries (its first
+      // fetch, taken before any voice exists) and never resumes on its own
+      // — without invalidating it too, the button stays stuck disabled
+      // after upload even though this panel already shows voice ready.
+      await qc.invalidateQueries({ queryKey: ["voice-corpus-source", ensuredAvatarId] });
     } catch (err: any) {
       setVoiceStatus("idle");
       setVoiceFile(null);

@@ -177,40 +177,15 @@ function TabButton({
 // ── Schedule tab ─────────────────────────────────────────────────────────
 
 function ScheduleTab() {
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-  const navigate = useNavigate();
-
-  const { data: posts, isLoading: postsLoading } = useQuery({
-    queryKey: ["social-posts"],
-    queryFn: () => socialApi.listPosts(),
-  });
-
   // CHANGE 4 — fetch fully-rendered casts so the user can publish or
   // schedule them straight from this hub. Previously the only path here
   // was via per-cast /publish/:id; now PublishCard sits inline.
-  const { data: readyData, isLoading: readyLoading } = useQuery({
+  const { data: readyData, isLoading } = useQuery({
     queryKey: ["ready-casts"],
     queryFn: () => castsApi.list({ status: "ready", has_render: true, include_clips: true }),
   });
 
-  // Both queries gate the same screen — tracking only `posts`' loading
-  // state let the "Ready to Publish" section (or the "nothing scheduled"
-  // empty state) render before readyData had actually arrived, then pop
-  // in a moment later once it did. Wait for both before showing anything.
-  const isLoading = postsLoading || readyLoading;
   const readyCasts: any[] = (readyData as any)?.casts || [];
-
-  const scheduled = (posts || []).filter(
-    (p) => p.status === "scheduled" && p.scheduled_for,
-  );
-
-  const scheduledDates = useMemo(() => {
-    return scheduled.map((p) => new Date(p.scheduled_for));
-  }, [scheduled]);
-
-  const postsForDay = scheduled.filter((p) =>
-    isSameDay(new Date(p.scheduled_for), selectedDate),
-  );
 
   if (isLoading) {
     return (
@@ -220,48 +195,26 @@ function ScheduleTab() {
     );
   }
 
+  if (readyCasts.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-sm text-white/50">
+        Nothing ready to publish yet.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
-      {readyCasts.length > 0 && (
-        <div>
-          <h2 className="text-xs font-medium text-white/50 mb-3 uppercase tracking-wider">
-            Ready to Publish
-          </h2>
-          <div className="space-y-3 mb-6">
-            {readyCasts.map((c) => (
-              <PublishCard key={c.id} cast={c} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      <CalendarStrip
-        selectedDate={selectedDate}
-        onChange={setSelectedDate}
-        scheduledDates={scheduledDates}
-      />
-
-      {postsForDay.length > 0 ? (
-        <div className="space-y-2">
-          {postsForDay.map((p) => (
-            <ScheduledPostCard key={p.id} post={p} />
+      <div>
+        <h2 className="text-xs font-medium text-white/50 mb-3 uppercase tracking-wider">
+          Ready to Publish
+        </h2>
+        <div className="space-y-3 mb-6">
+          {readyCasts.map((c) => (
+            <PublishCard key={c.id} cast={c} />
           ))}
         </div>
-      ) : (
-        <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center">
-          <Calendar className="w-9 h-9 mx-auto mb-3 opacity-30" />
-          <p className="text-sm text-white/60 mb-3">
-            Nothing scheduled for {formatHumanDate(selectedDate)}.
-          </p>
-          <Button
-            size="sm"
-            onClick={() => navigate("/cast-builder")}
-            className="bg-accent hover:bg-accent/90"
-          >
-            <Plus className="w-3.5 h-3.5 mr-1.5" /> Build a cast
-          </Button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -388,7 +341,7 @@ function ScheduledPostCard({ post }: { post: any }) {
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => navigate(`/publish/${post.cast_id}`)}
+            onClick={() => navigate(`/publish/${post.cast_id}?post_id=${post.id}`)}
             title="Edit"
           >
             <Pencil className="w-3.5 h-3.5" />
@@ -595,19 +548,24 @@ function PublishCard({ cast }: { cast: any }) {
 // ── Scheduled tab ────────────────────────────────────────────────────────
 
 function ScheduledTab() {
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const navigate = useNavigate();
+
   const { data: posts, isLoading } = useQuery({
     queryKey: ["social-posts", "scheduled"],
     queryFn: () => socialApi.listPosts({ status: "scheduled" }),
   });
 
-  const sorted = useMemo(
-    () =>
-      [...(posts || [])].sort(
-        (a, b) =>
-          new Date(a.scheduled_for).getTime() -
-          new Date(b.scheduled_for).getTime(),
-      ),
-    [posts],
+  const scheduled = (posts || []).filter(
+    (p) => p.status === "scheduled" && p.scheduled_for,
+  );
+
+  const scheduledDates = useMemo(() => {
+    return scheduled.map((p) => new Date(p.scheduled_for));
+  }, [scheduled]);
+
+  const postsForDay = scheduled.filter((p) =>
+    isSameDay(new Date(p.scheduled_for), selectedDate),
   );
 
   if (isLoading) {
@@ -618,19 +576,35 @@ function ScheduledTab() {
     );
   }
 
-  if (sorted.length === 0) {
-    return (
-      <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-sm text-white/50">
-        Nothing scheduled yet.
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-2">
-      {sorted.map((p) => (
-        <ScheduledPostCard key={p.id} post={p} />
-      ))}
+    <div className="space-y-4">
+      <CalendarStrip
+        selectedDate={selectedDate}
+        onChange={setSelectedDate}
+        scheduledDates={scheduledDates}
+      />
+
+      {postsForDay.length > 0 ? (
+        <div className="space-y-2">
+          {postsForDay.map((p) => (
+            <ScheduledPostCard key={p.id} post={p} />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center">
+          <Calendar className="w-9 h-9 mx-auto mb-3 opacity-30" />
+          <p className="text-sm text-white/60 mb-3">
+            Nothing scheduled for {formatHumanDate(selectedDate)}.
+          </p>
+          <Button
+            size="sm"
+            onClick={() => navigate("/cast-builder")}
+            className="bg-accent hover:bg-accent/90"
+          >
+            <Plus className="w-3.5 h-3.5 mr-1.5" /> Build a cast
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -13,12 +13,12 @@ from sqlalchemy import select, func, or_
 from pydantic import BaseModel
 import sentry_sdk
 from database import get_db
-from models.user import User
+from models.user import User, TeamRole
 from models.product import Product
 from models.product_asset import ProductAsset
 from models.cast import Cast, CastStatus, CastProduct
 from models.block import Block
-from routers.auth import get_current_user
+from routers.auth import get_current_user, WorkspaceContext, require_role
 from services import audit_log
 from config import settings
 
@@ -196,6 +196,7 @@ async def _product_to_response(product: Product, db: AsyncSession) -> dict:
 async def create_product(
     req: ProductCreate,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     # Manual-entry fallback: if the create came from the URL-import fallback
@@ -214,8 +215,7 @@ async def create_product(
     prod_id = f"prod_{uuid.uuid4().hex[:12]}"
     product = Product(
         id=prod_id,
-        user_id=user.id,
-        name=req.name,
+        user_id=ctx.workspace_owner_id,        name=req.name,
         price=req.price,
         commission_rate=req.commission_rate,
         description=req.description,
@@ -256,6 +256,7 @@ class FromUrlRequest(BaseModel):
 async def import_from_url(
     req: FromUrlRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Import a product from any URL (TikTok, Amazon, or generic e-commerce).
@@ -311,14 +312,14 @@ async def import_from_url(
     if resolved.source == "tiktok" and resolved.source_product_id:
         existing = await db.scalar(
             select(Product).where(
-                Product.user_id == user.id,
+                Product.user_id == ctx.workspace_owner_id,
                 Product.tiktok_product_id == resolved.source_product_id,
             )
         )
     elif resolved.source_url:
         existing = await db.scalar(
             select(Product).where(
-                Product.user_id == user.id,
+                Product.user_id == ctx.workspace_owner_id,
                 Product.product_url == resolved.source_url,
             )
         )
@@ -383,8 +384,7 @@ async def import_from_url(
     prod_id = f"prod_{uuid.uuid4().hex[:12]}"
     product = Product(
         id=prod_id,
-        user_id=user.id,
-        name=resolved.title or "Imported Product",
+        user_id=ctx.workspace_owner_id,        name=resolved.title or "Imported Product",
         title=resolved.title,
         description=resolved.description or "",
         price=resolved.price or 0,
@@ -431,8 +431,7 @@ async def import_from_url(
         from services.usage_tracker import log_usage
         await log_usage(
             db,
-            user_id=user.id,
-            event_type="product_import",
+            user_id=ctx.workspace_owner_id,            event_type="product_import",
             provider="apify",
             provider_cost_usd=float(COST_RATES.get("apify/single_url_scrape", 0.05)),
             quantity=1,
@@ -515,8 +514,7 @@ async def _materialize_product_assets(
             return ProductAsset(
                 id=asset_id,
                 product_id=product_id,
-                user_id=user.id,
-                asset_type="gallery",
+                user_id=ctx.workspace_owner_id,                asset_type="gallery",
                 media_type=media_type,
                 r2_key=r2_key,
                 r2_url=r2.get_public_url(r2_key),
@@ -558,8 +556,7 @@ async def _materialize_product_assets(
         assets_to_add.append(ProductAsset(
             id=f"pa_{uuid.uuid4().hex[:12]}",
             product_id=product_id,
-            user_id=user.id,
-            asset_type="gallery",
+            user_id=ctx.workspace_owner_id,            asset_type="gallery",
             media_type="image",
             r2_key=cover_image_key,
             r2_url=r2.get_public_url(cover_image_key),
@@ -591,6 +588,7 @@ async def _materialize_product_assets(
 async def refresh_product(
     product_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-run the URL resolver for an existing product and backfill any
@@ -605,7 +603,7 @@ async def refresh_product(
     from services.url_product_resolver import resolve_product_url
 
     product = await db.scalar(
-        select(Product).where(Product.id == product_id, Product.user_id == user.id)
+        select(Product).where(Product.id == product_id, Product.user_id == ctx.workspace_owner_id)
     )
     if not product:
         raise HTTPException(404, "Product not found")
@@ -685,10 +683,11 @@ async def list_products(
     sort: str = Query("newest"),
     filter: str = Query("all"),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Product).where(
-        Product.user_id == user.id,
+        Product.user_id == ctx.workspace_owner_id,
         or_(Product.deleted_at.is_(None), Product.status != "deleted"),
     )
 
@@ -782,10 +781,11 @@ async def list_products(
 async def get_product(
     product_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     resp = await _product_to_response(product, db)
@@ -847,13 +847,13 @@ async def get_product(
     casts_via_blocks = await db.execute(
         select(Cast.id, Cast.name, Cast.status)
         .join(Block, Block.cast_id == Cast.id)
-        .where(Block.product_id == product_id, Cast.user_id == user.id)
+        .where(Block.product_id == product_id, Cast.user_id == ctx.workspace_owner_id)
         .distinct()
     )
     casts_via_cp = await db.execute(
         select(Cast.id, Cast.name, Cast.status)
         .join(CastProduct, CastProduct.cast_id == Cast.id)
-        .where(CastProduct.product_id == product_id, Cast.user_id == user.id)
+        .where(CastProduct.product_id == product_id, Cast.user_id == ctx.workspace_owner_id)
         .distinct()
     )
     seen_ids = set()
@@ -876,10 +876,11 @@ async def update_product(
     product_id: str,
     req: ProductUpdate,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     update_data = req.model_dump(exclude_unset=True)
@@ -904,10 +905,11 @@ async def update_product(
 async def delete_product(
     product_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     # Block deletion if product is used in an active/generating cast
@@ -917,7 +919,7 @@ async def delete_product(
         .join(Block, Block.cast_id == Cast.id)
         .where(
             Block.product_id == product_id,
-            Cast.user_id == user.id,
+            Cast.user_id == ctx.workspace_owner_id,
             Cast.status.in_(active_statuses),
         )
         .limit(1)
@@ -929,7 +931,7 @@ async def delete_product(
             .join(CastProduct, CastProduct.cast_id == Cast.id)
             .where(
                 CastProduct.product_id == product_id,
-                Cast.user_id == user.id,
+                Cast.user_id == ctx.workspace_owner_id,
                 Cast.status.in_(active_statuses),
             )
             .limit(1)
@@ -960,10 +962,11 @@ async def upload_asset(
     file: UploadFile = File(...),
     asset_type: str = Query("product_shot"),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     from services.r2_storage import get_r2_storage_service
@@ -990,8 +993,7 @@ async def upload_asset(
     asset = ProductAsset(
         id=asset_id,
         product_id=product_id,
-        user_id=user.id,
-        asset_type=asset_type,
+        user_id=ctx.workspace_owner_id,        asset_type=asset_type,
         media_type=media_type,
         r2_key=r2_key,
         r2_url=r2.get_public_url(r2_key),
@@ -1034,6 +1036,7 @@ async def record_asset(
     file: UploadFile = File(...),
     asset_type: str = Query("demo"),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a recorded video/audio blob as an asset."""
@@ -1044,6 +1047,7 @@ async def record_asset(
 async def list_product_assets(
     product_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return all assets for a product, ordered for gallery / carousel display.
@@ -1052,7 +1056,7 @@ async def list_product_assets(
     legacy rows without explicit position appear in import order.
     """
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     result = await db.execute(
@@ -1084,13 +1088,14 @@ async def delete_asset(
     product_id: str,
     asset_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     asset = await db.get(ProductAsset, asset_id)
     if not asset or asset.product_id != product_id:
         raise HTTPException(404, "Asset not found")
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
     try:
         await audit_log.record(
@@ -1123,6 +1128,7 @@ _BULK_SEARCH_DISABLED = HTTPException(
 async def import_tiktok_products(
     req: TikTokShopSearchRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """DISABLED — was: search TikTok Shop via Apify, preview results."""
     raise _BULK_SEARCH_DISABLED
@@ -1132,6 +1138,7 @@ async def import_tiktok_products(
 async def search_tiktok_shop(
     req: TikTokShopSearchRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """DISABLED — was: TikTok Shop name search."""
     raise _BULK_SEARCH_DISABLED
@@ -1140,6 +1147,7 @@ async def search_tiktok_shop(
 @router.post("/backfill-covers")
 async def backfill_covers(
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """DISABLED — was: backfill cover images by Apify-searching TikTok
@@ -1158,6 +1166,7 @@ async def backfill_covers(
 async def proxy_product_image(
     image_url: str = Body(..., embed=True),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Download a product image and re-upload to R2."""
     import httpx as _httpx
@@ -1184,11 +1193,12 @@ async def proxy_product_image(
 async def generate_overlay(
     product_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Auto-generate price/discount overlay image."""
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     # Generate simple price tag overlay as SVG → PNG via placeholder
@@ -1218,8 +1228,7 @@ async def generate_overlay(
     asset = ProductAsset(
         id=asset_id,
         product_id=product_id,
-        user_id=user.id,
-        asset_type="price_overlay",
+        user_id=ctx.workspace_owner_id,        asset_type="price_overlay",
         media_type="overlay",
         r2_key=r2_key,
         r2_url=r2.get_public_url(r2_key),
@@ -1279,6 +1288,7 @@ async def generate_ai_images(
     style: str = Body("product_shot"),
     custom_prompt: str = Body(""),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate styled product photos via FLUX Kontext (image-to-image).
@@ -1289,7 +1299,7 @@ async def generate_ai_images(
     because it had no reference to what the product actually looks like.
     """
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     from config import settings as app_settings
@@ -1351,7 +1361,7 @@ async def generate_ai_images(
             await r2.upload_bytes(resp.content, r2_key, "image/jpeg")
 
             asset = ProductAsset(
-                id=asset_id, product_id=product_id, user_id=user.id,
+                id=asset_id, product_id=product_id, user_id=ctx.workspace_owner_id,
                 asset_type="ai_generated_image", media_type="image",
                 r2_key=r2_key, r2_url=r2.get_public_url(r2_key),
                 file_size_bytes=len(resp.content),
@@ -1396,11 +1406,12 @@ async def generate_ai_video(
     custom_prompt: str = Body(""),
     quality: str = Body("pro"),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a short product video using fal.ai image-to-video."""
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     prompts = {
@@ -1466,7 +1477,7 @@ async def generate_ai_video(
             await r2.upload_bytes(resp.content, r2_key, "video/mp4")
 
             asset = ProductAsset(
-                id=asset_id, product_id=product_id, user_id=user.id,
+                id=asset_id, product_id=product_id, user_id=ctx.workspace_owner_id,
                 asset_type="ai_generated_video", media_type="video",
                 r2_key=r2_key, r2_url=r2.get_public_url(r2_key),
                 duration_seconds=duration_seconds,
@@ -1488,13 +1499,14 @@ async def generate_ai_video(
 async def remove_product_background(
     product_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove background from product cover image using rembg.
     Creates a new asset with transparent background (PNG).
     """
     product = await db.get(Product, product_id)
-    if not product or product.user_id != user.id:
+    if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
     from services.r2_storage import get_r2_storage_service
@@ -1550,7 +1562,7 @@ async def remove_product_background(
     await r2.upload_bytes(result_bytes, r2_key, "image/png")
 
     asset = ProductAsset(
-        id=asset_id, product_id=product_id, user_id=user.id,
+        id=asset_id, product_id=product_id, user_id=ctx.workspace_owner_id,
         asset_type="background_removed", media_type="image",
         r2_key=r2_key, r2_url=r2.get_public_url(r2_key),
         file_size_bytes=len(result_bytes),
@@ -1695,6 +1707,7 @@ async def _call_llm_for_reviews(prompt: str, system_prompt: str) -> str:
 async def generate_reviews(
     product_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate 25 sample reviews (5 per star bucket) via the cheap LLM.
@@ -1709,7 +1722,7 @@ async def generate_reviews(
 
     try:
         product = await db.get(Product, product_id)
-        if not product or product.user_id != user.id:
+        if not product or product.user_id != ctx.workspace_owner_id:
             raise HTTPException(404, "Product not found")
 
         rate_key = (user.id, product_id)
@@ -1786,8 +1799,7 @@ async def generate_reviews(
         try:
             from services.usage_logger import log_api_usage
             await log_api_usage(
-                user_id=user.id,
-                service="openrouter",
+                user_id=ctx.workspace_owner_id,                service="openrouter",
                 operation="review_generation",
                 success=True,
                 cost_cents=0,  # ~$0.002 per call; refined once usage_tracker (PR #18) lands

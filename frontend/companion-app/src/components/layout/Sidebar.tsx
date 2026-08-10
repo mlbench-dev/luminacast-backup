@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import {
   Clapperboard,
   Radio,
@@ -14,11 +16,16 @@ import {
   ImagePlay,
   Send,
   DollarSign,
+  ClipboardCheck,
+  ChevronsUpDown,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { confirmAction } from "@/lib/swal";
+import { toast } from "@/hooks/useToast";
 import { useAuthStore } from "@/stores/authStore";
-import { UserRole } from "@/lib/types";
+import { UserRole, TeamRole } from "@/lib/types";
+import { teamsApi, extractErrorMessage } from "@/lib/api";
 
 const mainNav = [
   { to: "/my-avatar", label: "My Avatar", icon: UserCircle },
@@ -34,6 +41,13 @@ const mainNav = [
 
 const analyticsNav = [
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
+];
+
+// Publisher-only — hidden from Viewers/Creators. Cosmetic; the backend
+// (routers/casts.py's review-queue/approve endpoints) enforces this
+// independently regardless of what the sidebar shows.
+const publisherNav = [
+  { to: "/review", label: "Review Queue", icon: ClipboardCheck },
 ];
 
 const settingsNav = [
@@ -78,10 +92,38 @@ export function Sidebar() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const hasTeamRole = useAuthStore((s) => s.hasTeamRole);
+  const switchWorkspace = useAuthStore((s) => s.switchWorkspace);
   const isAdmin = user?.role === UserRole.ADMIN;
   // The cost dashboard is keyed on operator email (matches the backend
   // allow-list in `utils/admin.py`) rather than the broad ADMIN role.
   const isCostOperator = user?.email === "3gorka72@gmail.com";
+  const canReview = hasTeamRole(TeamRole.PUBLISHER);
+
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const { data: workspaces = [] } = useQuery({
+    queryKey: ["my-workspaces"],
+    queryFn: () => teamsApi.myWorkspaces(),
+  });
+  const showSwitcher = workspaces.length > 1;
+
+  const handleSwitch = async (ownerId: string) => {
+    if (ownerId === user?.workspace?.owner_id) {
+      setSwitcherOpen(false);
+      return;
+    }
+    try {
+      await switchWorkspace(ownerId);
+      setSwitcherOpen(false);
+      navigate("/dashboard");
+    } catch (err: unknown) {
+      toast({
+        title: "Could not switch workspace",
+        description: extractErrorMessage(err, "Something went wrong."),
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <aside
@@ -110,6 +152,15 @@ export function Sidebar() {
           <NavItem key={item.to} {...item} />
         ))}
 
+        {canReview && (
+          <>
+            <div className="my-3 border-t border-border" />
+            {publisherNav.map((item) => (
+              <NavItem key={item.to} {...item} />
+            ))}
+          </>
+        )}
+
         {/* Settings section */}
         <div className="my-3 border-t border-border" />
         <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
@@ -134,7 +185,46 @@ export function Sidebar() {
       </nav>
 
       {/* User section */}
-      <div className="border-t border-border p-4">
+      {/* <div className="border-t border-border p-4">
+        {showSwitcher ? (
+          <div className="relative mb-3">
+            <button
+              onClick={() => setSwitcherOpen((v) => !v)}
+              data-testid="workspace-switcher"
+              className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-text-dim hover:bg-card"
+            >
+              <span className="truncate">
+                {user?.workspace?.is_own ? "My workspace" : user?.workspace?.owner_label || user?.email}
+              </span>
+              <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+            </button>
+            {switcherOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setSwitcherOpen(false)} />
+                <div className="absolute bottom-full left-0 z-50 mb-1 w-full min-w-[200px] rounded-md border border-border bg-surface shadow-xl py-1">
+                  {workspaces.map((w) => {
+                    const active = w.owner_id === (user?.workspace?.owner_id ?? user?.id);
+                    return (
+                      <button
+                        key={w.owner_id}
+                        onClick={() => handleSwitch(w.owner_id)}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-text-dim hover:bg-card hover:text-text"
+                      >
+                        <span className="truncate">
+                          {w.is_own ? "My workspace" : w.owner_label}
+                          {!w.is_own && (
+                            <span className="ml-1.5 text-[10px] uppercase text-text-muted">{w.role}</span>
+                          )}
+                        </span>
+                        {active && <Check className="h-3.5 w-3.5 text-accent shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
         <div className="mb-3 truncate text-sm text-text-dim">
           {user?.email}
         </div>
@@ -152,7 +242,7 @@ export function Sidebar() {
           <LogOut className="h-4 w-4" />
           Sign Out
         </button>
-      </div>
+      </div> */}
     </aside>
   );
 }
