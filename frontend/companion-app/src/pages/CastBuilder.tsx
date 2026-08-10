@@ -140,9 +140,11 @@ export function CastBuilderPage() {
     setPhase(statusToPhase(updatedCast.status));
   }, []);
 
-  const handleCastCreated = useCallback(async (newCast: Cast) => {
+  const handleCastCreated = useCallback(async (newCast: Cast, wasExisting?: boolean) => {
     setCast(newCast);
-    try { await castsApi.generateScripts(newCast.id); } catch (err) { console.error("Auto script gen failed:", err); }
+    if (!wasExisting) {
+      try { await castsApi.generateScripts(newCast.id); } catch (err) { console.error("Auto script gen failed:", err); }
+    }
     setPhase("script");
     navigate(`/cast-builder/${newCast.id}/script`, { replace: true });
   }, [navigate]);
@@ -181,6 +183,7 @@ export function CastBuilderPage() {
   const [rendering, setRendering] = useState(false);
   // Track local edits — any change after a render invalidates "ready" status
   const editsSinceRenderRef = useRef(0);
+  const toastedFailedRenderIdRef = useRef<string | null>(null);
 
   // Track render status for inline button display
   const [renderStatus, setRenderStatus] = useState<{
@@ -272,6 +275,17 @@ export function CastBuilderPage() {
             ...(isStale ? { errorMessage: "Changes since last render" } : {}),
           });
         } else if (latest?.status === "failed") {
+          // Toast the reason once per failed render — the button itself
+          // only shows a bare "Render Failed" label with a hover tooltip,
+          // which is easy to miss entirely.
+          if (toastedFailedRenderIdRef.current !== latest.id) {
+            toastedFailedRenderIdRef.current = latest.id;
+            toast({
+              title: "Render failed",
+              description: latest.error_message || "Something went wrong during rendering.",
+              variant: "destructive",
+            });
+          }
           setRenderStatus({ status: "failed", errorMessage: latest.error_message, renderId: latest.id });
         } else {
           setRenderStatus({ status: "idle" });
@@ -296,7 +310,6 @@ export function CastBuilderPage() {
       } catch { /* confirm blocked — proceed anyway */ }
     }
 
-    const MIN_SPEAKING_SLOT_S = 1.5;
     try {
       const regions = arrangePhaseRef.current?.getBlockRegions?.() || [];
       const shortBlocks = regions
@@ -306,7 +319,12 @@ export function CastBuilderPage() {
           const slotSeconds = r.end_s - r.start_s;
           return { block, slotSeconds, ttsSeconds };
         })
-        .filter((x) => x.ttsSeconds && x.slotSeconds < MIN_SPEAKING_SLOT_S);
+        // Bug: this used to compare against a flat 1.5s floor instead of
+        // the clip's own voiceover length, so any clip longer than 1.5s
+        // but still shorter than its narration silently passed the
+        // pre-flight check, hit the backend, and failed there with no
+        // warning shown up front.
+        .filter((x) => x.ttsSeconds && x.slotSeconds < x.ttsSeconds);
 
       if (shortBlocks.length > 0) {
         const names = shortBlocks
@@ -550,6 +568,7 @@ export function CastBuilderPage() {
                       onClick={handleFinalizeClick}
                       className="bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30"
                       data-testid="finalize-render-btn"
+                      title={renderStatus.errorMessage || "Render failed"}
                     >
                       <XCircle className="w-4 h-4 mr-2" />
                       Render Failed — Retry
@@ -646,7 +665,7 @@ export function CastBuilderPage() {
       {/* Phase content */}
       <div className={phase === "editor" ? "flex-1 overflow-hidden min-h-0" : "flex-1 overflow-auto"}>
         {phase === "setup" && (
-          <SetupPhase onCreated={handleCastCreated} />
+          <SetupPhase cast={cast} onCreated={handleCastCreated} />
         )}
 
         {phase === "script" && cast && (

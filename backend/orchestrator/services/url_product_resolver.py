@@ -14,7 +14,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 import httpx
 import sentry_sdk
@@ -54,6 +54,21 @@ class TikTokBlockedError(Exception):
         super().__init__(
             "TikTok Shop blocked the automated lookup for this product."
         )
+
+
+class GenericSiteBlockedError(Exception):
+    """Raised when a generic (non-TikTok, non-Amazon) product URL can't be
+    resolved — both the direct fetch and the Apify headless-browser fallback
+    failed to find product data (image/price). The URL may well be a real
+    product page; the site most likely blocked automated access. Caller
+    should fall back to a manual-entry flow rather than surfacing a hard
+    failure, mirroring TikTokBlockedError's handling.
+    """
+
+    def __init__(self, source_url: str, reason: str):
+        self.source_url = source_url
+        self.reason = reason
+        super().__init__(reason)
 
 
 def _extract_tiktok_product_id(url: str) -> Optional[str]:
@@ -935,8 +950,28 @@ def _extract_amazon_asin(url: str) -> Optional[str]:
 # Generic resolver — JSON-LD + OG tag scraping
 # ---------------------------------------------------------------------------
 
+# Query params that only ever control a CDN resize/crop, never image
+# identity — strip these (and force scheme) before comparing two image URLs
+# for equality, or the same photo at two sizes reads as two different photos.
+_IMAGE_RESIZE_PARAMS = {"width", "height", "w", "h", "size", "quality", "format"}
+
+
+def _normalize_image_url(url: str) -> str:
+    """Build a dedup key that ignores scheme and CDN resize params.
+
+    `http://x.com/photo.jpg` and `https://x.com/photo.jpg?width=1024` should
+    be recognized as the same photo; only the host+path+non-resize-query
+    identity matters for that comparison.
+    """
+    parsed = urlparse(url if "//" in url.split("?")[0] else f"https:{url}")
+    kept_query = urlencode(sorted(
+        (k, v) for k, v in parse_qsl(parsed.query) if k.lower() not in _IMAGE_RESIZE_PARAMS
+    ))
+    return urlunparse(("https", parsed.netloc, parsed.path, "", kept_query, ""))
+
+
 def _extract_generic_fields(html: str) -> dict:
-    """Pull title/description/cover/price out of raw page HTML.
+    """Pull title/description/cover/price/gallery out of raw page HTML.
 
     Shared by the direct-fetch path and the Apify-rendered fallback below —
     both hand this function real page HTML, just sourced differently.
@@ -945,12 +980,40 @@ def _extract_generic_fields(html: str) -> dict:
 
     og_title = _extract_meta(html, "og:title")
     og_desc = _extract_meta(html, "og:description")
-    og_image = _extract_meta(html, "og:image")
+    # A page can carry multiple <meta property="og:image"> tags — one per
+    # product photo (standard on Shopify and most modern storefronts) — but
+    # _extract_meta only ever returns the first match, so pull all of them.
+    og_images = _extract_meta_all(html, "og:image")
     og_price = _extract_meta(html, "product:price:amount") or _extract_meta(html, "og:price:amount")
 
     title = product.get("name") or og_title
     description = product.get("description") or og_desc
-    cover = (product.get("image") if isinstance(product.get("image"), str) else None) or og_image
+
+    jsonld_image = product.get("image")
+    if isinstance(jsonld_image, str):
+        jsonld_images = [jsonld_image]
+    elif isinstance(jsonld_image, list):
+        jsonld_images = [u for u in jsonld_image if isinstance(u, str)]
+    else:
+        jsonld_images = []
+
+    # Prefer JSON-LD's gallery (usually the full, ordered product photo set)
+    # and fall back to / extend with OG images, deduping while preserving
+    # order. Sites commonly reference the exact same photo through two
+    # different URLs — e.g. og:image plain vs. JSON-LD's resized CDN variant
+    # (http vs https, or a ?width=1024 resize param appended) — so dedup on
+    # a normalized key rather than the raw string, or the same picture shows
+    # up twice.
+    seen: set[str] = set()
+    media_urls: list[str] = []
+    for u in jsonld_images + og_images:
+        if not u:
+            continue
+        key = _normalize_image_url(u)
+        if key not in seen:
+            seen.add(key)
+            media_urls.append(u)
+    cover = media_urls[0] if media_urls else None
 
     price = None
     offers = product.get("offers")
@@ -963,7 +1026,7 @@ def _extract_generic_fields(html: str) -> dict:
 
     return {
         "title": title, "description": description,
-        "cover": cover, "price": price, "raw": product,
+        "cover": cover, "media_urls": media_urls, "price": price, "raw": product,
     }
 
 
@@ -1027,17 +1090,28 @@ async def _fetch_html_via_apify(url: str, client: httpx.AsyncClient) -> Optional
     return html if isinstance(html, str) and html else None
 
 
+# Markers seen in the redirected/served URL when a site serves a bot-check
+# page instead of the real one (Shein's /risk/challenge, Akamai/PerimeterX/
+# DataDome-style challenge pages on other sites, etc.) rather than just
+# silently returning no data.
+_BLOCK_PAGE_URL_MARKERS = ("captcha", "challenge", "risk-control", "/risk/", "/blocked", "verify")
+
+
 async def _resolve_generic(url: str, client: httpx.AsyncClient) -> ResolvedProduct:
     """Resolve a generic e-commerce URL by scraping JSON-LD and OG tags.
 
     Tries a direct fetch first (fast, free). If that yields no product image
     — the signature of a bot-protected site serving a generic/challenge page
     instead of the real one — retries through Apify's headless-browser
-    crawler, which is far more likely to get past that wall.
+    crawler, which is far more likely to get past that wall. If both fail,
+    raises GenericSiteBlockedError instead of silently returning an empty
+    product, so the caller can offer a manual-entry fallback with a real
+    reason instead of a product record with nothing in it.
     """
     resp = await client.get(url, timeout=30, follow_redirects=True)
     resp.raise_for_status()
     fields = _extract_generic_fields(resp.text)
+    hit_block_page = any(marker in str(resp.url).lower() for marker in _BLOCK_PAGE_URL_MARKERS)
 
     if not fields["cover"]:
         rendered_html = await _fetch_html_via_apify(url, client)
@@ -1047,6 +1121,20 @@ async def _resolve_generic(url: str, client: httpx.AsyncClient) -> ResolvedProdu
                 logger.info("generic_resolver.apify_fallback_recovered_image url=%s", url)
                 fields = apify_fields
 
+        if not fields["cover"]:
+            reason = (
+                "This site's bot-protection (CAPTCHA) blocked automated access to the "
+                "product page, even after retrying with a headless browser."
+                if hit_block_page else
+                "We couldn't find product details (image or price) on this page — "
+                "it may not be a standard product listing."
+            )
+            logger.warning(
+                "generic_resolver.blocked url=%s hit_block_page=%s reason=%s",
+                url, hit_block_page, reason,
+            )
+            raise GenericSiteBlockedError(url, reason)
+
     return ResolvedProduct(
         source="generic",
         source_product_id=None,
@@ -1055,6 +1143,7 @@ async def _resolve_generic(url: str, client: httpx.AsyncClient) -> ResolvedProdu
         description=fields["description"],
         price=fields["price"],
         cover_image_url=fields["cover"],
+        media_urls=fields["media_urls"],
         raw=fields["raw"] or None,
     )
 
@@ -1080,13 +1169,22 @@ def _extract_jsonld_product(html: str) -> Optional[dict]:
 
 
 def _extract_meta(html: str, prop: str) -> Optional[str]:
-    """Extract content from <meta property="..." content="...">."""
+    """Extract content from the first <meta property="..." content="..."> match."""
+    matches = _extract_meta_all(html, prop)
+    return matches[0] if matches else None
+
+
+def _extract_meta_all(html: str, prop: str) -> list[str]:
+    """Extract content from every <meta property="..." content="..."> match.
+
+    Pages commonly repeat og:image once per product photo — _extract_meta's
+    single-match search would silently drop all but the first.
+    """
     pattern = re.compile(
         rf'<meta[^>]+(?:property|name)=["\'](?:{re.escape(prop)})["\'][^>]+content=["\']([^"\']*)["\']',
         re.IGNORECASE,
     )
-    match = pattern.search(html)
-    return match.group(1).strip() if match else None
+    return [m.group(1).strip() for m in pattern.finditer(html) if m.group(1).strip()]
 
 
 # ---------------------------------------------------------------------------

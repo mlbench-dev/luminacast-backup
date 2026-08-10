@@ -32,7 +32,7 @@ logtail-python
 # Video Processing & Face Extraction
 ffmpeg-python==0.2.0
 opencv-python-headless==4.10.0.84
-mediapipe==0.10.33
+mediapipe==1.0.0
 
 # fal.ai (FLUX Kontext)
 fal-client
@@ -42,8 +42,8 @@ pyannote-audio  # VPS-only — excluded from CI (requirements-ci.txt)
 soundfile  # VPS-only — excluded from CI (requirements-ci.txt)
 
 # Background Removal
-rembg[cpu]>=2.0.50
-onnxruntime>=1.16.0
+rembg[cpu]==2.0.69
+onnxruntime==1.28.0
 Pillow>=10.0.0
 
 # Language detection
@@ -52,6 +52,6 @@ langdetect
 # Utilities
 psutil==6.0.0
 python-dotenv==1.0.1
-jsonschema==4.23.0
+jsonschema==4.25.1
 # audio-separator[cpu] installed separately in Dockerfile (needs torch + build deps)
 anthropic>=0.34.0

@@ -365,6 +365,11 @@ async def create_cast(
     if avatar.status != AvatarStatus.APPROVED and avatar.status != AvatarStatus.READY and avatar.id != "default":
         raise HTTPException(400, "Only approved or ready avatars can be used. Complete the clone flow and approve your avatar first.")
 
+    # Every cast promotes a product — require at least one, whether an
+    # existing library product or an inline one created alongside the cast.
+    if not req.product_ids and not req.products:
+        raise HTTPException(400, "Select at least one product to create a cast.")
+
     cast_id = f"cst_{uuid.uuid4().hex[:12]}"
 
     # Auto-generate name if not provided
@@ -673,6 +678,27 @@ async def list_casts(
 
     r2 = _get_r2()
 
+    # Latest cast_renders row per cast — cast.status (used below) is only
+    # updated by the older generate_cast.py pipeline. The two-pass
+    # render_cast_task pipeline (tasks/cast_render.py) writes failures onto
+    # CastRender.error_message instead, so without this lookup a failed
+    # render never surfaces here: cast.status stays whatever it was before
+    # the render ran and the list falls through to render_status=None.
+    latest_render_by_cast: dict[str, "CastRender"] = {}
+    cast_ids = [c.id for c in casts]
+    if cast_ids:
+        from models.cast_render import CastRender
+        render_rows = (
+            await db.execute(
+                select(CastRender)
+                .where(CastRender.cast_id.in_(cast_ids))
+                .order_by(CastRender.cast_id, CastRender.created_at.desc())
+            )
+        ).scalars().all()
+        for r in render_rows:
+            if r.cast_id not in latest_render_by_cast:
+                latest_render_by_cast[r.cast_id] = r
+
     def _resolve_avatar_meta(cast: Cast) -> tuple[Optional[str], Optional[str]]:
         # Default-look thumbnail wins (it's the cast-wide background look
         # the user picked at SetupPhase). Fall back to the avatar's own
@@ -698,6 +724,11 @@ async def list_casts(
             d["render_status"] = "failed"
         else:
             d["render_status"] = None
+        d["render_error_message"] = None
+        latest_render = latest_render_by_cast.get(cast.id)
+        if latest_render and latest_render.status == "failed" and d["render_status"] != "ready":
+            d["render_status"] = "failed"
+            d["render_error_message"] = latest_render.error_message
         # Legacy field — MyCasts.tsx reads cast.avatar?.face_ref_key directly.
         d["avatar"] = (
             {"id": avatar.id, "name": avatar.name, "face_ref_key": avatar.face_ref_key}
@@ -1022,6 +1053,13 @@ async def get_cast(
         "music_volume": getattr(cast, "music_volume", None),
         "caption_preset": getattr(cast, "caption_preset", None),
         "default_avatar_look_id": getattr(cast, "default_avatar_look_id", None),
+        # Setup-phase selections — needed so the Setup step can rehydrate its
+        # form when the user navigates back to it instead of showing blank
+        # defaults for a cast that already exists.
+        "cast_type": getattr(cast, "cast_type", "recorded") or "recorded",
+        "template_id": getattr(cast, "template_id", None),
+        "production_level": getattr(cast, "production_level", "standard") or "standard",
+        "duration_target_seconds": getattr(cast, "duration_target_seconds", None),
         "created_at": cast.created_at.isoformat() if cast.created_at else None,
         "blocks": blocks_data,
         "products": products_data,

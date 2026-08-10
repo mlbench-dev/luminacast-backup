@@ -68,14 +68,19 @@ async def test_blocked_direct_fetch_falls_back_to_apify_rendered_html():
 
 
 @pytest.mark.asyncio
-async def test_blocked_fetch_without_apify_token_returns_partial_result(monkeypatch):
+async def test_blocked_fetch_without_apify_token_raises_blocked_error(monkeypatch):
+    # Both the direct fetch AND the Apify fallback fail to find an image —
+    # the resolver must raise rather than silently create an empty product
+    # (see routers/products.py's GenericSiteBlockedError -> needs_manual_entry
+    # handling, which gives the caller a real reason instead of a blank result).
     monkeypatch.setattr(resolver.settings, "APIFY_API_TOKEN", "", raising=False)
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get.return_value = _html_response(BLOCKED_HTML)
 
-    resolved = await _resolve_generic(PRODUCT_URL, client)
+    with pytest.raises(resolver.GenericSiteBlockedError) as exc_info:
+        await _resolve_generic(PRODUCT_URL, client)
 
-    assert resolved.cover_image_url is None
+    assert exc_info.value.source_url == PRODUCT_URL
     client.post.assert_not_called()
 
 
@@ -87,21 +92,20 @@ async def test_apify_actor_not_found_falls_back_gracefully(monkeypatch):
     client.get.return_value = _html_response(BLOCKED_HTML)
     client.post.return_value = httpx.Response(404, json={"error": "not found"})
 
-    resolved = await _resolve_generic(PRODUCT_URL, client)
+    with pytest.raises(resolver.GenericSiteBlockedError):
+        await _resolve_generic(PRODUCT_URL, client)
 
-    assert resolved.cover_image_url is None
     assert any(isinstance(e, resolver.ApifyActorNotFoundError) for e in captured)
 
 
 @pytest.mark.asyncio
-async def test_apify_renders_but_still_has_no_image_keeps_direct_fetch_result():
+async def test_apify_renders_but_still_has_no_image_raises_blocked_error():
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get.return_value = _html_response(BLOCKED_HTML)
     client.post.return_value = httpx.Response(200, json=[{"html": BLOCKED_HTML}])
 
-    resolved = await _resolve_generic(PRODUCT_URL, client)
-
-    assert resolved.cover_image_url is None
+    with pytest.raises(resolver.GenericSiteBlockedError):
+        await _resolve_generic(PRODUCT_URL, client)
 
 
 @pytest.mark.asyncio

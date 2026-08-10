@@ -279,7 +279,7 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
         {corpusTab === "record" ? (
           <div className="rounded-lg border border-border bg-surface p-4 text-center space-y-3">
             {!isRecording && !recordedBlob && (
-              <button onClick={startRecording} className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-red-500 hover:bg-red-600 transition">
+              <button onClick={startRecording} className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-red-500 hover:bg-red-600 transition cursor-pointer">
                 <Mic className="h-6 w-6 text-white" />
               </button>
             )}
@@ -287,7 +287,7 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
               <>
                 <button
                   onClick={stopRecording}
-                  className="mx-auto flex items-center justify-center rounded-full bg-red-600 transition-transform duration-75"
+                  className="mx-auto flex items-center justify-center rounded-full bg-red-600 transition-transform duration-75 cursor-pointer"
                   style={{
                     height: `${64 + audioLevel * 32}px`,
                     width: `${64 + audioLevel * 32}px`,
@@ -419,7 +419,7 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
         <div className="rounded-lg border border-border bg-surface p-6 text-center space-y-4">
           {!isRecording && !recordedBlob && (
             <>
-              <button onClick={startRecording} className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-500 hover:bg-red-600 transition shadow-lg">
+              <button onClick={startRecording} className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-500 hover:bg-red-600 transition shadow-lg cursor-pointer">
                 <Mic className="h-7 w-7 text-white" />
               </button>
               <p className="text-xs text-text-muted">Click to start recording your voice</p>
@@ -429,7 +429,7 @@ export function VoiceCorpusTab({ avatarId, ensureAvatarId, compact, onTrained }:
             <>
               <button
                 onClick={stopRecording}
-                className="mx-auto flex items-center justify-center rounded-full bg-red-600 transition-transform duration-75"
+                className="mx-auto flex items-center justify-center rounded-full bg-red-600 transition-transform duration-75 cursor-pointer"
                 style={{
                   height: `${64 + audioLevel * 32}px`,
                   width: `${64 + audioLevel * 32}px`,

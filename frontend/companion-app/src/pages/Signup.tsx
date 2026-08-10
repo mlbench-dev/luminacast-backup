@@ -6,21 +6,21 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useAuthStore } from "@/stores/authStore";
 import { toast } from "@/hooks/useToast";
-import { validatePassword, PASSWORD_REQUIREMENTS_TEXT } from "@/lib/passwordValidation";
-import axios from "axios";
+import { PASSWORD_REQUIREMENTS_TEXT, PASSWORD_PATTERN } from "@/lib/passwordValidation";
+import { extractErrorMessage } from "@/lib/api";
 
 export function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [tiktokHandle, setTiktokHandle] = useState("");
   const navigate = useNavigate();
   const { register, isLoading } = useAuthStore();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const passwordError = validatePassword(password);
-    if (passwordError) {
-      toast({ title: "Weak password", description: passwordError, variant: "destructive" });
+    if (password !== confirmPassword) {
+      toast({ title: "Error", description: "Passwords don't match.", variant: "destructive" });
       return;
     }
     try {
@@ -28,10 +28,7 @@ export function SignupPage() {
       toast({ title: "Account created", description: "Welcome to Luminacast!", variant: "success" });
       navigate("/dashboard");
     } catch (err: unknown) {
-      let errorMessage = "Registration failed. Try again.";
-      if (axios.isAxiosError(err) && err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      }
+      const errorMessage = extractErrorMessage(err, "Registration failed. Try again.");
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
   };
@@ -73,8 +70,21 @@ export function SignupPage() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    minLength={8}
+                    pattern={PASSWORD_PATTERN}
+                    title={PASSWORD_REQUIREMENTS_TEXT}
                     data-testid="signup-password"
+                    className="pl-10"
+                  />
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
+                  <Input
+                    type="password"
+                    placeholder="Confirm password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    data-testid="signup-confirm-password"
                     className="pl-10"
                   />
                 </div>

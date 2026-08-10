@@ -30,6 +30,7 @@ import {
   StopCircle,
   RotateCcw,
   Sliders,
+  AlertCircle,
 } from "lucide-react";
 import {
   Camera as CameraIcon,
@@ -522,7 +523,7 @@ function CloneUploadSubPhase({
   }, [existingFace]);
 
   // Voice state
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "uploading" | "processing" | "ready">("idle");
+  const [voiceStatus, setVoiceStatus] = useState<"idle" | "uploading" | "processing" | "ready" | "failed">("idle");
   const [voiceFile, setVoiceFile] = useState<{ name: string; size: number } | null>(null);
   const [showVoiceOverride, setShowVoiceOverride] = useState(false);
   const voiceInputRef = useRef<HTMLInputElement>(null);
@@ -548,10 +549,13 @@ function CloneUploadSubPhase({
     const entries: VoiceCorpusEntry[] = corpusData.entries || [];
     const hasReady = entries.some((e) => e.status === "ready");
     const hasProcessing = entries.some((e) => e.status === "pending" || e.status === "processing");
+    const hasFailed = entries.some((e) => e.status === "failed");
     if (hasReady) {
       setVoiceStatus("ready");
     } else if (hasProcessing) {
       setVoiceStatus("processing");
+    } else if (hasFailed) {
+      setVoiceStatus("failed");
     }
   }, [corpusData]);
 
@@ -768,7 +772,7 @@ function CloneUploadSubPhase({
             }}
           />
 
-          {voiceStatus === "idle" ? (
+          {voiceStatus === "idle" || voiceStatus === "failed" ? (
             <VoiceCorpusTab
               avatarId={avatarId ?? null}
               ensureAvatarId={ensureAvatarId}
@@ -1119,18 +1123,23 @@ function CloneRecordSubPhase({
 
 // ── Status Badge ──
 
-function StatusBadge({ status }: { status: "idle" | "uploading" | "processing" | "ready" }) {
+function StatusBadge({ status }: { status: "idle" | "uploading" | "processing" | "ready" | "failed" }) {
   if (status === "idle") return null;
   const config = {
     uploading: { label: "Uploading", color: "text-blue-400 bg-blue-500/10 border-blue-500/30" },
     processing: { label: "Processing", color: "text-amber-400 bg-amber-500/10 border-amber-500/30" },
     ready: { label: "Ready", color: "text-green-400 bg-green-500/10 border-green-500/30" },
+    failed: { label: "Failed", color: "text-red-400 bg-red-500/10 border-red-500/30" },
   }[status];
   return (
     <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium border", config.color)}>
       {status === "uploading" || status === "processing" ? (
         <span className="flex items-center gap-1">
           <Loader2 className="h-2.5 w-2.5 animate-spin" /> {config.label}
+        </span>
+      ) : status === "failed" ? (
+        <span className="flex items-center gap-1">
+          <AlertCircle className="h-2.5 w-2.5" /> {config.label}
         </span>
       ) : (
         <span className="flex items-center gap-1">
@@ -1289,11 +1298,16 @@ function CloneSourcePhase({
     return () => { if (partialSaveRef.current) clearTimeout(partialSaveRef.current); };
   }, [avatarId, ensureAvatarId, name, gender, voicePreviewText]);
 
-  // Poll voice readiness if voice came from face video
+  // Poll real voice-corpus state — the single source of truth for whether a
+  // usable voice recording exists, regardless of whether it came from the
+  // upload sub-phase, a resumed/hydrated draft, or face-video extraction.
+  // (Previously this fell back to `uploadDone`, which only reflects that the
+  // FACE step finished — a resumed draft with face candidates but no voice
+  // would incorrectly read as voice-ready and let you skip recording audio.)
   const { data: corpusData } = useQuery({
     queryKey: ["voice-corpus-source", avatarId],
     queryFn: () => voiceCorpusApi.list(avatarId!),
-    enabled: !!avatarId && voiceFromFaceVideo && uploadDone,
+    enabled: !!avatarId,
     refetchInterval: (q) => {
       const entries: VoiceCorpusEntry[] = q.state.data?.entries || [];
       const hasReady = entries.some((e) => e.status === "ready");
@@ -1303,9 +1317,12 @@ function CloneSourcePhase({
     },
   });
 
-  const voiceReady = voiceFromFaceVideo
-    ? (corpusData?.entries || []).some((e: VoiceCorpusEntry) => e.status === "ready")
-    : uploadDone; // if upload sub-phase said voiceReady, we trust it
+  const voiceReady = (corpusData?.entries || []).some((e: VoiceCorpusEntry) => e.status === "ready");
+  const voiceFailed =
+    voiceFromFaceVideo &&
+    !voiceReady &&
+    (corpusData?.entries || []).some((e: VoiceCorpusEntry) => e.status === "failed") &&
+    !(corpusData?.entries || []).some((e: VoiceCorpusEntry) => e.status === "pending" || e.status === "processing");
 
   const handleFaceReady = useCallback(async (faceCandidates: FaceCandidate[], ensuredAvatarIdFromUpload?: string) => {
     setCandidates(faceCandidates);
@@ -1497,10 +1514,16 @@ function CloneSourcePhase({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-text">Face Selection</h3>
-              {voiceFromFaceVideo && uploadDone && !voiceReady && (
+              {voiceFromFaceVideo && uploadDone && !voiceReady && !voiceFailed && (
                 <span className="flex items-center gap-1.5 text-xs text-amber-400">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Voice processing...
+                </span>
+              )}
+              {voiceFromFaceVideo && voiceFailed && (
+                <span className="flex items-center gap-1.5 text-xs text-red-400">
+                  <AlertCircle className="h-3 w-3" />
+                  Voice extraction failed
                 </span>
               )}
               {voiceFromFaceVideo && voiceReady && (
@@ -1510,6 +1533,14 @@ function CloneSourcePhase({
                 </span>
               )}
             </div>
+            {voiceFailed && avatarId && (
+              <div className="space-y-2 rounded-lg border border-red-500/30 bg-red-900/10 p-3">
+                <p className="text-xs text-red-400">
+                  Couldn't extract a voice from your video. Record or upload one manually instead:
+                </p>
+                <VoiceCorpusTab avatarId={avatarId} ensureAvatarId={ensureAvatarId} compact />
+              </div>
+            )}
 
             {candidates.length === 0 ? (
               <div className="grid grid-cols-4 gap-2">

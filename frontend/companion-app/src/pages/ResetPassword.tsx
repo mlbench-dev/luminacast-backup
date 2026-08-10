@@ -1,11 +1,10 @@
 import { useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Lock, CheckCircle, Eye, EyeOff } from "lucide-react";
-import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { authApi } from "@/lib/api";
+import { authApi, extractErrorMessage } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
 import { validatePassword, PASSWORD_REQUIREMENTS_TEXT } from "@/lib/passwordValidation";
 
@@ -37,10 +36,7 @@ export function ResetPasswordPage() {
       setDone(true);
       toast({ title: "Password reset", variant: "success" });
     } catch (err: unknown) {
-      let errorMessage = "This reset link is invalid or has expired.";
-      if (axios.isAxiosError(err) && err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      }
+      const errorMessage = extractErrorMessage(err, "This reset link is invalid or has expired.");
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     } finally {
       setIsLoading(false);

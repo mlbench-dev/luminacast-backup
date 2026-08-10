@@ -1,11 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Mail, CheckCircle } from "lucide-react";
-import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { authApi } from "@/lib/api";
+import { authApi, extractErrorMessage } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
 
 export function ForgotPasswordPage() {
@@ -20,10 +19,7 @@ export function ForgotPasswordPage() {
       await authApi.forgotPassword({ email });
       setSent(true);
     } catch (err: unknown) {
-      let errorMessage = "Something went wrong. Try again.";
-      if (axios.isAxiosError(err) && err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      }
+      const errorMessage = extractErrorMessage(err, "Something went wrong. Try again.");
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     } finally {
       setIsLoading(false);

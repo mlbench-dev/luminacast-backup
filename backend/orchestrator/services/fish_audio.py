@@ -89,11 +89,30 @@ def _log(level: str, service: str, message: str, **kwargs):
     )
 
 
+# Status codes that mean "this will never succeed without someone fixing the
+# account/config" — insufficient credit, bad/expired API key, no permission.
+# Retrying (let alone the outer 2-attempt loop + provider-chain fallback
+# layered on top of this) just burns ~30s of guaranteed-failure requests per
+# variant for no chance of success. 5xx / network errors are still retried
+# normally since those genuinely can be transient.
+_NON_RETRYABLE_STATUS_CODES = {401, 402, 403}
+
+
 async def _retry_async(func, *args, max_retries=3, base_delay=2.0, **kwargs):
     for attempt in range(max_retries):
         try:
             return await func(*args, **kwargs)
         except Exception as e:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code in _NON_RETRYABLE_STATUS_CODES:
+                _log(
+                    "error",
+                    func.__module__ or "service",
+                    f"Non-retryable HTTP {status_code} — failing fast instead of "
+                    f"retrying a call that cannot succeed until the account/config "
+                    f"is fixed: {e}",
+                )
+                raise
             if attempt == max_retries - 1:
                 raise
             delay = base_delay * (2 ** attempt)

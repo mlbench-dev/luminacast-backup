@@ -136,6 +136,23 @@ api.interceptors.response.use(
   },
 );
 
+/**
+ * Extracts a display-friendly string from an axios error's response body.
+ * FastAPI returns `detail` as a plain string for custom HTTPExceptions, but
+ * as an array of Pydantic error objects ({type, loc, msg, ...}) for raw
+ * request-validation failures (422s) — rendering that array directly as JSX
+ * throws "Objects are not valid as a React child".
+ */
+export function extractErrorMessage(err: unknown, fallback: string): string {
+  if (!axios.isAxiosError(err)) return fallback;
+  const detail = err.response?.data?.detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail.map((d) => (typeof d?.msg === "string" ? d.msg : String(d))).join(" ");
+  }
+  return fallback;
+}
+
 export function setAuthToken(token: string | null) {
   if (token) {
     api.defaults.headers.common["Authorization"] = `Bearer ${token}`;

@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Mail, Lock, Eye, EyeOff } from "lucide-react";
-import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useAuthStore } from "@/stores/authStore";
 import { toast } from "@/hooks/useToast";
+import { extractErrorMessage } from "@/lib/api";
 
 export function LoginPage() {
   const [email, setEmail] = useState("");
@@ -23,12 +23,7 @@ export function LoginPage() {
       toast({ title: "Welcome back", variant: "success" });
       navigate("/dashboard");
     } catch (err: unknown) {
-      let errorMessage = "Invalid credentials.";
-      if (axios.isAxiosError(err) && err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      } else if (error) {
-        errorMessage = error;
-      }
+      const errorMessage = extractErrorMessage(err, error || "Invalid credentials.");
       toast({ title: "Error", description: errorMessage, variant: "destructive" });
     }
   };
@@ -70,7 +65,6 @@ export function LoginPage() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    minLength={8}
                     data-testid="login-password"
                     className="pl-10 pr-10"
                   />

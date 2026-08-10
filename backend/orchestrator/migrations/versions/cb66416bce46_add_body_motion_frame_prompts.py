@@ -1,6 +1,6 @@
 """add body motion frame prompts + widen avatar_look look_type
 
-Revision ID: a8b9c0d1e2f3
+Revision ID: cb66416bce46
 Revises: z7a8b9c0d1e2
 Create Date: 2026-05-08
 
@@ -17,7 +17,7 @@ Adds:
 from alembic import op
 import sqlalchemy as sa
 
-revision = "a8b9c0d1e2f3"
+revision = "cb66416bce46"
 down_revision = "z7a8b9c0d1e2"
 branch_labels = None
 depends_on = None

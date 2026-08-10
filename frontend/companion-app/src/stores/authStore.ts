@@ -1,8 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { User, UserRole } from "@/lib/types";
-import { authApi, setAuthToken } from "@/lib/api";
-import axios from "axios";
+import { authApi, setAuthToken, extractErrorMessage } from "@/lib/api";
 
 interface AuthState {
   token: string | null;
@@ -36,12 +35,7 @@ export const useAuthStore = create<AuthState>()(
           const user = await authApi.me();
           set({ user, isLoading: false });
         } catch (err: unknown) {
-          let message = "Invalid credentials";
-          if (axios.isAxiosError(err) && err.response?.data?.detail) {
-            message = err.response.data.detail;
-          } else if (err instanceof Error) {
-            message = err.message;
-          }
+          const message = extractErrorMessage(err, err instanceof Error ? err.message : "Invalid credentials");
           set({ error: message, isLoading: false });
           throw err;
         }
@@ -50,22 +44,16 @@ export const useAuthStore = create<AuthState>()(
       register: async (email, password, tiktokHandle) => {
         set({ isLoading: true, error: null });
         try {
-          console.log("Registering user:", email, password, tiktokHandle);
           const res = await authApi.register({ email, password, tiktok_handle: tiktokHandle });
-          console.log("Registration successful:", res);
           setAuthToken(res.access_token);
           set({ token: res.access_token });
           const user = await authApi.me();
           set({ user, isLoading: false });
         } catch (err: unknown) {
-          let message = "Registration failed. Try again.";
-          if (axios.isAxiosError(err) && err.response?.data?.detail) {
-            console.log("Registration failed:", err.response?.data?.detail);
-
-            message = err.response.data.detail;
-          } else if (err instanceof Error) {
-            message = err.message;
-          }
+          const message = extractErrorMessage(
+            err,
+            err instanceof Error ? err.message : "Registration failed. Try again."
+          );
           set({ error: message, isLoading: false });
           throw err;
         }

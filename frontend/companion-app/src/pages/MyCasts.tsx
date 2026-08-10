@@ -1,4 +1,3 @@
-import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,13 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+import { confirmAction } from "@/lib/swal";
 import { castsApi, queryClient } from "@/lib/api";
 import { CastStatus } from "@/lib/types";
 import { cn } from "@/lib/cn";
@@ -67,13 +60,6 @@ function formatDuration(blocks: any[] | undefined): string {
 export function MyCastsPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
-
-  // Dialog state for delete-confirm. Tracking the whole cast (not just
-  // the id) so the modal can show the cast name in the body copy.
-  const [pendingDelete, setPendingDelete] = useState<{
-    id: string;
-    name: string;
-  } | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["casts"],
@@ -132,7 +118,7 @@ export function MyCastsPage() {
           <h1 className="text-2xl font-bold text-text">My Casts</h1>
           <p className="text-sm text-text-dim">{casts.length} cast{casts.length !== 1 ? "s" : ""}</p>
         </div>
-        <Button onClick={() => navigate("/cast-builder/new")} className="gap-2">
+        <Button onClick={() => navigate("/cast-builder/new")} className="gap-2 cursor-pointer">
           <Plus className="h-4 w-4" /> New Cast
         </Button>
       </div>
@@ -186,9 +172,13 @@ export function MyCastsPage() {
                       navigate(`/cast-builder/${cast.id}`);
                     }
                   }}
-                  className="w-full text-left"
+                  className="w-full text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 rounded-lg"
                 >
-                <div className="flex items-center gap-4">
+                {/* pr-9 reserves clear space in the top-right corner for the
+                    absolutely-positioned delete button below, so it never
+                    overlaps the status badge that would otherwise flow all
+                    the way to the row's edge. */}
+                <div className="flex items-center gap-4 pr-9">
                   {/* Thumbnails: avatar face + product */}
                   <div className="flex items-center gap-2 shrink-0">
                     {/* Avatar face thumbnail (36px circle) — sourced from
@@ -260,7 +250,10 @@ export function MyCastsPage() {
                         Rendering {cast.render_progress_percent ? `${cast.render_progress_percent}%` : ""}
                       </span>
                     ) : cast.render_status === "failed" ? (
-                      <span className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium bg-red-500/10 text-red-400">
+                      <span
+                        className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium bg-red-500/10 text-red-400"
+                        title={cast.render_error_message || "Rendering failed"}
+                      >
                         <AlertCircle className="h-3 w-3" />
                         Failed
                       </span>
@@ -318,14 +311,25 @@ export function MyCastsPage() {
                 {/* Delete trash icon — revealed on row hover, mirrors the
                     pattern used elsewhere in the app (Publish hub
                     ScheduledPostCard). Stops propagation so it doesn't
-                    navigate when the user clicks it. */}
+                    navigate when the user clicks it. Red at all times (not
+                    just on hover) so it reads clearly as destructive once
+                    revealed — the row content reserves space via pr-10 on
+                    its top row so this never overlaps the status badge. */}
                 <button
                   type="button"
-                  onClick={(e) => {
+                  onClick={async (e) => {
                     e.stopPropagation();
-                    setPendingDelete({ id: cast.id, name: cast.name || "Untitled Cast" });
+                    const confirmed = await confirmAction({
+                      title: "Delete this cast?",
+                      text: `This will permanently remove the cast "${cast.name || "Untitled Cast"}" and all its blocks, renders, and publish records. This cannot be undone.`,
+                      confirmButtonText: "Delete cast",
+                      cancelButtonText: "Cancel",
+                      icon: "warning",
+                    });
+                    if (!confirmed) return;
+                    deleteMutation.mutate(cast.id);
                   }}
-                  className="absolute top-3 right-3 p-1.5 rounded-md text-text-muted opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 focus:opacity-100 transition-opacity"
+                  className="absolute top-3 right-3 p-1.5 rounded-md text-red-400 opacity-0 group-hover:opacity-100 hover:text-red-300 hover:bg-red-500/10 focus:opacity-100 transition-opacity"
                   aria-label="Delete cast"
                   data-testid={`cast-card-${cast.id}-delete`}
                 >
@@ -336,50 +340,6 @@ export function MyCastsPage() {
           })}
         </div>
       )}
-
-      {/* Confirm-delete dialog. Single instance for the page; we render
-          it conditionally on `pendingDelete` so unmounting clears all
-          internal Radix state when closed. */}
-      <Dialog
-        open={!!pendingDelete}
-        onOpenChange={(open) => {
-          if (!open) setPendingDelete(null);
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete this cast?</DialogTitle>
-            <DialogDescription>
-              This will permanently remove the cast{pendingDelete?.name ? ` “${pendingDelete.name}”` : ""} and
-              all its blocks, renders, and publish records. This cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end gap-2 mt-2">
-            <Button variant="outline" onClick={() => setPendingDelete(null)}>
-              Cancel
-            </Button>
-            <Button
-              className="bg-red-500 hover:bg-red-600 text-white"
-              disabled={deleteMutation.isPending}
-              onClick={() => {
-                if (!pendingDelete) return;
-                deleteMutation.mutate(pendingDelete.id);
-                setPendingDelete(null);
-              }}
-            >
-              {deleteMutation.isPending ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Deleting…
-                </>
-              ) : (
-                <>
-                  <Trash2 className="w-3.5 h-3.5 mr-1.5" /> Delete cast
-                </>
-              )}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

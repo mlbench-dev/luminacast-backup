@@ -21,7 +21,11 @@ class Product(Base):
     current_price = Column(Float, default=0)
     original_price = Column(Float, default=0)
     discount_percent = Column(Float, default=0)
-    commission_rate = Column(Float, default=0.15)
+    # No default — a fake commission rate with no basis (e.g. sites with no
+    # affiliate program at all) is worse than showing nothing. Left null
+    # until a real one is resolved (Amazon category lookup, TikTok payload)
+    # or the user enters one manually.
+    commission_rate = Column(Float, nullable=True)
     commission_source = Column(String(30), nullable=True)    # tiktok_affiliate, amazon_associates, manual
     commission_category = Column(String(100), nullable=True) # matched Amazon category
     affiliate_tag = Column(String(100), nullable=True)       # user's Amazon tag or TikTok affiliate ID

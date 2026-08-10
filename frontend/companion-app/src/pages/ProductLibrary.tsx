@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
+import { buildOutboundProductUrl } from "@/lib/affiliateLink";
 import { Sentry } from "@/lib/sentry";
 import { confirmAction } from "@/lib/swal";
 import {
@@ -220,6 +221,7 @@ export function UrlImportBar() {
   const [importing, setImporting] = useState(false);
   const [manualEntry, setManualEntry] = useState<NeedsManualEntry | null>(null);
   const [needsImage, setNeedsImage] = useState<{ id: string; name: string } | null>(null);
+  const [needsPrice, setNeedsPrice] = useState<{ id: string; name: string } | null>(null);
 
   const handleImport = async () => {
     const trimmed = url.trim();
@@ -228,14 +230,15 @@ export function UrlImportBar() {
     try {
       const result = await productsApi.fromUrl(trimmed);
       if (isNeedsManualEntry(result)) {
-        // Source blocked the automated lookup (e.g. TikTok Shop CAPTCHA).
-        // Drop the user into a manual-entry form pre-filled with the origin.
-        // This is NOT a success — surface an informational toast so the user
-        // understands why the dialog opened and that no product was created yet.
+        // Source blocked the automated lookup (e.g. TikTok Shop CAPTCHA, or a
+        // generic site's bot-protection). Drop the user into a manual-entry
+        // form pre-filled with the origin. This is NOT a success — surface an
+        // informational toast with the backend's actual reason so the user
+        // understands why the dialog opened, instead of a generic "it failed".
         setManualEntry(result);
         toast({
           title: "Couldn't fetch automatically",
-          description: "TikTok Shop couldn't be fetched automatically — please complete the details below.",
+          description: result.message,
           variant: "warning",
         });
         setImporting(false);
@@ -250,6 +253,14 @@ export function UrlImportBar() {
         // silently; ask the user to add one right away.
         if (!(result as any).cover_image_url) {
           setNeedsImage({ id: (result as any).id, name: result.name });
+        }
+        // Same idea for price: some sites (Alibaba tiered/negotiated pricing,
+        // pages with no product:price:amount meta tag, etc.) resolve fine —
+        // image, title — but have no single price to extract, which the
+        // backend stores as 0 rather than blocking the whole import. Don't
+        // leave that silent; prompt for a real price right away.
+        if (!(result as any).price) {
+          setNeedsPrice({ id: (result as any).id, name: result.name });
         }
       }
       queryClient.invalidateQueries({ queryKey: ["products"] });
@@ -304,6 +315,18 @@ export function UrlImportBar() {
           onUploaded={() => {
             setNeedsImage(null);
             toast({ title: "Cover image added" });
+            queryClient.invalidateQueries({ queryKey: ["products"] });
+          }}
+        />
+      )}
+      {needsPrice && (
+        <SetPriceDialog
+          productId={needsPrice.id}
+          productName={needsPrice.name}
+          onClose={() => setNeedsPrice(null)}
+          onSaved={() => {
+            setNeedsPrice(null);
+            toast({ title: "Price set" });
             queryClient.invalidateQueries({ queryKey: ["products"] });
           }}
         />
@@ -378,8 +401,7 @@ function ManualEntryDialog({
       >
         <h2 className="text-lg font-bold text-text">Add product details</h2>
         <p className="mt-1 text-sm text-text-muted">
-          TikTok Shop blocked the automated lookup for this product. Fill in the
-          details below and upload a cover image.
+          {entry.message} Fill in the details below and upload a cover image.
         </p>
         <div className="mt-4 space-y-3">
           <div>
@@ -491,6 +513,79 @@ function AddCoverImageDialog({
           <Button size="sm" onClick={handleSave} disabled={!coverFile || saving} className="gap-2">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             {saving ? "Uploading..." : "Add image"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function SetPriceDialog({
+  productId,
+  productName,
+  onClose,
+  onSaved,
+}: {
+  productId: string;
+  productName: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const [price, setPrice] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const parsed = parseFloat(price);
+  const valid = !isNaN(parsed) && parsed > 0;
+
+  const handleSave = async () => {
+    if (!valid || saving) return;
+    setSaving(true);
+    try {
+      await productsApi.update(productId, { price: parsed, current_price: parsed } as any);
+      onSaved();
+    } catch (err: any) {
+      Sentry.captureException(err);
+      toast({
+        title: "Couldn't save price",
+        description: err?.response?.data?.detail || err.message || "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-text">Set a price</h2>
+        <p className="mt-1 text-sm text-text-muted">
+          We couldn't automatically find a price for <span className="text-text">{productName}</span>
+          {" "}(the source page may show tiered/negotiated pricing instead of one fixed price). Enter one to finish setting it up.
+        </p>
+        <div className="mt-4">
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0.00"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            data-testid="set-price-input"
+          />
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={saving}>
+            Skip for now
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={!valid || saving} className="gap-2">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            {saving ? "Saving..." : "Save price"}
           </Button>
         </div>
       </div>
@@ -1724,7 +1819,13 @@ function ProductDetailPanel({ productId, onClose }: {
   const hasDiscount = p && pOriginalPrice > 0 && pOriginalPrice > (pCurrentPrice || pPrice);
   const displayPrice = p ? (pCurrentPrice || pPrice) : 0;
   const coverUrl = p?.cover_image_url || "";
-  const productUrl = p?.product_url || p?.tiktok_product_url || "";
+  // Inject the creator's connected Amazon Associates tag so this link is a
+  // real, attributed affiliate link — a bare Amazon URL earns no commission
+  // no matter how accurate the on-screen commission math is.
+  const productUrl = buildOutboundProductUrl(
+    p?.product_url || p?.tiktok_product_url || "",
+    authUser?.amazon_associate_tag,
+  );
 
 
   return (

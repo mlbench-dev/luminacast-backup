@@ -442,6 +442,7 @@ export interface Cast {
   total_clips?: number;
   completed_clips?: number;
   render_status?: string;
+  render_error_message?: string | null;
   effects_config?: EffectsConfig;
   output_format?: string;
   script_direction?: string;
@@ -466,6 +467,9 @@ export interface Cast {
   music_track_choice?: string;
   music_volume?: number | null;
   caption_preset?: Record<string, unknown> | null;
+  default_avatar_look_id?: string | null;
+  cast_type?: "recorded" | "live";
+  template_id?: string | null;
   created_at: string;
   blocks?: Block[];
   products?: Product[];

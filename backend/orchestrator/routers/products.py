@@ -46,7 +46,7 @@ except ValueError:
 class ProductCreate(BaseModel):
     name: str
     price: float
-    commission_rate: float = 0.15
+    commission_rate: Optional[float] = None
     description: Optional[str] = None
     tiktok_product_url: Optional[str] = None
     tiktok_product_id: Optional[str] = None
@@ -94,7 +94,7 @@ class ProductResponse(BaseModel):
     id: str
     name: str
     price: float
-    commission_rate: float
+    commission_rate: Optional[float] = None
     commission_source: Optional[str] = None
     commission_category: Optional[str] = None
     affiliate_tag: Optional[str] = None
@@ -154,7 +154,7 @@ async def _product_to_response(product: Product, db: AsyncSession) -> dict:
         "id": product.id,
         "name": product.name,
         "price": product.price,
-        "commission_rate": product.commission_rate or 0.15,
+        "commission_rate": product.commission_rate,
         "commission_source": product.commission_source,
         "commission_category": product.commission_category,
         "affiliate_tag": product.affiliate_tag,
@@ -263,7 +263,7 @@ async def import_from_url(
     De-duplicates by source_product_id (TikTok) or product_url (others).
     Returns existing product if already imported.
     """
-    from services.url_product_resolver import resolve_product_url, TikTokBlockedError
+    from services.url_product_resolver import resolve_product_url, TikTokBlockedError, GenericSiteBlockedError
 
     try:
         resolved = await resolve_product_url(req.url)
@@ -284,6 +284,22 @@ async def import_from_url(
                     "We couldn't fetch this TikTok Shop product automatically. "
                     "Please enter the product details and upload a cover image manually."
                 ),
+            },
+        )
+    except GenericSiteBlockedError as exc:
+        sentry_sdk.capture_exception(exc)
+        logger.info(
+            "[from-url-blocked] returning manual-entry fallback url=%s reason=%s",
+            exc.source_url, exc.reason,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "needs_manual_entry",
+                "source": "generic",
+                "source_product_id": None,
+                "source_url": exc.source_url,
+                "message": exc.reason,
             },
         )
     except Exception as exc:
@@ -384,7 +400,7 @@ async def import_from_url(
         category=resolved.category or "",
         variants=resolved.variants,
         specifications=resolved.specifications,
-        commission_rate=commission_rate if commission_rate is not None else 0.15,
+        commission_rate=commission_rate,
         commission_source=commission_source,
         commission_category=commission_category,
     )

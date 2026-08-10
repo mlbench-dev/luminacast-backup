@@ -1,6 +1,6 @@
 """add cast version, cast_versions table, avatar detected_language
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 1419fc1f6295
 Revises: 0eacovpyb3e5
 Create Date: 2026-04-16 00:00:00.000000
 
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = "a1b2c3d4e5f6"
+revision: str = "1419fc1f6295"
 down_revision: Union[str, None] = "0eacovpyb3e5"
 branch_labels = None
 depends_on = None

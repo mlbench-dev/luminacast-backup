@@ -72,7 +72,18 @@ const TEMPLATE_ICONS: Record<string, LucideIcon> = {
 };
 
 interface SetupPhaseProps {
-  onCreated: (cast: Cast) => void;
+  // Present when navigating back to Setup after the cast already exists
+  // (e.g. via the wizard's Back button from Script/Arrange). Used to
+  // rehydrate the form instead of showing blank defaults for a cast that
+  // already has selections.
+  cast?: Cast | null;
+  // `wasExisting` tells the caller whether this cast was freshly created
+  // just now (false) vs. an already-existing cast that was just patched
+  // after the user navigated back to Setup and hit Continue again (true).
+  // The parent needs this to decide whether to auto-trigger script
+  // generation — doing that unconditionally would silently overwrite a
+  // script the user already reviewed/edited on an existing cast.
+  onCreated: (cast: Cast, wasExisting?: boolean) => void;
 }
 
 function generateAutoName(): string {
@@ -81,7 +92,7 @@ function generateAutoName(): string {
   return `Cast ${months[now.getMonth()]}${now.getDate()}-1`;
 }
 
-export function SetupPhase({ onCreated }: SetupPhaseProps) {
+export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
   const qc = useQueryClient();
   const [castName, setCastName] = useState(generateAutoName);
   const [nameEditing, setNameEditing] = useState(false);
@@ -141,6 +152,40 @@ export function SetupPhase({ onCreated }: SetupPhaseProps) {
   });
   const [costEstimate, setCostEstimate] = useState<{ cost_cents: number; breakdown: Record<string, number> } | null>(null);
   const costTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Rehydrate the form from an already-created cast — e.g. the user
+  // generated a script/outline, hit Back, and landed here again. Without
+  // this, every field above falls back to its blank/default useState value
+  // even though the cast already has real selections. Guarded by a ref (not
+  // just `cast` in the deps) so it only ever runs once per mount — this is a
+  // one-time hydration, not a live sync, and shouldn't fight the user's
+  // subsequent edits on every re-render.
+  const hydratedFromCastRef = useRef(false);
+  useEffect(() => {
+    if (!cast || hydratedFromCastRef.current) return;
+    hydratedFromCastRef.current = true;
+    if (cast.name) setCastName(cast.name);
+    if (cast.cast_type) setCastType(cast.cast_type);
+    setSelectedTemplate(cast.template_id ?? null);
+    setSelectedAvatar(cast.avatar_id ?? null);
+    setSelectedLookId(cast.default_avatar_look_id ?? null);
+    setSelectedProducts((cast.products || []).map((p) => p.id));
+    if (cast.quality) setQuality(cast.quality);
+    if (cast.output_format) setOutputFormat(cast.output_format);
+    if (cast.target_platforms && cast.target_platforms.length > 0) {
+      setTargetPlatforms(cast.target_platforms);
+    }
+    if (cast.description) setDescription(cast.description);
+    if (cast.duration_target_seconds != null) {
+      setDurationManual(true);
+      setDurationTarget(cast.duration_target_seconds);
+    }
+    if (cast.production_level) {
+      setProductionLevel(cast.production_level as "quick" | "standard" | "premium");
+      if (cast.production_level !== "standard") setAutoCast(false);
+    }
+    if (cast.music_track_choice) setMusicChoice(cast.music_track_choice);
+  }, [cast]);
 
   // When Auto Cast is ON we lock quality to HD and hide the slider — the
   // moment the user flips it on we snap quality back to the safe default
@@ -269,9 +314,17 @@ export function SetupPhase({ onCreated }: SetupPhaseProps) {
     (l) => l.look_type === "background" && l.status === "ready",
   );
   // Reset the picked look whenever the avatar changes — a look is owned
-  // by exactly one avatar.
+  // by exactly one avatar. Only fires on a genuine SWITCH (a real avatar id
+  // replaced by a different real avatar id), not on the initial null →
+  // value transition from auto-select or from the cast-hydration effect
+  // above — otherwise hydrating an existing cast's saved look would get
+  // wiped out immediately after being set.
+  const prevAvatarForLookResetRef = useRef<string | null>(null);
   useEffect(() => {
-    setSelectedLookId(null);
+    if (prevAvatarForLookResetRef.current && prevAvatarForLookResetRef.current !== selectedAvatar) {
+      setSelectedLookId(null);
+    }
+    prevAvatarForLookResetRef.current = selectedAvatar;
   }, [selectedAvatar]);
 
   // FIX 4 — Auto-select the first ready background on mount/avatar-change
@@ -290,7 +343,34 @@ export function SetupPhase({ onCreated }: SetupPhaseProps) {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const cast = await castsApi.create({
+      if (cast) {
+        // The cast already exists — the user navigated back to Setup (e.g.
+        // after AI generated a script) and hit Continue again. Don't call
+        // create() a second time, which would spawn a duplicate cast with
+        // its own separate outline/script generation run. Instead, patch
+        // only the fields that are safe to change post-creation and advance
+        // forward with the SAME cast.
+        //
+        // Deliberately NOT re-submitted here: avatar_id, product_ids,
+        // quality, cast_type, production_level, template_id. Those are
+        // structural — they already shaped whatever blocks/script/outline
+        // exist for this cast, and silently changing them via a plain PATCH
+        // would leave already-generated content inconsistent with the new
+        // setup. Editing those means starting a new cast, not patching this
+        // one.
+        const patched = await castsApi.patch(cast.id, {
+          name: castName || undefined,
+          description: description || undefined,
+          output_format: outputFormat,
+          duration_target_seconds: durationManual ? durationTarget : undefined,
+          platform_target: targetPlatforms[0] || "tiktok",
+          default_avatar_look_id: selectedLookId || "",
+          music_track_choice: musicChoice,
+        });
+        return patched;
+      }
+
+      const newCast = await castsApi.create({
         name: castName || undefined,
         avatar_id: selectedAvatar!,
         quality,
@@ -328,28 +408,32 @@ export function SetupPhase({ onCreated }: SetupPhaseProps) {
       // Auto Cast → LLM designs avatar/PIP split + auto Pexels; manual →
       // plain avatar_speaking blocks the user can edit themselves.
       const outlineCall = autoCast
-        ? castsApi.generateSmartOutline(cast.id)
-        : castsApi.generateOutline(cast.id);
+        ? castsApi.generateSmartOutline(newCast.id)
+        : castsApi.generateOutline(newCast.id);
       outlineCall
-        .then(() => castsApi.generateScripts(cast.id))
+        .then(() => castsApi.generateScripts(newCast.id))
         // Smart outline regenerates blocks (fresh IDs). Invalidate the cast
         // cache so any already-mounted ScriptPhase swaps to the new blocks
         // before the user can try editing the now-stale ones.
-        .then(() => qc.invalidateQueries({ queryKey: ["cast", cast.id] }))
+        .then(() => qc.invalidateQueries({ queryKey: ["cast", newCast.id] }))
         .catch(() => { /* Script phase will handle retry */ });
 
-      return cast;
+      return newCast;
     },
-    onSuccess: (cast) => {
-      toast({ title: "Cast created!", description: "Generating script..." });
-      onCreated(cast);
+    onSuccess: (resultCast) => {
+      if (cast) {
+        toast({ title: "Cast updated" });
+      } else {
+        toast({ title: "Cast created!", description: "Generating script..." });
+      }
+      onCreated(resultCast, !!cast);
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err?.response?.data?.detail || err.message, variant: "destructive" });
     },
   });
 
-  const canCreate = selectedAvatar && description.trim();
+  const canCreate = selectedAvatar && description.trim() && selectedProducts.length > 0;
 
   // Duration ceiling and tick marks depend on the cast type. LIVE lifts the
   // cap to 2h and uses the longer mark set; recorded keeps the legacy 720s cap.
@@ -529,7 +613,7 @@ export function SetupPhase({ onCreated }: SetupPhaseProps) {
       {/* Product Picker — compact horizontal strip. */}
       <div className="space-y-2">
         <label className="text-xs font-medium text-white/60 uppercase tracking-wider flex items-center gap-2">
-          <Package className="w-3.5 h-3.5" /> Products
+          <Package className="w-3.5 h-3.5" /> Products <span className="text-accent normal-case">*</span>
           {selectedProducts.length > 0 && (
             <span className="text-[10px] text-accent ml-1 normal-case tracking-normal">{selectedProducts.length} selected</span>
           )}
@@ -899,7 +983,9 @@ export function SetupPhase({ onCreated }: SetupPhaseProps) {
             ? "Add a description above to enable generation."
             : !selectedAvatar
               ? "Select an avatar to enable generation."
-              : "Ready to write your script."}
+              : selectedProducts.length === 0
+                ? "Select at least one product to enable generation."
+                : "Ready to write your script."}
         </p>
         <Button
           size="lg"
@@ -907,7 +993,15 @@ export function SetupPhase({ onCreated }: SetupPhaseProps) {
           onClick={() => createMutation.mutate()}
           className="bg-accent hover:bg-accent/90 disabled:opacity-40"
           data-testid="setup-generate-btn"
-          title={!description.trim() ? "Add a description first" : !selectedAvatar ? "Select an avatar" : ""}
+          title={
+            !description.trim()
+              ? "Add a description first"
+              : !selectedAvatar
+                ? "Select an avatar"
+                : selectedProducts.length === 0
+                  ? "Select at least one product"
+                  : ""
+          }
         >
           {createMutation.isPending ? (
             <>
