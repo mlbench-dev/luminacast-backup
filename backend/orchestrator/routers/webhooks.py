@@ -908,6 +908,7 @@ async def _sync_subscription(db, owner_id: str, sub_obj: dict, customer_id: str 
     period_start = first_item.get("current_period_start") or sub_obj.get("current_period_start")
     period_end = first_item.get("current_period_end") or sub_obj.get("current_period_end")
 
+
     await billing_service.create_or_update_subscription_from_stripe(
         db,
         owner_id=owner_id,
