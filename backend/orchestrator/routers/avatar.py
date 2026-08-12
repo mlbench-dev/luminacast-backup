@@ -335,6 +335,9 @@ async def clone_from_tiktok(
     if not tiktok_url or "tiktok.com/@" not in tiktok_url:
         raise HTTPException(status_code=400, detail="Please enter a valid TikTok username or profile URL.")
 
+    from services import billing_service
+    await billing_service.check_avatar_slot_available(db, ctx.workspace_owner_id)
+
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
@@ -393,6 +396,9 @@ async def create_avatar(
         if not tiktok_url or "tiktok.com/@" not in tiktok_url:
             raise HTTPException(status_code=400, detail="Please enter a valid TikTok username or profile URL.")
 
+    from services import billing_service
+    await billing_service.check_avatar_slot_available(db, ctx.workspace_owner_id)
+
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
@@ -435,6 +441,9 @@ async def clone_with_media(
     """Create a clone avatar using uploaded photo and/or audio (camera, mic, or file upload)."""
     if not consent_confirmed:
         raise HTTPException(status_code=400, detail="Consent must be confirmed")
+
+    from services import billing_service
+    await billing_service.check_avatar_slot_available(db, ctx.workspace_owner_id)
 
     from services.r2_storage import get_r2_storage_service
     r2 = get_r2_storage_service()
@@ -517,6 +526,9 @@ async def generate_digital(
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
+    from services import billing_service
+    await billing_service.check_avatar_slot_available(db, ctx.workspace_owner_id)
+
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
@@ -2332,6 +2344,9 @@ async def create_ai_avatar(
     db: AsyncSession = Depends(get_db),
 ):
     """Create an AI avatar record — no pipeline launched yet."""
+    from services import billing_service
+    await billing_service.check_avatar_slot_available(db, ctx.workspace_owner_id)
+
     avatar_id = f"avt_{uuid.uuid4().hex[:12]}"
     avatar = Avatar(
         id=avatar_id,
@@ -2704,6 +2719,7 @@ async def ai_generate_preview(
 async def _clone_voice_for_avatar(
     avatar: Avatar,
     user: User,
+    workspace_owner_id: str,
     audio_bytes: bytes,
     ext: str,
     content_type: str,
@@ -2721,7 +2737,7 @@ async def _clone_voice_for_avatar(
     r2 = get_r2_storage_service()
     fish = get_fish_audio_service()
 
-    voice_sample_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/voice_sample.{ext}"
+    voice_sample_key = f"creators/{workspace_owner_id}/avatar/{avatar.id}/voice_sample.{ext}"
     await r2.upload_bytes(audio_bytes, voice_sample_key, content_type)
 
     try:
@@ -2759,7 +2775,7 @@ async def ai_clone_voice(
 
     ext = (file.filename or "audio.mp3").rsplit(".", 1)[-1].lower()
     return await _clone_voice_for_avatar(
-        avatar, user, audio_bytes, ext, file.content_type or "audio/mpeg", db,
+        avatar, user, ctx.workspace_owner_id, audio_bytes, ext, file.content_type or "audio/mpeg", db,
     )
 
 
@@ -2878,7 +2894,7 @@ async def ai_clone_voice_from_corpus(
                 audio_bytes = f.read()
 
     return await _clone_voice_for_avatar(
-        avatar, user, audio_bytes, "wav", "audio/wav", db,
+        avatar, user, ctx.workspace_owner_id, audio_bytes, "wav", "audio/wav", db,
     )
 
 

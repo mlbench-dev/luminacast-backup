@@ -15,7 +15,7 @@ from models.user import User, UserRole, TeamMember, TeamRole, TeamMemberStatus
 from schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse, UserResponse,
     ForgotPasswordRequest, ResetPasswordRequest, MessageResponse,
-    WorkspaceInfo,
+    WorkspaceInfo, ChangePasswordRequest,
 )
 import sentry_sdk
 from services import audit_log
@@ -319,6 +319,33 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
     return MessageResponse(message="Your password has been reset. You can now sign in.")
 
 
+@router.post("/change-password", response_model=MessageResponse)
+async def change_password(
+    req: ChangePasswordRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Self-service password change from within Settings — distinct from
+    the forgot/reset-password email flow above, which is for a logged-out
+    user. Requires the current password so a hijacked/left-open session
+    can't lock the real owner out."""
+    if not pwd_context.verify(req.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    user.password_hash = pwd_context.hash(req.new_password)
+    await db.commit()
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="auth.change_password", entity_type="auth", entity_id=user.id,
+        )
+        await db.commit()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    return MessageResponse(message="Your password has been updated.")
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(
     user: User = Depends(get_current_user),
@@ -326,6 +353,9 @@ async def get_me(
     db: AsyncSession = Depends(get_db),
 ):
     resp = UserResponse.model_validate(user)
+    if user.avatar_r2_key:
+        from services.r2_storage import get_r2_storage_service
+        resp.avatar_url = get_r2_storage_service().get_public_url(user.avatar_r2_key)
     if ctx.is_owner:
         resp.workspace = WorkspaceInfo(
             owner_id=user.id,

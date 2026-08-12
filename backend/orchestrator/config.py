@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     APP_DOMAIN: str = "localhost"
     ALLOWED_ORIGINS: str = "http://localhost:3000"
 
+    # Local-dev escape hatch: skip subtitle burn-in when the local ffmpeg
+    # build lacks libass. See worker_ffmpeg_compose.py, which parses this
+    # as a string ("1"/"true"/"yes") via _env_first — keep it str here so
+    # that fallback path doesn't hand back a bool. .env.local only —
+    # unset/empty in production.
+    SKIP_CAPTION_BURN_IN: str = ""
+
     # PostgreSQL
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
@@ -56,6 +63,22 @@ class Settings(BaseSettings):
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
+
+    # Stripe Price IDs — one recurring Price per plan/interval and one
+    # one-time Price per PAYG credit pack. Test vs live mode use different
+    # IDs, hence env-configured rather than hard-coded (see
+    # services/billing_config.py, which maps plan/pack -> the field name
+    # below). Empty until the products/prices are created in the Stripe
+    # dashboard (or via `scripts/stripe_setup.py`, see that file's docstring).
+    STRIPE_PRICE_STARTER_MONTHLY: str = ""
+    STRIPE_PRICE_STARTER_ANNUAL: str = ""
+    STRIPE_PRICE_PRO_MONTHLY: str = ""
+    STRIPE_PRICE_PRO_ANNUAL: str = ""
+    STRIPE_PRICE_STUDIO_MONTHLY: str = ""
+    STRIPE_PRICE_STUDIO_ANNUAL: str = ""
+    STRIPE_PRICE_CREDITS_20: str = ""
+    STRIPE_PRICE_CREDITS_50: str = ""
+    STRIPE_PRICE_CREDITS_100: str = ""
 
     # Apify
     APIFY_API_TOKEN: str = ""

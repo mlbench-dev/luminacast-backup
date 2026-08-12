@@ -60,7 +60,12 @@ async def _poll_comments_async() -> dict:
     from models.social_post import SocialPost
     from routers.social import _refresh_comments_for_post
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    # SocialPost.published_at is a naive DateTime column (stored as UTC
+    # with tzinfo stripped — see routers/social.py's create_social_post
+    # comment for the same convention). Comparing it against a tz-aware
+    # cutoff raises "can't compare offset-naive and offset-aware
+    # datetimes" — build cutoff the same naive-UTC way instead.
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
     total_new = 0
     posts_checked = 0
 

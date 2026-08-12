@@ -30,8 +30,20 @@ def event_loop():
 
 @pytest.fixture(scope="session")
 async def test_engine():
-    """Create test database tables once per session."""
-    engine = create_async_engine(TEST_DATABASE_URL)
+    """Create test database tables once per session.
+
+    NullPool: installed pytest-asyncio (1.x) gives each test function its
+    own event loop despite the session-scoped `event_loop` fixture above
+    (that override pattern is a no-op on this version) — a pooled
+    connection opened during test 1's loop is invalid by test 2's loop,
+    surfacing as "attached to a different loop" / "another operation is in
+    progress". A fresh physical connection per checkout sidesteps that
+    exactly the way `database.py` already does for the Celery worker
+    (same root cause, see that file's comment).
+    """
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
@@ -196,7 +208,7 @@ def make_user(db_session):
             id=f"usr_test_{uuid.uuid4().hex[:8]}",
             email=email,
             password_hash=pwd_context.hash("TestPass123!"),
-            role=UserRole(role),
+            role=UserRole(role.upper()),
         )
         db_session.add(user)
         await db_session.commit()
@@ -213,7 +225,7 @@ def make_avatar(db_session):
         avatar = Avatar(
             id=f"avt_test_{uuid.uuid4().hex[:8]}",
             user_id=user_id,
-            type=AvatarType(avatar_type),
+            type=AvatarType(avatar_type.upper()),
             status=AvatarStatus.READY,
             voice_id="voice_test_123",
         )

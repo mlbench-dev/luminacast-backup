@@ -818,12 +818,7 @@ function CloneUploadSubPhase({
         </div>
       )}
 
-      {canContinue && (
-        <p className="flex items-center justify-center gap-1.5 text-xs text-green-400 py-1">
-          <CheckCircle className="h-3.5 w-3.5" />
-          Face and voice ready — continuing automatically
-        </p>
-      )}
+     
     </div>
   );
 }

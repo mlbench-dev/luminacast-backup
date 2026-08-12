@@ -20,6 +20,7 @@ class User(Base):
     stripe_customer_id = Column(String, unique=True, nullable=True)
     tiktok_handle = Column(String, nullable=True)
     display_name = Column(String, nullable=True)
+    avatar_r2_key = Column(String(500), nullable=True)
     last_login_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now(), nullable=True)

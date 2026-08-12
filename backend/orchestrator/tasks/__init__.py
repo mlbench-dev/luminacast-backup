@@ -32,6 +32,7 @@ celery_app = Celery(
         "tasks.social_tasks",
         "tasks.golive_compositor",
         "tasks.usage_rollup",
+        "tasks.billing_tasks",
     ],
 )
 
@@ -74,6 +75,18 @@ celery_app.conf.update(
         "rollup-daily-usage": {
             "task": "tasks.usage_rollup.rollup_daily_usage",
             "schedule": crontab(hour=0, minute=5),
+        },
+        # Releases next month's render/live-stream allowance for
+        # subscriptions whose current UsagePeriod has elapsed, and expires
+        # subscriptions whose Stripe period lapsed with no renewal.
+        "refresh-billing-usage-periods": {
+            "task": "tasks.billing_tasks.refresh_usage_periods",
+            "schedule": crontab(hour=0, minute=10),
+        },
+        # Forfeits PAYG credit purchase batches past their 12-month expiry.
+        "expire-payg-credits": {
+            "task": "tasks.billing_tasks.expire_credits",
+            "schedule": crontab(hour=0, minute=15),
         },
     },
 )

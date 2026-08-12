@@ -202,6 +202,14 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
             // added backend-side in tasks/cast_render.py.
             const STALE_DURATION_FLOOR_S = 1.0;
             const STALE_DURATION_RATIO = 0.35;
+            // Separate from the ratio/floor check above (which catches GROSS
+            // mismatches, e.g. a snapshot saved before audio finished
+            // generating): this catches small precision shortfalls where the
+            // saved slot is a hair under the live TTS duration — close enough
+            // to pass the 35% tolerance, but still too short for Phase 3's
+            // render validator, which requires slot >= tts_duration exactly.
+            // A small epsilon avoids flagging floating-point noise as stale.
+            const MARGINAL_SHORTFALL_EPSILON_S = 0.01;
             const staleBlocks: string[] = [];
             for (const b of currentBlocks) {
               const savedDurS = savedAudioDurationS.get(b.id);
@@ -209,7 +217,9 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
               const liveVariant = (b.variants || []).find((v: any) => v.is_active !== false) || b.variants?.[0];
               const liveDurS = liveVariant?.tts_duration_seconds || liveVariant?.duration_seconds || 0;
               const staleThresholdS = Math.max(STALE_DURATION_FLOOR_S, liveDurS * STALE_DURATION_RATIO);
-              if (liveDurS > 0 && savedDurS < staleThresholdS) {
+              const isGrosslyStale = liveDurS > 0 && savedDurS < staleThresholdS;
+              const isMarginallyShort = liveDurS > 0 && savedDurS < liveDurS - MARGINAL_SHORTFALL_EPSILON_S;
+              if (isGrosslyStale || isMarginallyShort) {
                 staleBlocks.push(b.id);
               }
             }
