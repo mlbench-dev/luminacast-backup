@@ -14,8 +14,8 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 from database import get_db
-from models.user import User
-from models.cast import Cast, CastStatus, CastProduct, CastQuality, CastVersion
+from models.user import User, TeamRole
+from models.cast import Cast, CastStatus, CastProduct, CastQuality, CastVersion, CastApprovalStatus
 from models.block import Block, BlockType, LayoutMode
 from models.variant import Variant, VariantStatus
 from models.product import Product
@@ -28,7 +28,7 @@ from schemas.cast import (
     CastPayRequest, GenerationStatusResponse, BlockCreate, ProductCreate,
     BulkBlocksSave,
 )
-from routers.auth import get_current_user
+from routers.auth import get_current_user, WorkspaceContext, require_role, require_owner
 from services import audit_log
 from services.cast_templates import get_template
 
@@ -356,11 +356,12 @@ async def _resolve_user_video_urls(
 async def create_cast(
     req: CastCreate,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     # Avatar MUST be approved
     avatar = await db.get(Avatar, req.avatar_id)
-    if not avatar or avatar.user_id != user.id:
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Avatar not found")
     if avatar.status != AvatarStatus.APPROVED and avatar.status != AvatarStatus.READY and avatar.id != "default":
         raise HTTPException(400, "Only approved or ready avatars can be used. Complete the clone flow and approve your avatar first.")
@@ -372,7 +373,7 @@ async def create_cast(
     if not cast_name:
         try:
             user_timezone = getattr(user, "timezone", None)
-            cast_name = await _generate_cast_name(db, user.id, user_timezone)
+            cast_name = await _generate_cast_name(db, ctx.workspace_owner_id, user_timezone)
         except Exception as e:
             sentry_sdk.capture_exception(e)
             cast_name = f"Cast {datetime.now(tz.utc).strftime('%b%d')}-1"
@@ -383,8 +384,7 @@ async def create_cast(
 
     cast = Cast(
         id=cast_id,
-        user_id=user.id,
-        avatar_id=req.avatar_id,
+        user_id=ctx.workspace_owner_id,        avatar_id=req.avatar_id,
         name=cast_name,
         status=CastStatus.DRAFT,
         template_name=req.template_name,
@@ -428,7 +428,7 @@ async def create_cast(
         for i, prod_data in enumerate(req.products):
             prod_id = f"prod_{uuid.uuid4().hex[:12]}"
             product = Product(
-                id=prod_id, user_id=user.id,
+                id=prod_id, user_id=ctx.workspace_owner_id,
                 name=prod_data.name, price=prod_data.price,
                 commission_rate=prod_data.commission_rate,
                 description=prod_data.description,
@@ -452,7 +452,7 @@ async def create_cast(
         position = 0
         for pid in req.product_ids:
             product = await db.get(Product, pid)
-            if product and product.user_id == user.id:
+            if product and product.user_id == ctx.workspace_owner_id:
                 cp = CastProduct(
                     id=f"cp_{uuid.uuid4().hex[:12]}",
                     cast_id=cast_id, product_id=pid, position=position,
@@ -552,6 +552,55 @@ async def get_cast_templates(user: User = Depends(get_current_user)):
     return {"templates": templates, "total": len(templates)}
 
 
+@router.get("/review-queue")
+async def list_review_queue(
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Casts a Creator has submitted, awaiting a Publisher's review.
+
+    Registered before the /{cast_id} routes below — FastAPI matches routes
+    in registration order, so a literal "/review-queue" path must come
+    first or it'd be swallowed by /{cast_id} treating "review-queue" as an
+    id.
+    """
+    rows = (
+        await db.execute(
+            select(Cast)
+            .where(
+                Cast.user_id == ctx.workspace_owner_id,
+                Cast.approval_status == CastApprovalStatus.READY_FOR_REVIEW,
+            )
+            .order_by(Cast.submitted_for_review_at.asc())
+        )
+    ).scalars().all()
+
+    submitter_ids = {c.submitted_by for c in rows if c.submitted_by}
+    submitters: dict[str, str] = {}
+    if submitter_ids:
+        submitter_rows = (
+            await db.execute(select(User).where(User.id.in_(submitter_ids)))
+        ).scalars().all()
+        submitters = {u.id: (u.display_name or u.email) for u in submitter_rows}
+
+    return {
+        "casts": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "description": c.description,
+                "submitted_for_review_at": (
+                    c.submitted_for_review_at.isoformat() if c.submitted_for_review_at else None
+                ),
+                "submitted_by": c.submitted_by,
+                "submitted_by_name": submitters.get(c.submitted_by, c.submitted_by),
+            }
+            for c in rows
+        ]
+    }
+
+
 class EstimateCostRequest(BaseModel):
     duration_s: int
     quality: str = "simple"
@@ -567,6 +616,7 @@ class EstimateCostResponse(BaseModel):
 async def estimate_cost(
     req: EstimateCostRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
 ):
     """Live cost estimate: duration × quality multiplier × GPU rate."""
     try:
@@ -610,6 +660,7 @@ async def list_casts(
         description="If true, surface suggested_clips, approved_clips, and clip_parent_cast_id on each row.",
     ),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """List casts owned by the current user.
@@ -627,7 +678,7 @@ async def list_casts(
     from models.avatar_look import AvatarLook
     from services.r2_storage import get_r2_storage_service as _get_r2
 
-    stmt = select(Cast).where(Cast.user_id == user.id)
+    stmt = select(Cast).where(Cast.user_id == ctx.workspace_owner_id)
     if status:
         # Cast.status is a Python Enum; both the value and the name are
         # commonly used. Match against the value to keep the API stable.
@@ -709,6 +760,7 @@ async def list_casts(
 async def get_cast(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -717,7 +769,7 @@ async def get_cast(
             selectinload(Cast.blocks).selectinload(Block.variants),
             selectinload(Cast.products).selectinload(CastProduct.product),
         )
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -1072,10 +1124,11 @@ async def update_cast(
     cast_id: str,
     req: CastCreate,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     if cast.status not in (CastStatus.DRAFT, CastStatus.OUTLINE_REVIEW, CastStatus.SCRIPT_REVIEW, CastStatus.TEMPLATE_SELECT):
         raise HTTPException(400, "Cast cannot be edited in current status")
@@ -1153,10 +1206,11 @@ async def patch_cast(
     cast_id: str,
     req: CastPatchRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     for field in (
@@ -1215,6 +1269,7 @@ async def patch_cast(
 async def delete_cast(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Permanently delete a cast and all dependent rows.
@@ -1225,7 +1280,7 @@ async def delete_cast(
     """
     try:
         cast = await db.get(Cast, cast_id)
-        if not cast or cast.user_id != user.id:
+        if not cast or cast.user_id != ctx.workspace_owner_id:
             raise HTTPException(404, "Cast not found")
         if cast.status in (CastStatus.LIVE, CastStatus.GENERATING):
             raise HTTPException(400, "Cannot delete active cast")
@@ -1322,11 +1377,12 @@ async def _purge_cast_dependents(db: AsyncSession, cast_id: str) -> None:
 async def retry_cast_generation(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Retry generation for a failed cast. Only re-generates failed variants."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     if cast.status not in (CastStatus.GENERATION_FAILED, CastStatus.READY):
         raise HTTPException(400, f"Cannot retry cast in status '{cast.status}'")
@@ -1361,7 +1417,7 @@ async def retry_cast_generation(
 
     # Re-queue generation task
     from tasks.generate_cast import generate_cast_task
-    generate_cast_task.delay(cast_id, user.id)
+    generate_cast_task.delay(cast_id, ctx.workspace_owner_id)
 
     try:
         await audit_log.record(
@@ -1386,11 +1442,12 @@ async def retry_variant(
     cast_id: str,
     variant_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Retry a single failed variant."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     variant = await db.get(Variant, variant_id)
@@ -1411,7 +1468,7 @@ async def retry_variant(
     await db.commit()
 
     from tasks.generate_cast import generate_cast_task
-    generate_cast_task.delay(cast_id, user.id)
+    generate_cast_task.delay(cast_id, ctx.workspace_owner_id)
 
     try:
         await audit_log.record(
@@ -1433,10 +1490,11 @@ async def save_layout(
     cast_id: str,
     layout_config: dict = Body(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     cast.layout_config = layout_config
     await db.commit()
@@ -1458,11 +1516,12 @@ async def save_effects_config(
     cast_id: str,
     effects_config: dict = Body(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Save effects configuration for a cast."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     cast.effects_config = effects_config
     await db.commit()
@@ -1485,15 +1544,16 @@ async def upload_cast_background(
     file: UploadFile,
     media_type: str = Query("image"),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a background image or video for a cast."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     ext = "jpg" if media_type == "image" else "mp4"
-    r2_key = f"creators/{user.id}/casts/{cast_id}/background.{ext}"
+    r2_key = f"creators/{ctx.workspace_owner_id}/casts/{cast_id}/background.{ext}"
 
     from services.r2_storage import get_r2_storage_service
     r2 = get_r2_storage_service()
@@ -1537,6 +1597,7 @@ async def upload_block_frame(
     slot: str = Query(..., regex="^(first|last)$"),
     file: UploadFile = FastAPIFile(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a first or last frame image for a generated_video block.
@@ -1546,7 +1607,7 @@ async def upload_block_frame(
     R2 key + a public URL the frontend can preview.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -1557,7 +1618,7 @@ async def upload_block_frame(
     ext = "png"
     if file.content_type and "jpeg" in file.content_type:
         ext = "jpg"
-    r2_key = f"creators/{user.id}/casts/{cast_id}/blocks/{block_id}/{slot}_frame_{img_id}.{ext}"
+    r2_key = f"creators/{ctx.workspace_owner_id}/casts/{cast_id}/blocks/{block_id}/{slot}_frame_{img_id}.{ext}"
 
     from services.r2_storage import get_r2_storage_service
     r2 = get_r2_storage_service()
@@ -1583,11 +1644,12 @@ async def upload_scene_image(
     cast_id: str,
     file: UploadFile,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload an image for use as a scene object."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     import uuid as _uuid
@@ -1595,7 +1657,7 @@ async def upload_scene_image(
     ext = "png"
     if file.content_type and "jpeg" in file.content_type:
         ext = "jpg"
-    r2_key = f"creators/{user.id}/casts/{cast_id}/scene/{img_id}.{ext}"
+    r2_key = f"creators/{ctx.workspace_owner_id}/casts/{cast_id}/scene/{img_id}.{ext}"
 
     from services.r2_storage import get_r2_storage_service
     r2 = get_r2_storage_service()
@@ -1615,11 +1677,12 @@ async def mask_scene_image_bg(
     cast_id: str,
     object_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove background from a scene object image using rembg."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     effects = cast.effects_config or {}
@@ -1701,11 +1764,12 @@ async def save_blocks_bulk(
     cast_id: str,
     req: BulkBlocksSave,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Replace all blocks for a cast and create default variants with script text."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     if cast.status in (CastStatus.GENERATING, CastStatus.LIVE, CastStatus.GENERATING_VIDEOS):
         raise HTTPException(400, "Cannot modify blocks while cast is generating or live")
@@ -1785,10 +1849,11 @@ async def add_block(
     sort_order: int = Body(0),
     category: str = Body("avatar_speaking"),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     try:
@@ -1895,10 +1960,11 @@ async def update_block(
     # the way in so the column doesn't accumulate junk.
     metadata: Optional[dict] = Body(None),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -1953,7 +2019,7 @@ async def update_block(
         if user_video_asset_id:
             from models.user_video import UserVideoAsset
             uva = await db.get(UserVideoAsset, user_video_asset_id)
-            if not uva or uva.user_id != user.id:
+            if not uva or uva.user_id != ctx.workspace_owner_id:
                 raise HTTPException(404, "User video asset not found or not owned by you")
             if uva.deleted_at is not None:
                 raise HTTPException(400, "User video asset has been deleted")
@@ -2227,6 +2293,7 @@ async def generate_body_motion_frame(
     block_id: str,
     payload: dict = Body(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a new AI start- or end-frame for a body-motion block.
@@ -2241,7 +2308,7 @@ async def generate_body_motion_frame(
     another alternate the user can pick from the carousel.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -2340,6 +2407,7 @@ async def list_body_motion_frames(
     cast_id: str,
     block_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """List the AI-generated start/end frames previously created for this
@@ -2348,7 +2416,7 @@ async def list_body_motion_frames(
     spinners and error states.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -2419,6 +2487,7 @@ async def generate_action_frame(
     block_id: str,
     payload: dict = Body(...),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a new AI scene frame (start or end) for an avatar_action block.
@@ -2434,7 +2503,7 @@ async def generate_action_frame(
     just another alternate the user can pick from the carousel.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -2561,6 +2630,7 @@ async def list_action_frames(
     cast_id: str,
     block_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """List the AI-generated start/end scene frames for an avatar_action block.
@@ -2569,7 +2639,7 @@ async def list_action_frames(
     look_type prefix so legacy body_motion frames are not surfaced here.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -2628,10 +2698,11 @@ async def list_action_frames(
 async def delete_block(
     cast_id: str, block_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -2688,10 +2759,11 @@ async def add_variant(
     script_text: str = Body(""),
     variant_label: str = Body("A"),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -2729,10 +2801,11 @@ async def update_variant(
     cast_id: str, block_id: str, variant_id: str,
     body: UpdateVariantRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     variant = await db.get(Variant, variant_id)
     if not variant or variant.block_id != block_id:
@@ -2750,7 +2823,7 @@ async def update_variant(
         variant.render_mode = body.render_mode
     await db.commit()
     if text_changed:
-        _enqueue_tts_regen(cast_id, user.id)
+        _enqueue_tts_regen(cast_id, ctx.workspace_owner_id)
     try:
         await audit_log.record(
             db, user_id=user.id, action="block.variant_update", entity_type="block",
@@ -2778,10 +2851,11 @@ async def rewrite_variant_script(
     cast_id: str, block_id: str, variant_id: str,
     req: RewriteRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     variant = await db.get(Variant, variant_id)
     if not variant:
@@ -2845,7 +2919,7 @@ async def rewrite_variant_script(
         _mark_variant_audio_stale(variant, cast)
     await db.commit()
     if text_changed:
-        _enqueue_tts_regen(cast_id, user.id)
+        _enqueue_tts_regen(cast_id, ctx.workspace_owner_id)
     try:
         await audit_log.record(
             db, user_id=user.id, action="block.variant_rewrite", entity_type="block",
@@ -2864,11 +2938,12 @@ async def refine_all_blocks(
     cast_id: str,
     instruction: str = Body(..., embed=True),
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Refine all active block scripts using Claude. Does NOT regenerate from scratch."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     from config import settings as app_settings
@@ -2926,7 +3001,7 @@ async def refine_all_blocks(
 
     await db.commit()
     if any_changed:
-        _enqueue_tts_regen(cast_id, user.id)
+        _enqueue_tts_regen(cast_id, ctx.workspace_owner_id)
     try:
         await audit_log.record(
             db, user_id=user.id, action="cast.refine_all_blocks", entity_type="cast",
@@ -2950,11 +3025,12 @@ async def rewrite_block_in_voice(
     cast_id: str,
     block_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Rewrite a block script using Claude + the avatar voice corpus transcripts."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     block = await db.get(Block, block_id)
@@ -3073,6 +3149,7 @@ async def regenerate_block_audio(
     block_id: str,
     req: RegenerateAudioRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Regenerate TTS audio for a single block. Creates a new active variant."""
@@ -3080,7 +3157,7 @@ async def regenerate_block_audio(
     result = await db.execute(
         select(Cast)
         .options(selectinload(Cast.blocks))
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -3290,6 +3367,7 @@ async def render_block(
     block_id: str,
     req: RenderBlockRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-render a single block's video (InfiniteTalk). Returns task_id for polling."""
@@ -3297,7 +3375,7 @@ async def render_block(
         result = await db.execute(
             select(Cast)
             .options(selectinload(Cast.blocks))
-            .where(Cast.id == cast_id, Cast.user_id == user.id)
+            .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
         )
         cast = result.scalar_one_or_none()
         if not cast:
@@ -3322,7 +3400,7 @@ async def render_block(
             await db.commit()
 
         from tasks.generate_cast import generate_cast_videos_task
-        task = generate_cast_videos_task.delay(cast_id, user.id)
+        task = generate_cast_videos_task.delay(cast_id, ctx.workspace_owner_id)
 
         try:
             await audit_log.record(
@@ -3352,11 +3430,12 @@ async def list_block_variants(
     cast_id: str,
     block_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """List all variants for a block (for variant picker UI)."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     block = await db.get(Block, block_id)
@@ -3396,11 +3475,12 @@ async def select_block_variant(
     block_id: str,
     req: SelectVariantRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Select a variant as active for a block. Deactivates all others."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     block = await db.get(Block, block_id)
@@ -3447,10 +3527,11 @@ async def select_block_variant(
 async def generate_outline(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     result = await db.execute(
@@ -3478,8 +3559,7 @@ async def generate_outline(
         target_audience=target_audience,
         duration_target_seconds=getattr(cast, 'duration_target_seconds', None),
         platform_target=getattr(cast, 'platform_target', 'tiktok') or 'tiktok',
-        user_id=user.id,
-        # Stage-1 creative template (null = Auto). Constrains the outline to
+        user_id=ctx.workspace_owner_id,        # Stage-1 creative template (null = Auto). Constrains the outline to
         # the template's block sequence + bias ratios when set.
         template=get_template(getattr(cast, 'template_id', None)),
         live_assessment=live_assessment,
@@ -3747,6 +3827,7 @@ SMART_CAST_BLOCK_COSTS_USD = {
 async def generate_smart_outline_endpoint(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Smart Cast outline: the LLM designs categories, hook type, stock media
@@ -3754,7 +3835,7 @@ async def generate_smart_outline_endpoint(
     media. Existing blocks (if any) are wiped and replaced.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     if not cast.description:
         raise HTTPException(400, "Cast must have a description (the brief) before Smart Cast can generate.")
@@ -3836,8 +3917,7 @@ async def generate_smart_outline_endpoint(
         platform_target=platform,
         quality_tier=quality,
         aspect_ratio=getattr(cast, "aspect_ratio", None) or "9:16",
-        user_id=user.id,
-        # Stage-1 creative template (null = Auto). Constrains the smart outline
+        user_id=ctx.workspace_owner_id,        # Stage-1 creative template (null = Auto). Constrains the smart outline
         # to the template's block sequence + bias ratios when set.
         template=get_template(getattr(cast, "template_id", None)),
         product_video_assets=product_video_assets,
@@ -3853,7 +3933,7 @@ async def generate_smart_outline_endpoint(
     #    PR #162 — when the user picked uploaded videos (user_video_ids), resolve
     #    them to R2 URLs and prefer them as b-roll over Pexels.
     preferred_broll_urls = await _resolve_user_video_urls(
-        db, getattr(cast, "user_video_ids", None), user.id,
+        db, getattr(cast, "user_video_ids", None), ctx.workspace_owner_id,
     )
     outline = await auto_populate_stock_media(
         outline, cast_id=cast_id, products=products,
@@ -4134,10 +4214,11 @@ async def generate_smart_outline_endpoint(
 async def generate_scripts(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     # Get voice profile from channel
@@ -4205,8 +4286,7 @@ async def generate_scripts(
         voice_profile=voice_profile,
         description=cast_description,
         products=cast_products or None,
-        user_id=user.id,
-    )
+        user_id=ctx.workspace_owner_id,    )
 
     # Track which blocks already have an active variant to avoid duplicates
     blocks_with_active = set()
@@ -4250,8 +4330,7 @@ async def generate_scripts(
             clip_blocks,
             cast_description,
             cast_id=cast_id,
-            user_id=user.id,
-        )
+            user_id=ctx.workspace_owner_id,        )
         cast.suggested_clips = clips
         await db.commit()
     except Exception as _clip_exc:
@@ -4268,6 +4347,7 @@ async def pay_for_cast(
     cast_id: str,
     req: CastPayRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
@@ -4325,10 +4405,11 @@ async def pay_for_cast(
 async def get_generation_status(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     result = await db.execute(
@@ -4394,11 +4475,12 @@ async def reorder_blocks(
     cast_id: str,
     req: ReorderBlocksRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Reorder blocks by providing their IDs in desired order."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     if cast.status in (CastStatus.GENERATING, CastStatus.LIVE, CastStatus.GENERATING_VIDEOS):
         raise HTTPException(400, "Cannot reorder blocks while cast is generating or live")
@@ -4437,11 +4519,12 @@ async def toggle_block_active(
     block_id: str,
     req: ToggleActiveRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Toggle whether a block is included in cast generation + streaming."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     block = await db.get(Block, block_id)
     if not block or block.cast_id != cast_id:
@@ -4468,11 +4551,12 @@ async def toggle_block_active(
 async def start_tts_generation(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Phase 1: Generate TTS audio for all blocks. Sets status to TTS_READY when done."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     if cast.status in (CastStatus.LIVE, CastStatus.GENERATING_VIDEOS):
         raise HTTPException(400, f"Cannot generate TTS while cast is live or generating videos")
@@ -4510,7 +4594,7 @@ async def start_tts_generation(
     await db.commit()
 
     from tasks.generate_cast import generate_cast_tts_task
-    generate_cast_tts_task.delay(cast_id, user.id)
+    generate_cast_tts_task.delay(cast_id, ctx.workspace_owner_id)
     try:
         await audit_log.record(
             db, user_id=user.id, action="render.tts_start", entity_type="cast",
@@ -4526,17 +4610,18 @@ async def start_tts_generation(
 async def start_video_generation(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Phase 2: Submit InfiniteTalk jobs. Requires TTS_READY status."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     if cast.status != CastStatus.TTS_READY:
         raise HTTPException(400, f"Cast must be in TTS_READY status. Current: '{cast.status.value}'")
 
     from tasks.generate_cast import generate_cast_videos_task
-    generate_cast_videos_task.delay(cast_id, user.id)
+    generate_cast_videos_task.delay(cast_id, ctx.workspace_owner_id)
     try:
         await audit_log.record(
             db, user_id=user.id, action="render.videos_start", entity_type="cast",
@@ -4552,6 +4637,7 @@ async def start_video_generation(
 async def tts_status(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return per-variant TTS state for the waveform editor."""
@@ -4559,7 +4645,7 @@ async def tts_status(
     result = await db.execute(
         select(Cast)
         .options(selectinload(Cast.blocks).selectinload(Block.variants))
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -4595,6 +4681,7 @@ async def tts_status(
 async def generate_captions(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """For each block variant with ready TTS audio, call Whisper on the GPU
@@ -4607,7 +4694,7 @@ async def generate_captions(
     result = await db.execute(
         select(Cast)
         .options(selectinload(Cast.blocks).selectinload(Block.variants))
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -4720,6 +4807,7 @@ async def editor_generate_captions(
     cast_id: str,
     body: EditorCaptionRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Phase 2.6.2 — Generate word-level captions for the editor.
@@ -4734,7 +4822,7 @@ async def editor_generate_captions(
 
     # Validate cast ownership
     result = await db.execute(
-        select(Cast).where(Cast.id == cast_id, Cast.user_id == user.id)
+        select(Cast).where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -4868,10 +4956,11 @@ async def save_cast_timeline(
     cast_id: str,
     payload: SaveTimelineRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     from datetime import datetime
     current = cast.timeline_json or {}
@@ -4903,10 +4992,11 @@ async def get_cast_timeline(
     cast_id: str,
     variant_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     timeline = (cast.timeline_json or {}).get(variant_id)
     return timeline or {"twick_data": None, "block_regions": [], "editor_state": None, "saved_at": None}
@@ -4995,6 +5085,7 @@ def build_stock_overlay_element(
 async def auto_arrange_cast_timeline(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Server-side equivalent of the frontend's castToEditorStarterTimeline.
@@ -5009,7 +5100,7 @@ async def auto_arrange_cast_timeline(
     result = await db.execute(
         select(Cast)
         .options(selectinload(Cast.blocks).selectinload(Block.variants))
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -5308,6 +5399,7 @@ async def auto_arrange_cast_timeline(
 async def get_cast_timeline_unified(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return the cast timeline with rebuild_needed flag.
@@ -5319,7 +5411,7 @@ async def get_cast_timeline_unified(
     result = await db.execute(
         select(Cast)
         .options(selectinload(Cast.blocks).selectinload(Block.variants))
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -5364,6 +5456,7 @@ async def patch_cast_timeline(
     cast_id: str,
     payload: PatchTimelineRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Save the full timeline JSON (bonded block model).
@@ -5372,7 +5465,7 @@ async def patch_cast_timeline(
     and that bonded pair start/end times match within 50ms tolerance.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     # Validate bonded pairs
@@ -5425,6 +5518,7 @@ async def approve_clip(
     cast_id: str,
     clip_index: int,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Approve one of the LLM-suggested clips and create a child Cast.
@@ -5439,7 +5533,7 @@ async def approve_clip(
     block IDs, not positions, so reordering parent blocks doesn't drift.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     suggested = list(cast.suggested_clips or [])
@@ -5455,8 +5549,7 @@ async def approve_clip(
         child_id = f"cst_{uuid.uuid4().hex[:12]}"
         child = Cast(
             id=child_id,
-            user_id=user.id,
-            avatar_id=cast.avatar_id,
+            user_id=ctx.workspace_owner_id,            avatar_id=cast.avatar_id,
             channel_id=cast.channel_id,
             name=f"{cast.name or 'Cast'} — {clip.get('name') or 'Clip'}",
             status=CastStatus.READY,
@@ -5504,6 +5597,7 @@ async def dismiss_clip(
     cast_id: str,
     clip_index: int,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove an LLM-suggested clip the user doesn't want.
@@ -5512,7 +5606,7 @@ async def dismiss_clip(
     delete the child cast separately if you want to drop one.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
     suggested = list(cast.suggested_clips or [])
     if clip_index < 0 or clip_index >= len(suggested):
@@ -5650,6 +5744,7 @@ async def _ensure_framings_ready(db: AsyncSession, cast: Cast) -> int:
 async def finalize_cast(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Finalize a cast for rendering.
@@ -5663,7 +5758,7 @@ async def finalize_cast(
     result = await db.execute(
         select(Cast)
         .options(selectinload(Cast.blocks).selectinload(Block.variants))
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -5731,8 +5826,7 @@ async def finalize_cast(
     cast_render = CastRender(
         id=render_id,
         cast_id=cast_id,
-        user_id=user.id,
-        status=CastRenderStatus.QUEUED.value,
+        user_id=ctx.workspace_owner_id,        status=CastRenderStatus.QUEUED.value,
         version=cast.version,
         quality=cast.quality.value if hasattr(cast.quality, "value") else str(cast.quality) if cast.quality else None,
         timeline_snapshot=stored,
@@ -5780,13 +5874,14 @@ async def finalize_cast(
 async def list_cast_renders(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """List all renders for a cast."""
     from models.cast_render import CastRender
     result = await db.execute(
         select(CastRender)
-        .where(CastRender.cast_id == cast_id, CastRender.user_id == user.id)
+        .where(CastRender.cast_id == cast_id, CastRender.user_id == ctx.workspace_owner_id)
         .order_by(CastRender.created_at.desc())
     )
     renders = result.scalars().all()
@@ -5853,12 +5948,13 @@ async def get_cast_render(
     cast_id: str,
     render_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific render status."""
     from models.cast_render import CastRender
     render = await db.get(CastRender, render_id)
-    if not render or render.cast_id != cast_id or render.user_id != user.id:
+    if not render or render.cast_id != cast_id or render.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Render not found")
 
     queue_position = None
@@ -6020,6 +6116,7 @@ async def select_cast_render(
     cast_id: str,
     render_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Set a render as the selected (starred) render for publishing/download.
@@ -6031,7 +6128,7 @@ async def select_cast_render(
     try:
         # Verify render exists and belongs to user
         render = await db.get(CastRender, render_id)
-        if not render or render.cast_id != cast_id or render.user_id != user.id:
+        if not render or render.cast_id != cast_id or render.user_id != ctx.workspace_owner_id:
             raise HTTPException(404, "Render not found")
         if render.status != "ready":
             raise HTTPException(400, "Only completed renders can be selected")
@@ -6074,6 +6171,7 @@ async def get_render_manifest(
     cast_id: str,
     render_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Introspect exactly which layers reached the compositor for a given render.
@@ -6085,7 +6183,7 @@ async def get_render_manifest(
     from collections import Counter
 
     render = await db.get(CastRender, render_id)
-    if not render or render.cast_id != cast_id or render.user_id != user.id:
+    if not render or render.cast_id != cast_id or render.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Render not found")
 
     timeline = render.timeline_snapshot or {}
@@ -6158,6 +6256,7 @@ async def get_render_manifest(
 async def recomposite_cast(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-composite a cast without re-running InfiniteTalk.
@@ -6170,7 +6269,7 @@ async def recomposite_cast(
     result = await db.execute(
         select(Cast)
         .options(selectinload(Cast.blocks).selectinload(Block.variants))
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     cast = result.scalar_one_or_none()
     if not cast:
@@ -6220,6 +6319,7 @@ async def duplicate_cast_as(
     cast_id: str,
     req: DuplicateAsRequest,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Duplicate a cast as the opposite format family (Pattern C).
@@ -6237,7 +6337,7 @@ async def duplicate_cast_as(
             selectinload(Cast.blocks).selectinload(Block.variants),
             selectinload(Cast.products),
         )
-        .where(Cast.id == cast_id, Cast.user_id == user.id)
+        .where(Cast.id == cast_id, Cast.user_id == ctx.workspace_owner_id)
     )
     source = result.scalar_one_or_none()
     if not source:
@@ -6256,8 +6356,7 @@ async def duplicate_cast_as(
 
         new_cast = Cast(
             id=new_cast_id,
-            user_id=user.id,
-            avatar_id=source.avatar_id,
+            user_id=ctx.workspace_owner_id,            avatar_id=source.avatar_id,
             channel_id=source.channel_id,
             name=f"{source.name or 'Untitled'} ({req.format_family})",
             status=CastStatus.TTS_READY,
@@ -6356,6 +6455,7 @@ async def duplicate_cast_as(
 async def get_cast_siblings(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Return all casts in the same format-family group (siblings).
@@ -6364,7 +6464,7 @@ async def get_cast_siblings(
     root parent, plus the root parent itself.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     parent_id = getattr(cast, "parent_cast_id", None)
@@ -6384,7 +6484,7 @@ async def get_cast_siblings(
         from sqlalchemy import or_
         result = await db.execute(
             select(Cast).where(
-                Cast.user_id == user.id,
+                Cast.user_id == ctx.workspace_owner_id,
                 or_(
                     Cast.parent_cast_id == parent_id,
                     Cast.id == parent_id,
@@ -6429,6 +6529,7 @@ async def fork_cast(
     cast_id: str,
     body: ForkRequest | None = None,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Snapshot current cast blocks as a version, increment version.
@@ -6436,7 +6537,7 @@ async def fork_cast(
     Called by frontend when script is edited after audio was already generated.
     """
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     # Only fork if status is beyond draft/script phase
@@ -6562,11 +6663,12 @@ async def fork_cast(
 async def list_cast_versions(
     cast_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """List all saved versions for a cast."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     try:
@@ -6619,11 +6721,12 @@ async def get_cast_version(
     cast_id: str,
     version_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific version snapshot (read-only)."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     version = await db.get(CastVersion, version_id)
@@ -6644,11 +6747,12 @@ async def restore_cast_version(
     cast_id: str,
     version_id: str,
     user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
     """Restore an old version — snapshots current state first, then copies old blocks back."""
     cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != user.id:
+    if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
     version = await db.get(CastVersion, version_id)
