@@ -366,11 +366,6 @@ async def create_cast(
     if avatar.status != AvatarStatus.APPROVED and avatar.status != AvatarStatus.READY and avatar.id != "default":
         raise HTTPException(400, "Only approved or ready avatars can be used. Complete the clone flow and approve your avatar first.")
 
-    # Every cast promotes a product — require at least one, whether an
-    # existing library product or an inline one created alongside the cast.
-    if not req.product_ids and not req.products:
-        raise HTTPException(400, "Select at least one product to create a cast.")
-
     cast_id = f"cst_{uuid.uuid4().hex[:12]}"
 
     # Auto-generate name if not provided
@@ -729,27 +724,6 @@ async def list_casts(
 
     r2 = _get_r2()
 
-    # Latest cast_renders row per cast — cast.status (used below) is only
-    # updated by the older generate_cast.py pipeline. The two-pass
-    # render_cast_task pipeline (tasks/cast_render.py) writes failures onto
-    # CastRender.error_message instead, so without this lookup a failed
-    # render never surfaces here: cast.status stays whatever it was before
-    # the render ran and the list falls through to render_status=None.
-    latest_render_by_cast: dict[str, "CastRender"] = {}
-    cast_ids = [c.id for c in casts]
-    if cast_ids:
-        from models.cast_render import CastRender
-        render_rows = (
-            await db.execute(
-                select(CastRender)
-                .where(CastRender.cast_id.in_(cast_ids))
-                .order_by(CastRender.cast_id, CastRender.created_at.desc())
-            )
-        ).scalars().all()
-        for r in render_rows:
-            if r.cast_id not in latest_render_by_cast:
-                latest_render_by_cast[r.cast_id] = r
-
     def _resolve_avatar_meta(cast: Cast) -> tuple[Optional[str], Optional[str]]:
         # Default-look thumbnail wins (it's the cast-wide background look
         # the user picked at SetupPhase). Fall back to the avatar's own
@@ -767,19 +741,6 @@ async def list_casts(
         d = CastResponse.model_validate(cast).model_dump()
         d["avatar_thumbnail_url"] = thumb_url
         d["avatar_name"] = avatar_name
-        if cast.status == CastStatus.READY and cast.final_video_url:
-            d["render_status"] = "ready"
-        elif cast.status in (CastStatus.GENERATING_VIDEOS, CastStatus.GENERATING):
-            d["render_status"] = "composing"
-        elif cast.status == CastStatus.GENERATION_FAILED:
-            d["render_status"] = "failed"
-        else:
-            d["render_status"] = None
-        d["render_error_message"] = None
-        latest_render = latest_render_by_cast.get(cast.id)
-        if latest_render and latest_render.status == "failed" and d["render_status"] != "ready":
-            d["render_status"] = "failed"
-            d["render_error_message"] = latest_render.error_message
         # Legacy field — MyCasts.tsx reads cast.avatar?.face_ref_key directly.
         d["avatar"] = (
             {"id": avatar.id, "name": avatar.name, "face_ref_key": avatar.face_ref_key}
@@ -1105,13 +1066,6 @@ async def get_cast(
         "music_volume": getattr(cast, "music_volume", None),
         "caption_preset": getattr(cast, "caption_preset", None),
         "default_avatar_look_id": getattr(cast, "default_avatar_look_id", None),
-        # Setup-phase selections — needed so the Setup step can rehydrate its
-        # form when the user navigates back to it instead of showing blank
-        # defaults for a cast that already exists.
-        "cast_type": getattr(cast, "cast_type", "recorded") or "recorded",
-        "template_id": getattr(cast, "template_id", None),
-        "production_level": getattr(cast, "production_level", "standard") or "standard",
-        "duration_target_seconds": getattr(cast, "duration_target_seconds", None),
         "created_at": cast.created_at.isoformat() if cast.created_at else None,
         "blocks": blocks_data,
         "products": products_data,
@@ -5836,6 +5790,14 @@ async def finalize_cast(
     if not has_bonded:
         raise HTTPException(400, "No bonded blocks found in timeline — nothing to render")
 
+    # Billing gate: block only when there is truly no way to pay for this
+    # render (free allowance exhausted, no subscription, no PAYG credits).
+    # Deliberately does not check whether the render's eventual duration
+    # will fit remaining allowance — that isn't known until it finishes,
+    # and a render is allowed to push the user into overage.
+    from services import billing_service
+    await billing_service.check_render_preflight(db, user.id)
+
     # Round-6 Bug B follow-up: pre-warm any per-block framing looks that don't
     # exist yet so the renderer doesn't fall back to a wrong-framing shared look.
     # Best-effort, non-blocking — the render proceeds regardless.
@@ -5876,11 +5838,13 @@ async def finalize_cast(
     from tasks.cast_render import render_cast_task, extract_bonded_blocks_from_timeline
     block_count = len(extract_bonded_blocks_from_timeline(stored))
     priority = max(0, min(9, 10 - block_count))  # fewer blocks = higher priority
-    render_cast_task.apply_async(
+    task = render_cast_task.apply_async(
         args=[render_id],
         queue="renders",
         priority=priority,
     )
+    cast_render.celery_task_id = task.id
+    await db.commit()
 
     try:
         await audit_log.record(
@@ -6078,6 +6042,73 @@ async def get_cast_render(
         "blocks": blocks_view,
         "eta_seconds": eta_seconds,
     }
+
+
+@router.post("/{cast_id}/renders/{render_id}/cancel")
+async def cancel_cast_render(
+    cast_id: str,
+    render_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """User-requested cancel for an in-flight render.
+
+    This is cooperative, not a hard kill: the worker runs Celery with
+    --pool=threads, which can't forcibly interrupt a thread mid-request, so
+    a block that's already mid-call to a GPU provider finishes on its own.
+    What this DOES do immediately:
+      - marks the render CANCELLED so the frontend stops showing/polling it
+      - best-effort revokes the Celery task in case it's still queued
+      - tells render_cast_task (via the row's status) to skip the retry
+        pass and skip compose, so no further paid GPU work gets queued
+    """
+    from datetime import datetime, timezone
+    from models.cast_render import CastRender, CastRenderStatus
+
+    render = await db.get(CastRender, render_id)
+    if not render or render.cast_id != cast_id or render.user_id != user.id:
+        raise HTTPException(404, "Render not found")
+
+    if render.status not in {
+        CastRenderStatus.QUEUED.value,
+        CastRenderStatus.BAKING.value,
+        CastRenderStatus.COMPOSING.value,
+    }:
+        raise HTTPException(400, f"Render is already {render.status} — nothing to cancel")
+
+    # Surface why it was already going badly, if anything had failed before
+    # the user hit cancel — same info the block dropdown shows, folded into
+    # one message.
+    block_statuses = render.block_statuses or []
+    failed = [b for b in block_statuses if b.get("state") == "failed" and b.get("error")]
+    reason_suffix = ""
+    if failed:
+        parts = [f"block #{(b.get('index', 0) or 0) + 1}: {b['error']}" for b in failed[:3]]
+        reason_suffix = f" {len(failed)} block(s) had already failed — {'; '.join(parts)}"
+
+    render.status = CastRenderStatus.CANCELLED.value
+    render.error_message = f"Cancelled by user.{reason_suffix}"
+    render.completed_at = datetime.now(timezone.utc)
+
+    if render.celery_task_id:
+        try:
+            from tasks import celery_app
+            celery_app.control.revoke(render.celery_task_id)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+
+    await db.commit()
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="cast_render.cancel", entity_type="cast_render",
+            entity_id=render_id, cast_id=cast_id,
+        )
+        await db.commit()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    return {"id": render.id, "status": render.status, "error_message": render.error_message}
 
 
 @router.patch("/{cast_id}/renders/{render_id}/select")
@@ -6823,108 +6854,3 @@ async def restore_cast_version(
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise HTTPException(500, f"Restore failed: {str(e)[:200]}")
-
-
-# ── Teams: review/approval workflow ─────────────────────────────────────
-# One status field per the client's spec: draft → ready_for_review →
-# approved. Creators submit; only a Publisher (or the owner) can approve
-# or send work back. Nothing reaches Zernio without approval — see the
-# gate in routers/social.py::create_social_post.
-
-
-@router.post("/{cast_id}/submit-for-review")
-async def submit_cast_for_review(
-    cast_id: str,
-    user: User = Depends(get_current_user),
-    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
-    db: AsyncSession = Depends(get_db),
-):
-    """Creator marks a cast as ready for a Publisher to review."""
-    cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != ctx.workspace_owner_id:
-        raise HTTPException(404, "Cast not found")
-    if cast.approval_status != CastApprovalStatus.DRAFT:
-        raise HTTPException(
-            409, f"Cast is already {cast.approval_status.value.replace('_', ' ')}"
-        )
-
-    cast.approval_status = CastApprovalStatus.READY_FOR_REVIEW
-    cast.submitted_for_review_at = datetime.utcnow()
-    cast.submitted_by = ctx.actor_user_id
-    await db.commit()
-
-    try:
-        await audit_log.record(
-            db, user_id=ctx.actor_user_id, action="cast.submit_for_review", entity_type="cast",
-            entity_id=cast_id, cast_id=cast_id,
-        )
-        await db.commit()
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-
-    return {"cast_id": cast_id, "approval_status": cast.approval_status.value}
-
-
-@router.post("/{cast_id}/approve")
-async def approve_cast(
-    cast_id: str,
-    user: User = Depends(get_current_user),
-    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
-    db: AsyncSession = Depends(get_db),
-):
-    """Publisher (or owner) approves a cast — required before it can be
-    scheduled or published."""
-    cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != ctx.workspace_owner_id:
-        raise HTTPException(404, "Cast not found")
-    if cast.approval_status != CastApprovalStatus.READY_FOR_REVIEW:
-        raise HTTPException(409, "Cast is not awaiting review")
-
-    cast.approval_status = CastApprovalStatus.APPROVED
-    cast.approved_at = datetime.utcnow()
-    cast.approved_by = ctx.actor_user_id
-    await db.commit()
-
-    try:
-        await audit_log.record(
-            db, user_id=ctx.actor_user_id, action="cast.approve", entity_type="cast",
-            entity_id=cast_id, cast_id=cast_id,
-        )
-        await db.commit()
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-
-    return {"cast_id": cast_id, "approval_status": cast.approval_status.value}
-
-
-@router.post("/{cast_id}/reject-review")
-async def reject_cast_review(
-    cast_id: str,
-    reason: Optional[str] = Body(None, embed=True),
-    user: User = Depends(get_current_user),
-    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
-    db: AsyncSession = Depends(get_db),
-):
-    """Publisher sends a cast back to draft instead of approving it — the
-    workflow's only way back once a Creator has submitted something that
-    isn't ready."""
-    cast = await db.get(Cast, cast_id)
-    if not cast or cast.user_id != ctx.workspace_owner_id:
-        raise HTTPException(404, "Cast not found")
-    if cast.approval_status != CastApprovalStatus.READY_FOR_REVIEW:
-        raise HTTPException(409, "Cast is not awaiting review")
-
-    cast.approval_status = CastApprovalStatus.DRAFT
-    cast.submitted_for_review_at = None
-    await db.commit()
-
-    try:
-        await audit_log.record(
-            db, user_id=ctx.actor_user_id, action="cast.reject_review", entity_type="cast",
-            entity_id=cast_id, cast_id=cast_id, after={"reason": reason},
-        )
-        await db.commit()
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-
-    return {"cast_id": cast_id, "approval_status": cast.approval_status.value}

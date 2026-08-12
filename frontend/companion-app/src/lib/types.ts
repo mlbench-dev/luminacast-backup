@@ -106,6 +106,8 @@ export interface User {
   stripe_customer_id?: string;
   created_at: string;
   is_active: boolean;
+  display_name?: string | null;
+  avatar_url?: string | null;
   // Affiliate IDs — empty/null means the user hasn't connected the
   // platform. `tiktok_affiliate_id` is the TikTok Shop affiliate ID;
   // `amazon_associate_tag` is the Amazon Associates tracking tag.
@@ -211,6 +213,7 @@ export interface Variant {
   motion_prompt?: string;
   tts_duration_seconds?: number;
   duration_seconds?: number;
+  is_active?: boolean;
   generation_error?: string;
   caption_words?: Array<{ word: string; start: number; end: number; probability: number }>;
   caption_segments?: Array<{ start: number; end: number; text: string }>;
@@ -1210,4 +1213,68 @@ export interface VoiceCorpusEntry {
   status: "pending" | "processing" | "ready" | "failed";
   error_message?: string;
   created_at: string;
+}
+
+// ── Billing: subscriptions, PAYG credits, usage metering ──
+// Mirrors services/billing_config.py + services/billing_service.py's
+// get_billing_dashboard shape exactly — keep both sides in sync.
+
+export type PlanId = "starter" | "pro" | "studio";
+export type BillingIntervalId = "month" | "year";
+
+export interface PlanConfig {
+  name: string;
+  monthly_price_cents: number;
+  annual_price_cents: number;
+  annual_monthly_equivalent_cents: number;
+  avatar_slots: number;
+  render_minutes_per_month: number;
+  live_stream_hours_per_month: number;
+  social_accounts_limit: number | null;
+  production_level: "standard" | "premium";
+  team_seats: number;
+}
+
+export interface CreditPack {
+  amount_cents: number;
+}
+
+export interface PlansResponse {
+  plans: Record<PlanId, PlanConfig>;
+  free_tier: { name: string; avatar_slots: number; render_minutes: number; watermarked: boolean };
+  credit_packs: Record<string, CreditPack>;
+  overage_rates: {
+    render_per_minute: { standard: number; premium: number };
+    live_stream_per_hour: number;
+    avatar_slot_per_month: number;
+  };
+  starter_fair_use_social_accounts: number;
+}
+
+export interface BillingDashboard {
+  plan: PlanId | "free";
+  interval: BillingIntervalId | null;
+  status: "active" | "past_due" | "canceled" | "expired" | "free" | null;
+  cancel_at_period_end: boolean;
+  renewal_date: string | null;
+  is_free_tier: boolean;
+  render_minutes: { included: number; used: number; remaining: number };
+  live_stream_hours: { included: number; used: number; remaining: number };
+  avatar_slots: { included: number; purchased: number; total: number; used: number; remaining: number };
+  credits: {
+    balance_cents: number;
+    auto_topup_enabled: boolean;
+    auto_topup_threshold_cents: number | null;
+    auto_topup_amount_cents: number | null;
+  };
+}
+
+export interface CreditTransactionDto {
+  id: string;
+  type: "purchase" | "auto_topup" | "deduction" | "expiration" | "refund" | "adjustment";
+  amount_cents: number;
+  balance_after_cents: number;
+  description: string | null;
+  expires_at: string | null;
+  created_at: string | null;
 }

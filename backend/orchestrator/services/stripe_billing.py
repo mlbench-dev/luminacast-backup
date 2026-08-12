@@ -46,9 +46,13 @@ async def _retry_async(func, *args, max_retries=3, base_delay=2.0, **kwargs):
             await asyncio.sleep(delay)
 
 
+STRIPE_API_VERSION = "2026-07-29.dahlia"
+
+
 class StripeBillingService:
     def __init__(self):
         stripe.api_key = settings.STRIPE_SECRET_KEY
+        stripe.api_version = STRIPE_API_VERSION
 
     async def _run_in_executor(self, func, *args, **kwargs):
         """Run a synchronous Stripe call in a thread pool executor."""
@@ -146,23 +150,43 @@ class StripeBillingService:
         line_items: list,
         success_url: str,
         cancel_url: str,
+        mode: str = "payment",
+        metadata: Optional[dict] = None,
     ) -> dict:
-        """Create Checkout Session. Returns {"url": str, "id": str}."""
+        """Create Checkout Session. `mode="subscription"` for plan
+        checkout, `mode="payment"` (default) for one-time PAYG credit
+        purchases. Returns {"url": str, "id": str}."""
         _log(
             "info",
             "stripe_billing",
             "Creating checkout session",
             customer_id=customer_id,
+            mode=mode,
         )
+
+        kwargs = dict(
+            customer=customer_id,
+            line_items=line_items,
+            mode=mode,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata=metadata or {},
+        )
+        # A subscription Checkout Session should also save the card for
+        # later off-session overage/auto-top-up charges. Metadata is set on
+        # `subscription_data` too (not just the Session) so it survives
+        # onto the Subscription object itself — `customer.subscription.*`
+        # webhooks carry it directly without needing a Session lookup.
+        if mode == "subscription":
+            kwargs["payment_method_collection"] = "always"
+            kwargs["subscription_data"] = {"metadata": metadata or {}}
+        else:
+            kwargs["payment_intent_data"] = {"setup_future_usage": "off_session"}
 
         session = await _retry_async(
             self._run_in_executor,
             stripe.checkout.Session.create,
-            customer=customer_id,
-            line_items=line_items,
-            mode="payment",
-            success_url=success_url,
-            cancel_url=cancel_url,
+            **kwargs,
         )
 
         _log(
@@ -172,6 +196,108 @@ class StripeBillingService:
             session_id=session["id"],
         )
         return {"url": session["url"], "id": session["id"]}
+
+    async def create_off_session_payment(
+        self,
+        amount_cents: int,
+        customer_id: str,
+        payment_method_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        """Charge a saved payment method without customer interaction —
+        used for overage billing and auto-top-up. Raises on failure
+        (card declined, no default payment method, etc.) — callers treat
+        that as "could not collect" and record a `pending`/`failed`
+        OverageCharge rather than blocking the usage that already happened.
+        """
+        _log(
+            "info",
+            "stripe_billing",
+            "Creating off-session payment",
+            customer_id=customer_id,
+            amount_cents=amount_cents,
+        )
+
+        kwargs = dict(
+            amount=amount_cents,
+            currency="usd",
+            customer=customer_id,
+            off_session=True,
+            confirm=True,
+            metadata=metadata or {},
+        )
+        if payment_method_id:
+            kwargs["payment_method"] = payment_method_id
+
+        intent = await _retry_async(
+            self._run_in_executor,
+            stripe.PaymentIntent.create,
+            max_retries=1,  # a declined/failed card won't succeed on retry
+            **kwargs,
+        )
+
+        _log(
+            "info",
+            "stripe_billing",
+            "Off-session payment created",
+            intent_id=intent["id"],
+            status=intent["status"],
+        )
+        return {"id": intent["id"], "status": intent["status"], "amount": intent["amount"]}
+
+    async def get_subscription(self, subscription_id: str) -> dict:
+        sub = await self._run_in_executor(stripe.Subscription.retrieve, subscription_id)
+        return dict(sub)
+
+    async def update_subscription_price(self, subscription_id: str, new_price_id: str) -> dict:
+        """Change an existing subscription's plan in place (upgrade/downgrade)
+        instead of starting a second, parallel subscription. Prorates the
+        difference for the rest of the current billing period, matching how
+        the Stripe-hosted billing portal's own plan-switcher behaves."""
+        _log(
+            "info", "stripe_billing", "Updating subscription price",
+            subscription_id=subscription_id, new_price_id=new_price_id,
+        )
+        current = await self._run_in_executor(stripe.Subscription.retrieve, subscription_id)
+        item_id = current["items"]["data"][0]["id"]
+        updated = await self._run_in_executor(
+            stripe.Subscription.modify,
+            subscription_id,
+            items=[{"id": item_id, "price": new_price_id}],
+            proration_behavior="create_prorations",
+        )
+        return dict(updated)
+
+    async def get_payment_intent(self, payment_intent_id: str) -> dict:
+        intent = await self._run_in_executor(stripe.PaymentIntent.retrieve, payment_intent_id)
+        return dict(intent)
+
+    async def create_billing_portal_session(self, customer_id: str, return_url: str) -> dict:
+        """Stripe-hosted portal for managing payment methods/invoices/
+        cancellation. Returns {"url": str}."""
+        session = await _retry_async(
+            self._run_in_executor,
+            stripe.billing_portal.Session.create,
+            customer=customer_id,
+            return_url=return_url,
+        )
+        return {"url": session["url"]}
+
+    async def cancel_subscription(self, subscription_id: str, at_period_end: bool = True) -> dict:
+        """Cancel a subscription. `at_period_end=True` (default) schedules
+        cancellation for the end of the current billing period — usage
+        already allocated for the period is not clawed back."""
+        _log(
+            "info", "stripe_billing", "Canceling subscription",
+            subscription_id=subscription_id, at_period_end=at_period_end,
+        )
+        if at_period_end:
+            sub = await self._run_in_executor(
+                stripe.Subscription.modify, subscription_id, cancel_at_period_end=True
+            )
+        else:
+            sub = await self._run_in_executor(stripe.Subscription.delete, subscription_id)
+        return dict(sub)
 
     async def construct_webhook_event(self, payload: bytes, sig_header: str) -> dict:
         """Verify and construct webhook event."""

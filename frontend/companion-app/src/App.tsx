@@ -24,6 +24,9 @@ import { StreamKeysPage } from "@/pages/settings/StreamKeys";
 import { MyChannelsPage } from "@/pages/settings/MyChannels";
 import { TeamPage } from "@/pages/settings/Team";
 import { BillingPage } from "@/pages/settings/Billing";
+import { PricingPage } from "@/pages/Pricing";
+import { SettingsProfilePage, SettingsPasswordPage, SettingsDeleteAccountPage } from "@/pages/Settings";
+import { SettingsLayout } from "@/components/layout/SettingsLayout";
 import { ProductLibraryPage } from "@/pages/ProductLibrary";
 import { AIAvatarSetupPage } from "@/pages/AIAvatarSetup";
 import { EditAvatarPage } from "@/pages/EditAvatarPage";
@@ -101,11 +104,36 @@ export default function App() {
                 <Route path="/products" element={<ProductLibraryPage />} />
                 <Route path="/analytics" element={<AnalyticsPage />} />
                 <Route path="/review" element={<ReviewQueuePage />} />
+                {/* Settings — Billing and Pricing render inside the same
+                    SettingsLayout chrome (see SettingsLayout.tsx) so they
+                    read as part of Settings rather than separate pages. */}
+                <Route path="/settings" element={<SettingsProfilePage />} />
+                <Route path="/settings/password" element={<SettingsPasswordPage />} />
+                <Route path="/settings/delete-account" element={<SettingsDeleteAccountPage />} />
+                <Route
+                  path="/settings/billing"
+                  element={
+                    <SettingsLayout>
+                      <BillingPage />
+                    </SettingsLayout>
+                  }
+                />
+                <Route
+                  path="/settings/pricing"
+                  element={
+                    <SettingsLayout>
+                      <PricingPage />
+                    </SettingsLayout>
+                  }
+                />
+                {/* Old bookmark for the standalone account page */}
+                <Route path="/settings/account" element={<Navigate to="/settings" replace />} />
+                {/* Old bookmark for the pricing page, now under Settings */}
+                <Route path="/pricing" element={<Navigate to="/settings/pricing" replace />} />
                 {/* Settings sub-pages */}
                 <Route path="/settings/stream-keys" element={<StreamKeysPage />} />
                 <Route path="/settings/channels" element={<MyChannelsPage />} />
                 <Route path="/settings/team" element={<TeamPage />} />
-                <Route path="/settings/billing" element={<BillingPage />} />
                 {/* Admin cost dashboard — backend gates by email allow-list
                   (3gorka72@gmail.com), so route protection is the standard
                   authenticated check. Sidebar item is conditional on email. */}

@@ -208,3 +208,24 @@ async def _finalize_session(session_id: str):
         )
         session.add(billing)
         await session.commit()
+
+        # Subscription/PAYG metering (separate from the legacy BillingEvent
+        # above). Runs here — not in routers/stream.py's /stop handler — so
+        # it also covers a stream that ends unexpectedly (task crash/kill,
+        # edge case: "a live stream ends unexpectedly") since this `finally`
+        # block runs regardless of how the Celery task exited.
+        try:
+            from services import billing_service
+
+            await billing_service.deduct_livestream_usage(
+                session,
+                user_id=stream.user_id,
+                owner_id=stream.user_id,
+                stream_session_id=session_id,
+                duration_minutes=stream.duration_minutes or 0.0,
+            )
+        except Exception as bill_exc:
+            sentry.capture_exception(bill_exc)
+            logger.error(
+                "Stream session %s: billing metering failed: %s", session_id, bill_exc
+            )

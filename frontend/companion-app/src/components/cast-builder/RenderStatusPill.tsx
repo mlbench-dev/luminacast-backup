@@ -15,7 +15,7 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, CheckCircle2, XCircle, Clock, ChevronDown } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Clock, ChevronDown, Ban } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 export type RenderBlockStatus = {
@@ -43,15 +43,20 @@ export type RenderStatusPillProps = {
    * that haven't written block_statuses yet — or completed renders). */
   bakingCompleted?: number;
   bakingTotal?: number;
+  /** When provided, shows a "Cancel render" row in the dropdown. Cooperative —
+   * see the /cancel endpoint docstring: in-flight blocks finish, but no
+   * further retries or compose get queued. */
+  onCancel?: () => void;
+  cancelling?: boolean;
 };
 
 const PROVIDER_STYLES: Record<string, string> = {
   host: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  mod:  "bg-white/5 text-white/40 border-white/10",
-  pod:  "bg-purple-500/15 text-purple-300 border-purple-500/30",
-  fal:  "bg-blue-500/15 text-blue-300 border-blue-500/30",
-  cache:"bg-white/10 text-white/60 border-white/20",
-  voice:"bg-amber-500/15 text-amber-300 border-amber-500/30",
+  mod: "bg-white/5 text-white/40 border-white/10",
+  pod: "bg-purple-500/15 text-purple-300 border-purple-500/30",
+  fal: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  cache: "bg-white/10 text-white/60 border-white/20",
+  voice: "bg-amber-500/15 text-amber-300 border-amber-500/30",
 };
 
 function formatEta(seconds: number | null | undefined): string {
@@ -112,45 +117,52 @@ function BlockRow({ block, isNext }: { block: RenderBlockStatus; isNext?: boolea
   }, [block.state, block.started_at]);
 
   const icon =
-    block.state === "done"   ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> :
-    block.state === "failed" ? <XCircle      className="w-3.5 h-3.5 text-red-400 shrink-0" /> :
-    block.state === "baking" ? <Loader2      className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-spin" /> :
-    isNext                   ? <Clock        className="w-3.5 h-3.5 text-amber-300 shrink-0 animate-pulse" /> :
-                               <Clock        className="w-3.5 h-3.5 text-white/20 shrink-0" />;
+    block.state === "done" ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> :
+      block.state === "failed" ? <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" /> :
+        block.state === "baking" ? <Loader2 className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-spin" /> :
+          isNext ? <Clock className="w-3.5 h-3.5 text-amber-300 shrink-0 animate-pulse" /> :
+            <Clock className="w-3.5 h-3.5 text-white/20 shrink-0" />;
 
   const rightLabel =
-    block.state === "done"   ? `${Math.round(block.duration_s ?? 0)}s` :
-    block.state === "baking" ? formatElapsed(elapsed) :
-    block.state === "failed" ? "failed" :
-    isNext                   ? "next" :
-                               "";
+    block.state === "done" ? `${Math.round(block.duration_s ?? 0)}s` :
+      block.state === "baking" ? formatElapsed(elapsed) :
+        block.state === "failed" ? "failed" :
+          isNext ? "next" :
+            "";
 
   const categoryLabel = formatCategoryLabel(block.category);
 
   return (
     <div className={cn(
-      "flex items-center gap-2 px-3 py-1.5 text-xs border-b border-white/5 last:border-0",
+      "border-b border-white/5 last:border-0",
       block.state === "baking" && "bg-amber-500/5",
       isNext && "bg-amber-500/5 border-l-2 border-l-amber-400",
       block.state === "done" && "opacity-70",
     )}>
-      {icon}
-      <span className="text-white/70 tabular-nums w-8 shrink-0">#{(block.index ?? 0) + 1}</span>
-      <span className="text-white/30 truncate flex-1 min-w-0">{categoryLabel}</span>
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        {icon}
+        <span className="text-white/70 tabular-nums w-8 shrink-0">#{(block.index ?? 0) + 1}</span>
+        <span className="text-white/30 truncate flex-1 min-w-0">{categoryLabel}</span>
 
-      {block.state === "baking" && (
-        <div className="w-16 h-1 bg-white/10 rounded-full overflow-hidden flex-shrink-0">
-          <div className="h-full bg-amber-400 rounded-full animate-pulse" style={{ width: "60%" }} />
+        {block.state === "baking" && (
+          <div className="w-16 h-1 bg-white/10 rounded-full overflow-hidden flex-shrink-0">
+            <div className="h-full bg-amber-400 rounded-full animate-pulse" style={{ width: "60%" }} />
+          </div>
+        )}
+
+        <ProviderChip provider={block.provider} />
+        <span className={cn(
+          "tabular-nums w-14 text-right shrink-0",
+          block.state === "baking" ? "text-amber-300 font-medium" : "text-white/40",
+        )}>
+          {rightLabel}
+        </span>
+      </div>
+      {block.state === "failed" && block.error && (
+        <div className="px-3 pb-1.5 -mt-0.5 pl-9 text-[10px] text-red-400/80 leading-snug">
+          {block.error}
         </div>
       )}
-
-      <ProviderChip provider={block.provider} />
-      <span className={cn(
-        "tabular-nums w-14 text-right shrink-0",
-        block.state === "baking" ? "text-amber-300 font-medium" : "text-white/40",
-      )}>
-        {rightLabel}
-      </span>
     </div>
   );
 }
@@ -164,10 +176,12 @@ export function RenderStatusPill({
   blocks = [],
   bakingCompleted = 0,
   bakingTotal = 0,
+  onCancel,
+  cancelling = false,
 }: RenderStatusPillProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef   = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   // Position the dropdown under the pill.
@@ -177,7 +191,11 @@ export function RenderStatusPill({
     if (!el) return;
     const update = () => {
       const r = el.getBoundingClientRect();
-      setPos({ top: r.bottom + 6, left: r.left, width: Math.max(r.width, 320) });
+      const width = Math.max(r.width, 320);
+      const margin = 8;
+      const maxLeft = window.innerWidth - width - margin;
+      const left = Math.min(r.left, Math.max(margin, maxLeft));
+      setPos({ top: r.bottom + 6, left, width });
     };
     update();
     window.addEventListener("resize", update);
@@ -257,11 +275,11 @@ export function RenderStatusPill({
   const panel = open && pos && createPortal(
     <div
       ref={panelRef}
-      className="fixed z-[9999] rounded-lg border border-white/10 bg-neutral-950/95 backdrop-blur-md shadow-2xl"
+      className="fixed z-[9999] rounded-lg border border-white/10 bg-neutral-950/95 backdrop-blur-md shadow-2xl flex flex-col overflow-hidden"
       style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: 420 }}
       role="dialog"
     >
-      <div className="px-3 py-2 border-b border-white/10 flex flex-col gap-1">
+      <div className="shrink-0 px-3 py-2 border-b border-white/10 flex flex-col gap-1">
         <span className="text-xs text-white/70 font-medium">Render progress</span>
         <span className="text-[10px] text-white/40">
           {counts.done}/{counts.total} done · {counts.baking} baking · {counts.queued} queued · {remainingLabel}
@@ -271,19 +289,37 @@ export function RenderStatusPill({
       {blocks.length === 0 ? (
         <div className="px-3 py-4 text-xs text-white/40 text-center">Waiting for blocks to start…</div>
       ) : (
-        <div className="overflow-y-auto" style={{ maxHeight: 340 }}>
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {blocks.map((b, i) => {
             const isNext = b.state === "queued" && !blocks.slice(0, i).some(x => x.state === "queued");
             return <BlockRow key={b.block_id} block={b} isNext={isNext} />;
           })}
         </div>
       )}
-      <div className="flex items-center gap-3 text-[10px] text-white/30 px-3 py-2 border-t border-white/10">
+      {/* <div className="flex items-center gap-3 text-[10px] text-white/30 px-3 py-2 border-t border-white/10">
         <span><span className="text-emerald-300">●</span> host = free GPU</span>
         <span><span className="text-purple-300">●</span> pod = cloud GPU ($)</span>
         <span><span className="text-blue-300">●</span> fal = serverless ($)</span>
         <span><span className="text-white/20">●</span> mod = parked</span>
-      </div>
+      </div> */}
+      {onCancel && (
+        <div className="border-t border-white/10 p-2">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onCancel(); }}
+            disabled={cancelling}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-red-300 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Ban className="w-3.5 h-3.5" />
+            {cancelling ? "Cancelling…" : "Cancel render"}
+          </button>
+          {counts.failed > 0 && (
+            <p className="text-[10px] text-white/30 mt-1.5 px-1 leading-snug">
+              {counts.failed} block{counts.failed === 1 ? "" : "s"} already failed — blocks still baking will finish, but no further retries or compose will run.
+            </p>
+          )}
+        </div>
+      )}
     </div>,
     document.body
   );

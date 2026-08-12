@@ -47,6 +47,11 @@ import type {
   CategoryTree,
   EffectsConfig,
   TeamRole,
+  PlansResponse,
+  BillingDashboard,
+  CreditTransactionDto,
+  PlanId,
+  BillingIntervalId,
 } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL || "/api";
@@ -185,6 +190,88 @@ export const authApi = {
     api.post<MessageResponse>("/auth/forgot-password", data).then((r) => r.data),
   resetPassword: (data: ResetPasswordRequest) =>
     api.post<MessageResponse>("/auth/reset-password", data).then((r) => r.data),
+  changePassword: (data: { current_password: string; new_password: string }) =>
+    api.post<MessageResponse>("/auth/change-password", data).then((r) => r.data),
+};
+
+// ── Teams ──
+
+export interface TeamMemberDto {
+  id: string;
+  email: string;
+  display_name?: string | null;
+  role: TeamRole;
+  status: "pending" | "active" | "revoked";
+  invited_at: string;
+  accepted_at?: string | null;
+}
+
+export interface WorkspaceOptionDto {
+  owner_id: string;
+  owner_label: string;
+  role?: TeamRole | null;
+  is_own: boolean;
+}
+
+export const teamsApi = {
+  listMembers: () =>
+    api.get<{ members: TeamMemberDto[] }>("/teams/members").then((r) => r.data.members),
+  invite: (data: { email: string; role: TeamRole }) =>
+    api.post<TeamMemberDto>("/teams/invite", data).then((r) => r.data),
+  changeRole: (memberId: string, role: TeamRole) =>
+    api.patch<TeamMemberDto>(`/teams/members/${memberId}/role`, { role }).then((r) => r.data),
+  revoke: (memberId: string) =>
+    api.delete(`/teams/members/${memberId}`).then((r) => r.data),
+  previewInvite: (token: string) =>
+    api
+      .get<{ email: string; owner_label: string; role: TeamRole; requires_password: boolean }>(
+        "/teams/accept-invite/preview",
+        { params: { token } },
+      )
+      .then((r) => r.data),
+  acceptInvite: (data: { token: string; password?: string }) =>
+    api.post<TokenResponse>("/teams/accept-invite", data).then((r) => r.data),
+  myWorkspaces: () =>
+    api.get<{ workspaces: WorkspaceOptionDto[] }>("/teams/my-workspaces").then((r) => r.data.workspaces),
+  switchWorkspace: (ownerId: string) =>
+    api.post<TokenResponse>("/teams/switch-workspace", { owner_id: ownerId }).then((r) => r.data),
+};
+
+// ── Billing: subscriptions, PAYG credits, usage metering ──
+
+export const billingApi = {
+  getPlans: () => api.get<PlansResponse>("/billing/plans").then((r) => r.data),
+  getDashboard: () => api.get<BillingDashboard>("/billing/dashboard").then((r) => r.data),
+  checkoutSubscription: (plan: PlanId, interval: BillingIntervalId) =>
+    api
+      .post<
+        | { url: string; id: string }
+        | { status: "updated"; plan: PlanId; interval: BillingIntervalId; renewal_date: string }
+      >("/billing/checkout/subscription", { plan, interval })
+      .then((r) => r.data),
+  checkoutCredits: (packId: string) =>
+    api.post<{ url: string; id: string }>("/billing/checkout/credits", { pack_id: packId }).then((r) => r.data),
+  openPortal: (returnUrl?: string) =>
+    api.post<{ url: string }>("/billing/portal", { return_url: returnUrl }).then((r) => r.data),
+  cancelSubscription: () =>
+    api.post<{ status: string; cancel_at_period_end: boolean; renewal_date: string | null }>(
+      "/billing/cancel",
+      {},
+    ).then((r) => r.data),
+  purchaseAvatarSlot: () =>
+    api.post<{ avatar_slot_purchase_id: string; rate_cents: number }>(
+      "/billing/avatar-slots/purchase",
+      {},
+    ).then((r) => r.data),
+  listCreditTransactions: (limit = 50) =>
+    api
+      .get<{ transactions: CreditTransactionDto[] }>("/billing/credits/transactions", { params: { limit } })
+      .then((r) => r.data.transactions),
+  setAutoTopup: (data: { enabled: boolean; threshold_cents?: number; amount_cents?: number }) =>
+    api.post<{ auto_topup_enabled: boolean; auto_topup_threshold_cents: number | null; auto_topup_amount_cents: number | null }>(
+      "/billing/credits/auto-topup",
+      data,
+    ).then((r) => r.data),
 };
 
 // ── Teams ──
@@ -256,6 +343,16 @@ export const userApi = {
       "/users/me/affiliates",
       { platform, value },
     ).then((r) => r.data),
+  updateProfile: (display_name: string | null) =>
+    api.patch<User>("/users/me/profile", { display_name }).then((r) => r.data),
+  uploadAvatar: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api
+      .post<User>("/users/me/avatar", form, { headers: { "Content-Type": "multipart/form-data" } })
+      .then((r) => r.data);
+  },
+  deleteAvatar: () => api.delete<User>("/users/me/avatar").then((r) => r.data),
 };
 
 // ── Casts ──
@@ -515,6 +612,10 @@ export const castsApi = {
     api.get(`/casts/${castId}/renders/${renderId}`).then(r => r.data),
   selectRender: (castId: string, renderId: string) =>
     api.patch(`/casts/${castId}/renders/${renderId}/select`).then(r => r.data),
+  cancelRender: (castId: string, renderId: string) =>
+    api.post<{ id: string; status: string; error_message: string }>(
+      `/casts/${castId}/renders/${renderId}/cancel`
+    ).then(r => r.data),
   saveTimeline: (castId: string, payload: { variant_id: string; twick_data: any; block_regions: any[]; editor_state?: any }) =>
     api.put(`/casts/${castId}/timeline`, payload).then(r => r.data),
   getTimeline: (castId: string, variantId: string) =>

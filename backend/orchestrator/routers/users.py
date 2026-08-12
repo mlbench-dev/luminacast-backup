@@ -1,15 +1,30 @@
 """User profile endpoints — interests, preferences, profile updates."""
+import os
+import uuid
+from io import BytesIO
+
 import sentry_sdk
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models.user import User
 from routers.auth import get_current_user
+from schemas.auth import UpdateProfileRequest, UserResponse
 from services import audit_log
+from services.r2_storage import get_r2_storage_service
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+AVATAR_MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB — a profile picture, not a media asset
+AVATAR_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+AVATAR_CONTENT_TYPE_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 
 # Two-platform whitelist for the affiliate connect flow. The "+ Add
@@ -164,3 +179,103 @@ async def update_my_affiliate(
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
         raise HTTPException(status_code=500, detail="Failed to update affiliate")
+
+
+# ── Profile: display name + avatar image ──
+
+def _user_response(user: User) -> UserResponse:
+    resp = UserResponse.model_validate(user)
+    if user.avatar_r2_key:
+        resp.avatar_url = get_r2_storage_service().get_public_url(user.avatar_r2_key)
+    return resp
+
+
+@router.patch("/me/profile", response_model=UserResponse)
+async def update_my_profile(
+    req: UpdateProfileRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user.display_name = req.display_name
+    await db.commit()
+    await db.refresh(user)
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="settings.profile_update", entity_type="settings",
+            entity_id=user.id, after={"display_name": user.display_name},
+        )
+        await db.commit()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    return _user_response(user)
+
+
+@router.post("/me/avatar", response_model=UserResponse)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload/replace the profile picture shown in the sidebar and account
+    settings. Always stored at a fixed per-user key (not one-per-upload
+    like the cast media library) so old uploads don't accumulate in R2 —
+    each new upload just overwrites the previous object."""
+    original_name = file.filename or "avatar.jpg"
+    ext = os.path.splitext(original_name)[1].lower()
+    if ext not in AVATAR_ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(AVATAR_ALLOWED_EXTENSIONS))
+        raise HTTPException(400, f"File type {ext} not allowed. Use: {allowed}")
+
+    content_type = file.content_type or AVATAR_CONTENT_TYPE_BY_EXT.get(ext, "image/jpeg")
+    if content_type not in set(AVATAR_CONTENT_TYPE_BY_EXT.values()):
+        content_type = AVATAR_CONTENT_TYPE_BY_EXT.get(ext, "image/jpeg")
+
+    data = await file.read()
+    if len(data) > AVATAR_MAX_FILE_SIZE:
+        raise HTTPException(400, f"File too large. Max {AVATAR_MAX_FILE_SIZE // (1024 * 1024)} MB.")
+
+    try:
+        from PIL import Image
+        Image.open(BytesIO(data)).verify()
+    except Exception:
+        raise HTTPException(400, "File does not look like a valid image.")
+
+    r2_key = f"users/{user.id}/avatar{ext}"
+    try:
+        r2 = get_r2_storage_service()
+        await r2.upload_bytes(data, r2_key, content_type=content_type)
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        raise HTTPException(status_code=502, detail="Could not upload image. Please try again.")
+
+    # If a previous upload used a different extension, its object is
+    # simply orphaned in R2 (no longer referenced) — this codebase doesn't
+    # delete R2 objects anywhere (see user_photos.py's soft-delete-only
+    # convention), so neither does this.
+    user.avatar_r2_key = r2_key
+    await db.commit()
+    await db.refresh(user)
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="settings.avatar_upload", entity_type="settings", entity_id=user.id,
+        )
+        await db.commit()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    return _user_response(user)
+
+
+@router.delete("/me/avatar", response_model=UserResponse)
+async def delete_my_avatar(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if user.avatar_r2_key:
+        user.avatar_r2_key = None
+        await db.commit()
+        await db.refresh(user)
+    return _user_response(user)

@@ -140,11 +140,9 @@ export function CastBuilderPage() {
     setPhase(statusToPhase(updatedCast.status));
   }, []);
 
-  const handleCastCreated = useCallback(async (newCast: Cast, wasExisting?: boolean) => {
+  const handleCastCreated = useCallback(async (newCast: Cast) => {
     setCast(newCast);
-    if (!wasExisting) {
-      try { await castsApi.generateScripts(newCast.id); } catch (err) { console.error("Auto script gen failed:", err); }
-    }
+    try { await castsApi.generateScripts(newCast.id); } catch (err) { console.error("Auto script gen failed:", err); }
     setPhase("script");
     navigate(`/cast-builder/${newCast.id}/script`, { replace: true });
   }, [navigate]);
@@ -181,9 +179,9 @@ export function CastBuilderPage() {
   }, [cast, navigate]);
 
   const [rendering, setRendering] = useState(false);
+  const [cancellingRender, setCancellingRender] = useState(false);
   // Track local edits — any change after a render invalidates "ready" status
   const editsSinceRenderRef = useRef(0);
-  const toastedFailedRenderIdRef = useRef<string | null>(null);
 
   // Track render status for inline button display
   const [renderStatus, setRenderStatus] = useState<{
@@ -274,18 +272,10 @@ export function CastBuilderPage() {
             renderId: latest.id,
             ...(isStale ? { errorMessage: "Changes since last render" } : {}),
           });
-        } else if (latest?.status === "failed") {
-          // Toast the reason once per failed render — the button itself
-          // only shows a bare "Render Failed" label with a hover tooltip,
-          // which is easy to miss entirely.
-          if (toastedFailedRenderIdRef.current !== latest.id) {
-            toastedFailedRenderIdRef.current = latest.id;
-            toast({
-              title: "Render failed",
-              description: latest.error_message || "Something went wrong during rendering.",
-              variant: "destructive",
-            });
-          }
+        } else if (latest?.status === "failed" || latest?.status === "cancelled") {
+          // Cancelled reuses the failed-state UI (message, Retry button) —
+          // error_message already reads "Cancelled by user…" from the
+          // /cancel endpoint, so no separate copy is needed here.
           setRenderStatus({ status: "failed", errorMessage: latest.error_message, renderId: latest.id });
         } else {
           setRenderStatus({ status: "idle" });
@@ -296,6 +286,24 @@ export function CastBuilderPage() {
     const interval = setInterval(poll, 5000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [phase, cast?.id]);
+
+  const handleCancelRender = useCallback(async () => {
+    if (!cast?.id || !renderStatus.renderId || cancellingRender) return;
+    setCancellingRender(true);
+    try {
+      const result = await castsApi.cancelRender(cast.id, renderStatus.renderId);
+      setRenderStatus({ status: "failed", errorMessage: result.error_message, renderId: result.id });
+      toast({ title: "Render cancelled", description: "Blocks already baking will finish, but no further work will be queued." });
+    } catch (err: any) {
+      toast({
+        title: "Couldn't cancel render",
+        description: err?.response?.data?.detail || "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setCancellingRender(false);
+    }
+  }, [cast?.id, renderStatus.renderId, cancellingRender, toast]);
 
   const handleFinalizeClick = useCallback(async () => {
     if (!cast) return;
@@ -310,6 +318,7 @@ export function CastBuilderPage() {
       } catch { /* confirm blocked — proceed anyway */ }
     }
 
+    const MIN_SPEAKING_SLOT_S = 1.5;
     try {
       const regions = arrangePhaseRef.current?.getBlockRegions?.() || [];
       const shortBlocks = regions
@@ -319,12 +328,7 @@ export function CastBuilderPage() {
           const slotSeconds = r.end_s - r.start_s;
           return { block, slotSeconds, ttsSeconds };
         })
-        // Bug: this used to compare against a flat 1.5s floor instead of
-        // the clip's own voiceover length, so any clip longer than 1.5s
-        // but still shorter than its narration silently passed the
-        // pre-flight check, hit the backend, and failed there with no
-        // warning shown up front.
-        .filter((x) => x.ttsSeconds && x.slotSeconds < x.ttsSeconds);
+        .filter((x) => x.ttsSeconds && x.slotSeconds < MIN_SPEAKING_SLOT_S);
 
       if (shortBlocks.length > 0) {
         const names = shortBlocks
@@ -551,6 +555,8 @@ export function CastBuilderPage() {
                       blocks={renderStatus.blocks}
                       bakingCompleted={renderStatus.bakingCompleted}
                       bakingTotal={renderStatus.bakingTotal}
+                      onCancel={handleCancelRender}
+                      cancelling={cancellingRender}
                     />
                   ) : renderStatus.status === "ready" ? (
                     <Button
@@ -568,7 +574,6 @@ export function CastBuilderPage() {
                       onClick={handleFinalizeClick}
                       className="bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30"
                       data-testid="finalize-render-btn"
-                      title={renderStatus.errorMessage || "Render failed"}
                     >
                       <XCircle className="w-4 h-4 mr-2" />
                       Render Failed — Retry
@@ -665,7 +670,7 @@ export function CastBuilderPage() {
       {/* Phase content */}
       <div className={phase === "editor" ? "flex-1 overflow-hidden min-h-0" : "flex-1 overflow-auto"}>
         {phase === "setup" && (
-          <SetupPhase cast={cast} onCreated={handleCastCreated} />
+          <SetupPhase onCreated={handleCastCreated} />
         )}
 
         {phase === "script" && cast && (

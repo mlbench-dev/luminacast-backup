@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import sentry_sdk
 from fastapi import APIRouter, Request, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from database import async_session_factory
 
@@ -874,3 +875,191 @@ async def runpod_bs_roformer_webhook(request: Request):
         logger.error(f"Failed to store BS-RoFormer result in Redis: {e}")
 
     return {"status": "stored", "job_id": job_id}
+
+
+# ── Stripe: subscriptions, PAYG credits ─────────────────────────────────
+
+
+async def _sync_subscription(db, owner_id: str, sub_obj: dict, customer_id: str | None) -> None:
+    """Upsert local `Subscription` state from a Stripe Subscription object
+    (used by both `checkout.session.completed` and
+    `customer.subscription.*`). Plan/interval are resolved from the
+    subscription's actual Price ID first — falling back to the metadata
+    set at checkout time only if the price isn't one we recognize — so a
+    plan change made via the Stripe-hosted billing portal (which doesn't
+    go through our own checkout metadata) still lands correctly.
+    """
+    from services import billing_service
+
+    items = (sub_obj.get("items") or {}).get("data") or []
+    first_item = items[0] if items else {}
+    price_id = first_item.get("price", {}).get("id") if first_item.get("price") else None
+    resolved = billing_service.resolve_plan_from_price_id(price_id) if price_id else None
+    metadata = sub_obj.get("metadata") or {}
+    plan = resolved[0] if resolved else metadata.get("plan", "starter")
+    interval = resolved[1] if resolved else metadata.get("interval", "month")
+
+    # api_version 2026-07-29.dahlia (services/stripe_billing.py::STRIPE_API_VERSION)
+    # moved current_period_start/end off the top-level Subscription object
+    # onto each subscription item (Stripe's multi-item flexible-billing
+    # support) — the top-level fields are now always null. Read from the
+    # first item, falling back to the top level in case a differently
+    # api-versioned event ever reaches this handler.
+    period_start = first_item.get("current_period_start") or sub_obj.get("current_period_start")
+    period_end = first_item.get("current_period_end") or sub_obj.get("current_period_end")
+
+    await billing_service.create_or_update_subscription_from_stripe(
+        db,
+        owner_id=owner_id,
+        plan=plan,
+        interval=interval,
+        stripe_customer_id=customer_id or sub_obj.get("customer"),
+        stripe_subscription_id=sub_obj.get("id"),
+        stripe_price_id=price_id,
+        current_period_start=billing_service.stripe_timestamp_to_naive_utc(period_start),
+        current_period_end=billing_service.stripe_timestamp_to_naive_utc(period_end),
+    )
+
+
+async def _owner_id_for_stripe_subscription(db, stripe_subscription_id: str) -> str | None:
+    from models.billing import Subscription
+
+    return (
+        await db.execute(
+            select(Subscription.user_id).where(
+                Subscription.stripe_subscription_id == stripe_subscription_id
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def _handle_stripe_event(db, event_type: str, obj: dict) -> None:
+    from services import billing_service
+    from services.billing_config import CREDIT_PACKS
+    from services.stripe_billing import get_stripe_billing_service
+
+    if event_type == "checkout.session.completed":
+        mode = obj.get("mode")
+        metadata = obj.get("metadata") or {}
+        owner_id = metadata.get("owner_id")
+        if not owner_id:
+            logger.warning("checkout.session.completed with no owner_id metadata; ignoring")
+            return
+
+        if mode == "subscription":
+            subscription_id = obj.get("subscription")
+            if not subscription_id:
+                return
+            stripe_service = get_stripe_billing_service()
+            sub_obj = await stripe_service.get_subscription(subscription_id)
+            await _sync_subscription(db, owner_id, sub_obj, obj.get("customer"))
+
+        elif mode == "payment":
+            pack_id = metadata.get("pack_id")
+            if not pack_id or pack_id not in CREDIT_PACKS:
+                logger.warning("checkout.session.completed payment with unknown pack_id=%s", pack_id)
+                return
+            payment_intent_id = obj.get("payment_intent")
+            await billing_service.purchase_credits(
+                db,
+                owner_id,
+                pack_id,
+                stripe_payment_intent_id=payment_intent_id,
+                stripe_checkout_session_id=obj.get("id"),
+            )
+            # Save the card used so overage/auto-top-up can charge it
+            # off-session later without asking the user to check out again.
+            if payment_intent_id:
+                try:
+                    stripe_service = get_stripe_billing_service()
+                    intent = await stripe_service.get_payment_intent(payment_intent_id)
+                    pm_id = intent.get("payment_method")
+                    if pm_id:
+                        wallet = await billing_service.get_or_create_credit_wallet(db, owner_id)
+                        wallet.stripe_payment_method_id = pm_id
+                        await db.commit()
+                except Exception as exc:
+                    sentry_sdk.capture_exception(exc)
+
+    elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
+        metadata = obj.get("metadata") or {}
+        owner_id = metadata.get("owner_id")
+        if not owner_id:
+            # Subscriptions created directly in the Stripe dashboard (not
+            # via our checkout) won't carry our metadata — nothing to
+            # attribute this to locally, safe to ignore.
+            logger.info("%s with no owner_id metadata; ignoring", event_type)
+            return
+        await _sync_subscription(db, owner_id, obj, obj.get("customer"))
+        if obj.get("status") in ("past_due", "unpaid"):
+            await billing_service.mark_subscription_past_due(db, owner_id)
+
+    elif event_type == "customer.subscription.deleted":
+        metadata = obj.get("metadata") or {}
+        owner_id = metadata.get("owner_id")
+        if owner_id:
+            await billing_service.mark_subscription_terminated(db, owner_id)
+
+    elif event_type == "invoice.payment_failed":
+        sub_id = obj.get("subscription")
+        if sub_id:
+            owner_id = await _owner_id_for_stripe_subscription(db, sub_id)
+            if owner_id:
+                await billing_service.mark_subscription_past_due(db, owner_id)
+
+    else:
+        logger.info("Unhandled Stripe event type: %s", event_type)
+
+
+@router.post("/stripe")
+async def stripe_webhook(request: Request):
+    """Stripe webhook receiver — subscriptions + PAYG credit purchases.
+
+    Idempotency: `ProcessedStripeEvent` has `id` (the Stripe event id) as
+    its primary key. The insert is attempted BEFORE any billing side
+    effect runs; a unique-constraint violation means this exact event was
+    already delivered (duplicate delivery, or a retried delivery after our
+    200 was lost in transit) and is a no-op 200 rather than re-applying
+    the event. This is what makes "payment succeeds but webhook arrives
+    late" and "duplicate webhook delivery" both safe.
+    """
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    from services.stripe_billing import get_stripe_billing_service
+
+    stripe_service = get_stripe_billing_service()
+    try:
+        event = await stripe_service.construct_webhook_event(payload, sig_header)
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    event_id = event.get("id")
+    event_type = event.get("type", "")
+    data_object = (event.get("data") or {}).get("object", {})
+
+    from models.billing import ProcessedStripeEvent
+
+    async with async_session_factory() as db:
+        db.add(ProcessedStripeEvent(id=event_id, event_type=event_type))
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.info("Stripe webhook %s (%s) already processed — skipping", event_id, event_type)
+            return {"status": "already_processed"}
+
+        try:
+            await _handle_stripe_event(db, event_type, data_object)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+            logger.error(
+                "Stripe webhook handling failed for %s (%s): %s", event_id, event_type, exc
+            )
+            # Still 200 — the event is recorded as processed and the
+            # failure is in Sentry for manual reconciliation. Asking
+            # Stripe to retry a handler that just failed deterministically
+            # (e.g. a bad price mapping) would only spin.
+
+    return {"status": "processed"}

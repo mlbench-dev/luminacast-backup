@@ -3770,6 +3770,7 @@ async def _render_clip_from_parent(render_id: str, child_cast_id: str) -> None:
         parent_id = child.clip_parent_cast_id
         block_ids = list(child.clip_block_ids or [])
         user_id = child.user_id
+        production_level = child.production_level or "standard"
         parent = await session.get(Cast, parent_id) if parent_id else None
         if not parent:
             raise RuntimeError(f"Parent cast {parent_id} not found for clip child {child_cast_id}")
@@ -3899,6 +3900,22 @@ async def _render_clip_from_parent(render_id: str, child_cast_id: str) -> None:
             await _us.commit()
     except Exception as _u_exc:
         sentry_sdk.capture_exception(_u_exc)
+
+    try:
+        from services import billing_service
+        async with factory() as _bill_session:
+            await billing_service.deduct_render_usage(
+                _bill_session,
+                user_id=user_id,
+                owner_id=user_id,
+                render_id=render_id,
+                cast_id=child_cast_id,
+                duration_seconds=float(result.get("duration_seconds") or 0.0),
+                production_level=production_level,
+            )
+    except Exception as bill_exc:
+        sentry_sdk.capture_exception(bill_exc)
+        logger.error("Clip render %s: billing metering failed: %s", render_id, bill_exc)
 
     logger.info("Clip render %s complete → %s", render_id, output_key)
 
@@ -7026,13 +7043,35 @@ async def _render_async(task, render_id: str):
         sentry_sdk.capture_exception(_reset_exc)
 
     # Update the cast with the final video URL
+    production_level = "standard"
     async with factory() as session:
         from models.cast import Cast, CastStatus
         cast = await session.get(Cast, cast_id)
         if cast:
             cast.final_video_url = r2.get_public_url(output_key)
             cast.status = CastStatus.READY
+            production_level = cast.production_level or "standard"
             await session.commit()
+
+    # Billing: meter this render (included allowance -> PAYG credits ->
+    # overage). Idempotent on render_id — safe if a Celery redelivery
+    # reaches this point twice (see the terminal-state guard above).
+    try:
+        from services import billing_service
+        final_duration_s = await _probe_audio_duration_s(r2.get_public_url(output_key))
+        async with factory() as _bill_session:
+            await billing_service.deduct_render_usage(
+                _bill_session,
+                user_id=user_id,
+                owner_id=user_id,
+                render_id=render_id,
+                cast_id=cast_id,
+                duration_seconds=final_duration_s,
+                production_level=production_level,
+            )
+    except Exception as bill_exc:
+        sentry_sdk.capture_exception(bill_exc)
+        logger.error("Render %s: billing metering failed: %s", render_id, bill_exc)
 
     # Log FFmpeg composition cost
     await _log_generation_cost(

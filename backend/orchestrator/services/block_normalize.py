@@ -178,12 +178,17 @@ def normalize_baked_block(
             probe = _probe_streams(in_path)
         except Exception as probe_exc:
             sentry_sdk.capture_exception(probe_exc)
-            # Probe failure shouldn't kill the block — assume worst case
-            # (no audio, unknown dims) and let ffmpeg figure it out.
-            probe = {
-                "has_video": True, "has_audio": False,
-                "width": 0, "height": 0, "fps": 0.0, "duration_s": 0.0,
-            }
+            # Previously: swallowed and faked a 0x0/0s probe so ffmpeg would
+            # "figure it out" — that's what produced a mostly-frozen padded
+            # clip several steps downstream, only caught much later by Phase
+            # 3 validation with no clue it started here. An unreadable input
+            # means the provider returned bytes that aren't a valid video at
+            # all (corrupt/incomplete download) — fail loudly, right here.
+            raise ValueError(
+                f"normalize_baked_block: input video unreadable by ffprobe "
+                f"for block {block_id} render {render_id} "
+                f"({len(input_bytes)} bytes) — {probe_exc}"
+            ) from probe_exc
 
         in_w = probe["width"] or 0
         in_h = probe["height"] or 0

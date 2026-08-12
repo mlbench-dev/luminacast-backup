@@ -15,6 +15,7 @@ class CastRenderStatus(str, enum.Enum):
     COMPOSING = "composing"
     READY = "ready"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class CastRender(Base):
@@ -24,6 +25,10 @@ class CastRender(Base):
     cast_id = Column(String(40), ForeignKey("casts.id"), nullable=False, index=True)
     user_id = Column(String(40), ForeignKey("users.id"), nullable=False, index=True)
     status = Column(String(32), default=CastRenderStatus.QUEUED.value, nullable=False, index=True)
+    # Celery task id for the top-level render_cast_task, set right after
+    # apply_async(). Lets the cancel endpoint revoke a still-queued task and
+    # gives the running task a row to check for a user-requested cancel.
+    celery_task_id = Column(String(64), nullable=True)
     version = Column(Integer, nullable=True)
     timeline_snapshot = Column(JSON, nullable=False)
     output_video_r2_key = Column(String(512), nullable=True)

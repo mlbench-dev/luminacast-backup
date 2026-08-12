@@ -64,6 +64,28 @@ class MessageResponse(BaseModel):
     message: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def _check_password_strength(cls, v: str) -> str:
+        return _validate_password_strength(v)
+
+
+class UpdateProfileRequest(BaseModel):
+    display_name: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("display_name")
+    @classmethod
+    def _strip_and_none_if_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+
 class WorkspaceInfo(BaseModel):
     """The workspace the caller's current token is acting in — resolved
     from the JWT's `wsid` claim. `is_own` is what the frontend's workspace
@@ -82,10 +104,15 @@ class UserResponse(BaseModel):
     stripe_customer_id: Optional[str] = None
     created_at: datetime
     is_active: bool
+    display_name: Optional[str] = None
     # Surfaced to the frontend so the product detail page can decide
     # whether to show the "Connect Amazon Associates" amber callout.
     tiktok_affiliate_id: Optional[str] = None
     amazon_associate_tag: Optional[str] = None
+    # Populated explicitly by every endpoint that returns this (not a plain
+    # model-field passthrough) — `User.avatar_r2_key` is an R2 object key,
+    # not a URL a browser can load directly.
+    avatar_url: Optional[str] = None
     # Populated by GET /auth/me from the caller's current WorkspaceContext
     # — not a plain model field passthrough (Cast/Product/etc. don't carry
     # this), so it's set explicitly in the endpoint rather than relying on

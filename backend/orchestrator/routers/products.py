@@ -417,6 +417,7 @@ async def import_from_url(
         await _materialize_product_assets(
             db=db,
             user=user,
+            workspace_owner_id=ctx.workspace_owner_id,
             product_id=prod_id,
             cover_image_key=cover_image_key,
             cover_image_url=resolved.cover_image_url or "",
@@ -454,6 +455,7 @@ async def _materialize_product_assets(
     *,
     db: AsyncSession,
     user: User,
+    workspace_owner_id: str,
     product_id: str,
     cover_image_key: str,
     cover_image_url: str,
@@ -514,7 +516,8 @@ async def _materialize_product_assets(
             return ProductAsset(
                 id=asset_id,
                 product_id=product_id,
-                user_id=ctx.workspace_owner_id,                asset_type="gallery",
+                user_id=workspace_owner_id,
+                asset_type="gallery",
                 media_type=media_type,
                 r2_key=r2_key,
                 r2_url=r2.get_public_url(r2_key),
@@ -556,7 +559,8 @@ async def _materialize_product_assets(
         assets_to_add.append(ProductAsset(
             id=f"pa_{uuid.uuid4().hex[:12]}",
             product_id=product_id,
-            user_id=ctx.workspace_owner_id,            asset_type="gallery",
+            user_id=workspace_owner_id,
+            asset_type="gallery",
             media_type="image",
             r2_key=cover_image_key,
             r2_url=r2.get_public_url(cover_image_key),

@@ -81,6 +81,20 @@ function secondsToFrames(seconds: number, fps: number): number {
   return Math.round(seconds * fps);
 }
 
+/**
+ * Seconds → frames, rounded UP, for clip durations that must fully cover an
+ * audio track (e.g. the bonded voiceover pair below). secondsToFrames's
+ * round-to-nearest quantizes to the frame grid, which rounds down roughly
+ * half the time — producing a clip a fraction of a frame shorter than the
+ * exact (unquantized) tts_duration_seconds it's meant to hold. The Phase 3
+ * render validator compares the frame-quantized slot against that exact
+ * value, so any downward rounding fails it. Rounding up guarantees the slot
+ * always covers the full audio.
+ */
+function secondsToFramesCeil(seconds: number, fps: number): number {
+  return Math.ceil(seconds * fps);
+}
+
 /** Frames → seconds at given fps */
 function framesToSeconds(frames: number, fps: number): number {
   return frames / fps;
@@ -170,7 +184,10 @@ export function castToEditorStarterTimeline(
       const phAssetId = `asset_ph_${block.id}`;
       const phFaceSrc = options.avatarFaceKey ? cdnUrl(options.avatarFaceKey) : "";
       const phIsPip = block.category === "pip" || block.category === "pip_talking_head";
-      const phIsVoiceover = block.category === "avatar_voiceover" || block.category?.startsWith("voiceover_");
+      const phIsVoiceover =
+        block.render_mode === "voiceover" ||
+        block.category === "avatar_voiceover" ||
+        block.category?.startsWith("voiceover_");
       const phIsBodyMotion =
         (block as any).render_mode === "body_motion" ||
         block.category === "avatar_action" ||
@@ -239,8 +256,16 @@ export function castToEditorStarterTimeline(
     }
 
     const dur = variant.tts_duration_seconds || variant.duration_seconds || 5;
+    // Rounded up (not secondsToFrames' round-to-nearest) so the bonded
+    // audio/video/image items below never come out a fraction of a frame
+    // shorter than the actual voiceover — see secondsToFramesCeil.
+    const durFrames = secondsToFramesCeil(dur, fps);
     const start = cursor;
-    const end = cursor + dur;
+    // Derived from durFrames (not raw `dur`) so the next block's cursor
+    // lands exactly on the frame boundary this block's items actually end
+    // on — otherwise ceil-rounding durFrames up could let this block's
+    // audio/video overlap the next block's by a fraction of a frame.
+    const end = start + durFrames / fps;
 
     regions.push({
       block_id: block.id,
@@ -272,7 +297,19 @@ export function castToEditorStarterTimeline(
 
     const blockNum = (block.position ?? 0) + 1;
     const isPip = block.category === "pip" || block.category === "pip_talking_head";
-    const isVoiceover = block.category === "avatar_voiceover" || block.category?.startsWith("voiceover_");
+    // The block's own `render_mode` column (set explicitly by the backend,
+    // e.g. for stock_photo/stock_video blocks used as voiceover B-roll) is
+    // the source of truth — category string-matching alone missed blocks
+    // like category="stock_photo" + render_mode="voiceover", which fell
+    // through to the "full" default below and got dispatched through the
+    // full avatar-motion generation pipeline (Kling/WaveSpeed) instead of
+    // the voiceover placeholder+overlay path. That fed a static photo into
+    // a talking-head model, producing a consistently frozen clip that only
+    // surfaced as a confusing Phase 3 "clip_mostly_frozen" rejection.
+    const isVoiceover =
+      block.render_mode === "voiceover" ||
+      block.category === "avatar_voiceover" ||
+      block.category?.startsWith("voiceover_");
     // T2V (no avatar) — only generated_video uses this path now; legacy
     // avatar_motion blocks fall through to body_motion via category alias.
     const isMotion =
@@ -429,7 +466,7 @@ export function castToEditorStarterTimeline(
           id: snapshotItemId,
           assetId: v1AssetId,
           from: secondsToFrames(start, fps),
-          durationInFrames: secondsToFrames(dur, fps),
+          durationInFrames: durFrames,
           top: pipTop,
           left: pipLeft,
           width: pipW,
@@ -498,7 +535,7 @@ export function castToEditorStarterTimeline(
           id: snapshotItemId,
           assetId: v1AssetId,
           from: secondsToFrames(start, fps),
-          durationInFrames: secondsToFrames(dur, fps),
+          durationInFrames: durFrames,
           top: pipTop,
           left: pipLeft,
           width: pipW,
@@ -568,7 +605,7 @@ export function castToEditorStarterTimeline(
         id: snapshotItemId,
         assetId: v1AssetId,
         from: secondsToFrames(start, fps),
-        durationInFrames: secondsToFrames(dur, fps),
+        durationInFrames: durFrames,
         top: 0,
         left: 0,
         width: canvas.width,
@@ -620,7 +657,7 @@ export function castToEditorStarterTimeline(
         id: voiceItemId,
         assetId: a1AssetId,
         from: secondsToFrames(start, fps),
-        durationInFrames: secondsToFrames(dur, fps),
+        durationInFrames: durFrames,
         top: 0,
         left: 0,
         width: 0,
@@ -802,7 +839,7 @@ export function castToEditorStarterTimeline(
       const sItemId = `stock_${block.id}`;
       const sAssetId = `asset_stock_${block.id}`;
       const itemFrom = secondsToFrames(start, fps);
-      const itemFrames = Math.max(1, secondsToFrames(dur, fps));
+      const itemFrames = Math.max(1, durFrames);
       if (stockMediaKind === "video") {
         const sAsset: VideoAsset = {
           type: "video",
@@ -1098,7 +1135,7 @@ export function castToEditorStarterTimeline(
         id: prodItemId,
         assetId: prodAssetId,
         from: secondsToFrames(start, fps),
-        durationInFrames: secondsToFrames(dur, fps),
+        durationInFrames: durFrames,
         top: canvas.height - prodH - 20,
         left: canvas.width - prodW - 20,
         width: prodW,

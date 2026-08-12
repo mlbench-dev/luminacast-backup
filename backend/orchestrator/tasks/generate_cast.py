@@ -595,6 +595,27 @@ async def _generate_tts_only(cast_id: str, user_id: str):
                 # Guard: skip variants with empty script_text
                 script_text = (variant.script_text or "").strip()
                 if not script_text:
+                    # avatar_action/body_motion blocks are driven by
+                    # body_motion_prompt (what the avatar visually does),
+                    # not script_text — roughly half of them legitimately
+                    # have no narration at all (silent action cutaways).
+                    # Only hard-fail here for categories that are actually
+                    # supposed to speak; a missing script on those is a
+                    # real script-generation bug, not a valid silent state.
+                    if block.render_mode == "body_motion" or block.category == "avatar_action":
+                        fallback_dur = float(getattr(variant, "estimated_duration_seconds", 0) or 5.0)
+                        variant.status = VariantStatus.READY
+                        variant.duration_seconds = fallback_dur
+                        variant.tts_duration_seconds = fallback_dur
+                        variant.audio_key = None
+                        logger.info(
+                            "Variant %s in block %s (avatar_action/body_motion) has no "
+                            "script — treating as a silent action block, using "
+                            "estimated_duration_seconds=%.2fs for slot timing",
+                            variant.id, block.id, fallback_dur,
+                        )
+                        completed += 1
+                        continue
                     logger.warning(
                         "Variant %s in block %s has empty script_text, skipping TTS",
                         variant.id, block.id,
