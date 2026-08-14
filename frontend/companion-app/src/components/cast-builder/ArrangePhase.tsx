@@ -18,7 +18,6 @@ import {
   castToEditorStarterTimeline,
   editorStarterToLuminacastSnapshot,
   computeBlockRegions,
-  getCanvasSize,
 } from "@/lib/editorStarterMapping";
 import type { UndoableState } from "@/components/cast-builder/editor-starter/state/types";
 import { LuminacastEditor } from "@/components/cast-builder/editor-starter";
@@ -226,34 +225,26 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
               }
             }
 
-            // Guard against a saved snapshot from a different output_format —
-            // e.g. saved as 9:16, then the user goes back to Setup and picks
-            // 16:9. Block presence and audio durations can both still check
-            // out, but the saved canvas dimensions no longer match the
-            // cast's current layout, so the preview would silently keep
-            // rendering the old orientation with no error or stale-cache
-            // signal visible to the user.
-            const expectedSize = getCanvasSize(freshCast.output_format);
-            const savedWidth = savedTimeline.editor_state.compositionWidth;
-            const savedHeight = savedTimeline.editor_state.compositionHeight;
-            // A snapshot saved before compositionWidth/Height existed on this
-            // shape has both as undefined — that's missing data, not a known
-            // mismatch, so don't force a permanent rebuild every open over it.
-            const orientationMatches =
-              (savedWidth == null && savedHeight == null) ||
-              (savedWidth === expectedSize.width && savedHeight === expectedSize.height);
+            // NOTE: a stale-output_format/orientation check was added here
+            // (and then reverted) to fix "layout change not reflected in
+            // Arrange preview". It forced a fresh rebuild whenever saved
+            // compositionWidth/Height didn't match the cast's current
+            // output_format. That correctly fixed the orientation bug, but
+            // correlated with reports of a blank preview canvas even for
+            // unchanged (vertical) layouts shortly after — routing far more
+            // casts through the less-exercised fresh-build path likely
+            // exposed a separate, still-unconfirmed bug in that path or in
+            // the Editor Starter canvas/Player layer. Reverted to stop that
+            // regression; the orientation bug is temporarily back until a
+            // properly-isolated fix lands. See conversation history for the
+            // investigation trail before re-attempting this.
 
-            if (allCurrentInSaved && currentBlocks.length > 0 && staleBlocks.length === 0 && orientationMatches) {
+            if (allCurrentInSaved && currentBlocks.length > 0 && staleBlocks.length === 0) {
               restoredState = savedTimeline.editor_state as UndoableState;
               console.log("RESTORED saved editor state:", {
                 savedItemCount: Object.keys(items).length,
                 currentBlockCount: currentBlocks.length,
                 savedAt: savedTimeline.saved_at,
-              });
-            } else if (!orientationMatches) {
-              console.log("Saved editor state has a stale output_format/canvas size — rebuilding fresh.", {
-                saved: { width: savedWidth, height: savedHeight },
-                expected: expectedSize,
               });
             } else if (staleBlocks.length > 0) {
               console.log("Saved editor state has implausibly short slots — rebuilding fresh from live TTS durations. Affected block_ids:", staleBlocks);
