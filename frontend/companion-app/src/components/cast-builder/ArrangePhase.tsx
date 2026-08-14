@@ -112,10 +112,26 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
     const handleBeforeUnload = () => {
       if (latestStateRef.current && cast?.id) {
         const payload = buildSavePayload(latestStateRef.current);
-        navigator.sendBeacon(
-          "/api/casts/" + cast.id + "/timeline",
-          JSON.stringify(payload)
-        );
+        // navigator.sendBeacon() can only send POST, and this endpoint is
+        // PUT-only — every beacon save was silently failing with 405, and
+        // sendBeacon gives no way to observe or catch that. fetch's
+        // `keepalive: true` gives the same "survives page unload" guarantee
+        // while letting us use PUT against the actual working endpoint.
+        let authHeader: string | undefined;
+        try {
+          const raw = localStorage.getItem("luminacast-auth");
+          const token = raw ? JSON.parse(raw)?.state?.token : undefined;
+          if (token) authHeader = "Bearer " + token;
+        } catch { /* no token available — request will 401, nothing more we can do here */ }
+        fetch("/api/casts/" + cast.id + "/timeline", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            ...(authHeader ? { Authorization: authHeader } : {}),
+          },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(() => { /* best-effort save on exit */ });
       }
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
