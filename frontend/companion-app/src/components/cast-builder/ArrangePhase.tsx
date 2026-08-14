@@ -235,7 +235,12 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
             const expectedSize = getCanvasSize(freshCast.output_format);
             const savedWidth = savedTimeline.editor_state.compositionWidth;
             const savedHeight = savedTimeline.editor_state.compositionHeight;
-            const orientationMatches = savedWidth === expectedSize.width && savedHeight === expectedSize.height;
+            // A snapshot saved before compositionWidth/Height existed on this
+            // shape has both as undefined — that's missing data, not a known
+            // mismatch, so don't force a permanent rebuild every open over it.
+            const orientationMatches =
+              (savedWidth == null && savedHeight == null) ||
+              (savedWidth === expectedSize.width && savedHeight === expectedSize.height);
 
             if (allCurrentInSaved && currentBlocks.length > 0 && staleBlocks.length === 0 && orientationMatches) {
               restoredState = savedTimeline.editor_state as UndoableState;
