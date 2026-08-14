@@ -41,6 +41,7 @@ export const Layer: React.FC<{
 
 	const itemIsBeingCropped = item.id === itemSelectedForCrop;
 
+	
 	return (
 		<>
 			<Sequence
