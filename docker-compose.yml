@@ -74,7 +74,8 @@ services:
       - captions_ssr_out:/tmp/captions_ssr:ro
     restart: always
     command: >
-      sh -c "alembic upgrade heads || true &&
+      sh -c "python scripts/bootstrap_db.py &&
+             alembic upgrade heads &&
              uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"
 
   celery-worker:
