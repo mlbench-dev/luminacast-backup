@@ -941,6 +941,7 @@ export const avatarApi = {
     api.post<{ name: string; description: string; body_description: string }>(
       "/avatar/clone/describe-face",
       { avatar_id: avatarId, face_image_url: faceImageUrl },
+      { timeout: 60000 },
     ).then((r) => r.data),
 
   // ── AI Avatar (Path 4) ──

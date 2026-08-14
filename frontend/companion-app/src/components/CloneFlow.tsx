@@ -1314,8 +1314,13 @@ function CloneSourcePhase({
       const entries: VoiceCorpusEntry[] = q.state.data?.entries || [];
       const hasReady = entries.some((e) => e.status === "ready");
       if (hasReady) return false;
-      const hasProcessing = entries.some((e) => e.status === "pending" || e.status === "processing");
-      return hasProcessing ? 5000 : false;
+      // An empty list doesn't mean "nothing pending" — it can just mean the
+      // upload's corpus row hasn't landed on the backend yet (the same race
+      // the invalidateQueries call above tries to cover). Keep polling on an
+      // empty snapshot too, otherwise this can catch that gap and stop
+      // forever, leaving voiceReady permanently false.
+      const stillWaiting = entries.length === 0 || entries.some((e) => e.status === "pending" || e.status === "processing");
+      return stillWaiting ? 5000 : false;
     },
   });
 
@@ -1360,6 +1365,7 @@ function CloneSourcePhase({
       } catch (err: any) {
         console.warn("Auto-select face failed:", err);
       }
+      if (name.trim()) return;
       setDescribing(true);
       try {
         const descResult = await avatarApi.cloneDescribeFace(ensuredAvatarId, candidate.url);
