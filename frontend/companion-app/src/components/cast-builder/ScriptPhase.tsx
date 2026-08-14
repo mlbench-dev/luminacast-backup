@@ -470,10 +470,21 @@ export function ScriptPhase({ cast, onDone }: ScriptPhaseProps) {
           }
         } catch { /* ignore */ }
       }, 2000);
+      // Setup's own auto-generate chain (outline, then a two-pass script
+      // writer — two sequential LLM calls) routinely runs past 10s, which
+      // used to fire this fallback while that chain was still in flight:
+      // two concurrent outline/script generations for the same cast, one
+      // of them building Variant rows against blocks the other had just
+      // deleted, surfacing as a false "Script generation failed" toast
+      // moments before the original call's real success. The backend now
+      // serializes concurrent generation per cast (see the advisory lock in
+      // casts.py's generate_outline/generate_scripts), so this can no
+      // longer crash — but a shorter timeout still means paying for a
+      // redundant LLM round trip more often than necessary.
       const fallback = setTimeout(() => {
         clearInterval(interval);
         generateOutline();
-      }, 10000);
+      }, 45000);
       return () => { clearInterval(interval); clearTimeout(fallback); };
     }
   }, [freshCast?.id, freshCast?.blocks?.length]);

@@ -3534,6 +3534,17 @@ async def generate_outline(
     if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
 
+    # Serialize concurrent outline/script generation for this cast — the
+    # frontend can fire more than one of these in overlapping windows (e.g.
+    # an initial auto-generate plus ScriptPhase's stall-fallback), and this
+    # endpoint unconditionally wipes and re-inserts Block rows below. Two
+    # overlapping calls racing that wipe left a generate-scripts call
+    # committing Variant rows against block_ids the other call had already
+    # deleted — an FK violation surfacing as a 500. Transaction-scoped so it
+    # auto-releases on commit/rollback regardless of connection pooling.
+    from sqlalchemy import text as sa_text
+    await db.execute(sa_text("SELECT pg_advisory_xact_lock(hashtext(:cast_id))"), {"cast_id": cast_id})
+
     result = await db.execute(
         select(CastProduct).where(CastProduct.cast_id == cast_id).options(selectinload(CastProduct.product))
     )
@@ -3839,6 +3850,10 @@ async def generate_smart_outline_endpoint(
         raise HTTPException(404, "Cast not found")
     if not cast.description:
         raise HTTPException(400, "Cast must have a description (the brief) before Smart Cast can generate.")
+
+    # See generate_outline's identical lock above — same block-wipe race.
+    from sqlalchemy import text as sa_text
+    await db.execute(sa_text("SELECT pg_advisory_xact_lock(hashtext(:cast_id))"), {"cast_id": cast_id})
 
     # Collect products + persona for context
     result = await db.execute(
@@ -4220,6 +4235,12 @@ async def generate_scripts(
     cast = await db.get(Cast, cast_id)
     if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
+
+    # See generate_outline's identical lock — waits here if an outline call
+    # for this same cast is still mid-flight, instead of building Variant
+    # rows against block_ids that call is about to delete.
+    from sqlalchemy import text as sa_text
+    await db.execute(sa_text("SELECT pg_advisory_xact_lock(hashtext(:cast_id))"), {"cast_id": cast_id})
 
     # Get voice profile from channel
     voice_profile = None
