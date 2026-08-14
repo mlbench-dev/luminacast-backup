@@ -13,8 +13,12 @@ database (production), this is a no-op — `alembic upgrade heads`
 handles it normally afterward.
 """
 import asyncio
+import os
 import subprocess
 import sys
+
+# Ensure the orchestrator package is importable (this script lives in scripts/)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sqlalchemy import inspect
 
