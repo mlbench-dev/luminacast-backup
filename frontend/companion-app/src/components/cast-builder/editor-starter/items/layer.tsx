@@ -12,7 +12,6 @@ export const Layer: React.FC<{
 	const {fps} = useVideoConfig();
 	const item = useItem(itemId);
 	const itemSelectedForCrop = useContext(ItemSelectedForCropContext);
-	const itemIsBeingCropped = item.id === itemSelectedForCrop;
 
 	const sequenceStyle: React.CSSProperties = useMemo(
 		() => ({
@@ -27,6 +26,20 @@ export const Layer: React.FC<{
 		}),
 		[],
 	);
+
+	// A track can reference an itemId that no longer exists in the items map
+	// (e.g. a stale/orphaned reference left behind by a block that was
+	// deleted or regenerated). Without this guard, the render below throws
+	// inside Remotion's composition tree — which Remotion swallows into a
+	// blank canvas instead of surfacing an error, with the rest of the page
+	// (built from the same state via other code paths) looking unaffected.
+	// (Placed after all hooks above so hook call order stays unconditional.)
+	if (!item) {
+		console.warn(`Layer: itemId "${itemId}" has no matching entry in items — skipping render for this item.`);
+		return null;
+	}
+
+	const itemIsBeingCropped = item.id === itemSelectedForCrop;
 
 	return (
 		<>
