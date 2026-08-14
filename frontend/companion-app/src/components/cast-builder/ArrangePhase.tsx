@@ -134,6 +134,7 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
         }).catch(() => { /* best-effort save on exit */ });
       }
     };
+
     
     window.addEventListener("beforeunload", handleBeforeUnload);
     const handleVisChange = () => {
