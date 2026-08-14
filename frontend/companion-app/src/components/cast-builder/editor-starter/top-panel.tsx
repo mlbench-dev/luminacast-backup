@@ -19,7 +19,18 @@ export const TopPanel: React.FC<{
   const {isOpen: layerPanelOpen} = useLayerPanel();
 
   return (
-    <div className="relative h-full w-full flex-1">
+    // min-h-[280px]: TimelineContainer below is shrink-0 (never shrinks
+    // below its natural content height, which grows with track count) and
+    // this is the only flex-1 sibling in Editor's column. Adapting this
+    // template from full-viewport (h-screen) to fit inside CastBuilder's
+    // layout means the available height can be too small for a
+    // many-track timeline to take shrink-0's full natural height AND
+    // leave any of the flex-1 remainder for this panel — without a floor
+    // here, that remainder clamps to 0 and the canvas silently vanishes
+    // (still renders internally, just at zero height/opacity, so no error
+    // ever surfaces). This guarantees the canvas always gets a usable
+    // minimum regardless of how tall the timeline grows.
+    <div className="relative h-full w-full flex-1 min-h-[280px]">
       <div className="absolute flex h-full w-full flex-row">
         <LuminacastMediaPanel />
         <Canvas playerRef={playerRef} loop={loop} />
