@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-import routers.casts as casts
+import routers.casts.frames as casts
 
 
 class _Product:

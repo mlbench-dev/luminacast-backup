@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from layouts.primitives import LayoutPrimitive, compute_geometry
-from routers.casts import _get_pip_layout, build_stock_overlay_element
+from routers.casts.timeline import _get_pip_layout, build_stock_overlay_element
 from tasks.cast_render import extract_overlay_elements
 
 CANVAS_W = 480

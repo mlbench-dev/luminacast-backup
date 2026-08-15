@@ -30,7 +30,23 @@ ORCH_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _read(rel_path: str) -> str:
-    return (ORCH_ROOT / rel_path).read_text()
+    """Read a source file's text for a content assertion.
+
+    A handful of formerly-monolithic routers (e.g. routers/avatar.py,
+    routers/casts.py) have since been split into per-concern packages
+    (routers/avatar/*.py). For those, concatenate every module in the
+    package so the same source-text assertions keep checking the same
+    logical content regardless of which file it physically lives in now.
+    """
+    path = ORCH_ROOT / rel_path
+    if path.exists():
+        return path.read_text()
+    pkg_dir = path.with_suffix("")
+    if pkg_dir.is_dir():
+        return "\n".join(
+            f.read_text() for f in sorted(pkg_dir.glob("*.py"))
+        )
+    return path.read_text()  # raise the natural FileNotFoundError
 
 
 # ── 1. Central constants default to Opus 4.8 and are env-overridable ──────

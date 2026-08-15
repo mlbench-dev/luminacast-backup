@@ -65,7 +65,7 @@ async def test_create_cast_rejects_unowned_product_ids(client, auth_headers, db_
     avatar, my_product, other_product = await _seed(db_session)
     bogus_id = "prod_does_not_exist"
 
-    with patch("routers.casts.sentry_sdk.capture_message") as cap:
+    with patch("routers.casts.crud.sentry_sdk.capture_message") as cap:
         resp = await client.post(
             "/api/casts",
             headers=auth_headers,
@@ -91,7 +91,7 @@ async def test_create_cast_rejects_unowned_product_ids(client, auth_headers, db_
 async def test_create_cast_accepts_owned_product_ids(client, auth_headers, db_session):
     avatar, my_product, _other = await _seed(db_session)
 
-    with patch("routers.casts.sentry_sdk.capture_message") as cap:
+    with patch("routers.casts.crud.sentry_sdk.capture_message") as cap:
         resp = await client.post(
             "/api/casts",
             headers=auth_headers,

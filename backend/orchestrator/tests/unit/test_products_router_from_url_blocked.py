@@ -126,7 +126,7 @@ async def test_from_url_returns_201_on_successful_resolution():
         "services.url_product_resolver.resolve_product_url",
         new=AsyncMock(return_value=resolved),
     ), patch(
-        "routers.products._materialize_product_assets", new=AsyncMock(return_value=0)
+        "routers.products.crud._materialize_product_assets", new=AsyncMock(return_value=0)
     ), patch("services.usage_tracker.log_usage", new=AsyncMock(return_value=None)):
         async with _make_client(session) as ac:
             resp = await ac.post(

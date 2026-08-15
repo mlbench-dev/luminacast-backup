@@ -113,11 +113,11 @@ class TestRegenerateBlockAudio:
         user, avatar, cast, block, old_variant = await _seed_user_avatar_cast_block(db_session)
         headers = _auth_headers_for(user.id, user.email)
 
-        with patch("routers.casts.get_fish_audio_service", return_value=_mock_fish_audio()) as _, \
+        with patch("routers.casts.variants.get_fish_audio_service", return_value=_mock_fish_audio()) as _, \
              patch("services.r2_storage.get_r2_storage_service", return_value=_mock_r2()):
 
             # Patch at the import location used in the endpoint
-            import routers.casts as casts_module
+            import routers.casts.variants as casts_module
             original_import = None
 
             resp = await client.post(

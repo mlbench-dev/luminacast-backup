@@ -11,7 +11,7 @@ what guarantees the fields are no longer silently dropped.
 import pytest
 
 from schemas.cast import CastCreate, CastResponse
-from routers.casts import CastPatchRequest
+from routers.casts.crud import CastPatchRequest
 
 
 LIVE_DEFAULTS = {

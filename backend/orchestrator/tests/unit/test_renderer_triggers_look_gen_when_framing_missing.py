@@ -16,7 +16,7 @@ import types
 
 import pytest
 
-from routers import casts as casts_router
+from routers.casts import render as casts_router
 
 
 class _FakeBlock:
