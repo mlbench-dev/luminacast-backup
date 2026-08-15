@@ -20,8 +20,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { liveSessionApi, api, stockMediaApi } from "@/lib/api";
-import { StockMediaPicker } from "@/components/StockMediaPicker";
-import type { StockMediaItem } from "@/components/StockMediaPicker";
+import { StockMediaPicker } from "@/components/common/StockMediaPicker";
+import type { StockMediaItem } from "@/components/common/StockMediaPicker";
 import { toast } from "@/hooks/useToast";
 import Hls from "hls.js";
 

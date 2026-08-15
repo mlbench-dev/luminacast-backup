@@ -27,7 +27,7 @@ import { AvatarStatus, AvatarType, type Avatar } from "@/lib/types";
 import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
-import { CloneFlow } from "@/components/CloneFlow";
+import { CloneFlow } from "@/components/avatar/CloneFlow";
 import { confirmAction } from "@/lib/swal";
 
 

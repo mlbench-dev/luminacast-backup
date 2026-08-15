@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { scriptApi, castsApi, avatarApi } from "@/lib/api";
-import { RewriteDiffModal } from "@/components/RewriteDiffModal";
+import { RewriteDiffModal } from "@/components/cast-builder/RewriteDiffModal";
 import { BlockType } from "@/lib/types";
 import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/cn";

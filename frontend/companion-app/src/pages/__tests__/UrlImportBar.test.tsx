@@ -19,7 +19,7 @@ vi.mock("@/lib/api", async () => {
   };
 });
 
-import { UrlImportBar } from "../ProductLibrary";
+import { UrlImportBar } from "../cast-builder/ProductLibrary";
 
 function renderBar() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

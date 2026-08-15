@@ -10,8 +10,8 @@ import {
   generatedVideosApi,
   generatedPhotosApi,
 } from "@/lib/api";
-import { MediaTile } from "@/components/MediaTile";
-import { SmartPagination } from "@/components/SmartPagination";
+import { MediaTile } from "@/components/media-library/MediaTile";
+import { SmartPagination } from "@/components/media-library/SmartPagination";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,

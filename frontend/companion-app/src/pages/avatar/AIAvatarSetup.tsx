@@ -20,7 +20,7 @@ import { LiveReferenceCard } from "@/components/avatar/LiveReferenceCard";
 import { VoiceBrowser } from "@/components/avatar/VoiceBrowser";
 import { AvatarIdentityPanel } from "@/components/avatar/AvatarIdentityPanel";
 import { ClipMicToggle } from "@/components/avatar/ClipMicToggle";
-import { AvatarBackgrounds } from "@/components/AvatarBackgrounds";
+import { AvatarBackgrounds } from "@/components/avatar/AvatarBackgrounds";
 import { STYLE_PRESETS, MAKE_IT_REAL_CHIPS, type StylePresetId } from "@/lib/avatarStyles";
 import type { Avatar } from "@/lib/types";
 

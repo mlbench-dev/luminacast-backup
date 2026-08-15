@@ -24,7 +24,7 @@ import { socialApi, castsApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { toast } from "@/hooks/useToast";
 import { confirmAction } from "@/lib/swal";
-import { PlatformIcon, platformLabel } from "@/components/distribute/PlatformIcon";
+import { PlatformIcon, platformLabel } from "@/components/common/PlatformIcon";
 
 /**
  * Publish — daily workspace for scheduling, monitoring published

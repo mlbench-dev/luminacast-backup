@@ -29,7 +29,7 @@ const stripComments = (source: string): string =>
 // Old user-facing label literals that must no longer appear, keyed by the file
 // that owned them. Each is a string a user could read in the UI.
 const RETIRED_LABELS: Record<string, string[]> = {
-  "components/AvatarBackgrounds.tsx": [
+  "components/avatar/AvatarBackgrounds.tsx": [
     ">Backgrounds<",
     "Background uploaded",
     "Background generated",
@@ -39,13 +39,13 @@ const RETIRED_LABELS: Record<string, string[]> = {
     "No backgrounds yet",
     "Generate Background",
   ],
-  "components/BackgroundPicker.tsx": [
+  "components/cast-builder/BackgroundPicker.tsx": [
     "Keep avatar's background",
     "Blur original background",
     'alt="Background"',
   ],
-  "components/EffectsPanel.tsx": [">Background<", "Replace avatar background"],
-  "components/ScriptBlockEditor.tsx": ["Default background"],
+  "components/cast-builder/EffectsPanel.tsx": [">Background<", "Replace avatar background"],
+  "components/cast-builder/ScriptBlockEditor.tsx": ["Default background"],
   "components/cast-builder/scriptphase/BlockVisualPreview.tsx": [
     "Choose background",
   ],
@@ -57,11 +57,11 @@ const RETIRED_LABELS: Record<string, string[]> = {
     "only the background changes",
   ],
   "components/avatar/AddLookDialog.tsx": ["You can change background"],
-  "pages/EditAvatarPage.tsx": [
+  "pages/avatar/EditAvatarPage.tsx": [
     'label: "Backgrounds"',
     "No backgrounds yet",
   ],
-  "pages/AIAvatarSetup.tsx": ["generate background photos"],
+  "pages/avatar/AIAvatarSetup.tsx": ["generate background photos"],
 };
 
 describe("Step 6 — Background → Scene UI labels", () => {
@@ -78,11 +78,11 @@ describe("Step 6 — Background → Scene UI labels", () => {
   }
 
   it("keeps code identifiers and API paths intact", () => {
-    const picker = read("components/BackgroundPicker.tsx");
+    const picker = read("components/cast-builder/BackgroundPicker.tsx");
     expect(picker).toContain("BackgroundConfig");
     expect(picker).toContain("image_key");
 
-    const editor = read("components/ScriptBlockEditor.tsx");
+    const editor = read("components/cast-builder/ScriptBlockEditor.tsx");
     expect(editor).toContain("background_id");
     expect(editor).toContain('queryKey: ["avatar-backgrounds"');
 

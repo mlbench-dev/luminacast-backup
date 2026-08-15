@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Loader2, ArrowLeft, Package, Image as ImageIcon } from "lucide-react";
-import { ProductMediaGallery } from "@/components/products/ProductMediaGallery";
+import { ProductMediaGallery } from "@/components/cast-builder/ProductMediaGallery";
 
 export interface ProductPickResult {
   product: ProductWithAssets;

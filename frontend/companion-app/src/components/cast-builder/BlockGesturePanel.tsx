@@ -4,8 +4,8 @@ import type { Cast, Block, RenderMode, PipEngine, UserVideoAsset } from "@/lib/t
 import { toast } from "@/hooks/useToast";
 import { Move, Film, Info } from "lucide-react";
 import { UserVideoPickerDialog } from "./UserVideoPickerDialog";
-import { StockMediaPicker } from "@/components/StockMediaPicker";
-import type { StockMediaItem } from "@/components/StockMediaPicker";
+import { StockMediaPicker } from "@/components/common/StockMediaPicker";
+import type { StockMediaItem } from "@/components/common/StockMediaPicker";
 import { stockMediaApi } from "@/lib/api";
 import { Globe, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";

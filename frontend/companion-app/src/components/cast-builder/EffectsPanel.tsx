@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
-import { BackgroundPicker } from "@/components/BackgroundPicker";
+import { BackgroundPicker } from "@/components/cast-builder/BackgroundPicker";
 import type { EffectsConfig } from "@/lib/types";
 
 const EMOJI_PRESETS = ["❤️", "🔥", "😍", "🎉", "💯", "👏", "🤩", "💰", "🛒", "⭐"];

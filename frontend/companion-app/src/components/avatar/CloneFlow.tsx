@@ -49,9 +49,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { avatarApi, voiceCorpusApi, userApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
-import { StepIndicator } from "./avatar/StepIndicator";
-import { PipelineProgressView } from "./avatar/PipelineProgressView";
-import { VoiceCorpusTab } from "./avatar/VoiceCorpusTab";
+import { StepIndicator } from "./StepIndicator";
+import { PipelineProgressView } from "./PipelineProgressView";
+import { VoiceCorpusTab } from "./VoiceCorpusTab";
 import type { VoiceCorpusEntry } from "@/lib/types";
 
 // ── Constants ──

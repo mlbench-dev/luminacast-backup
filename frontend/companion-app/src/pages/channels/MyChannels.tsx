@@ -22,7 +22,7 @@ import { socialApi, type SocialChannel } from "@/lib/api";
 import { cdnUrl } from "@/lib/cdn";
 import { cn } from "@/lib/cn";
 import { toast } from "@/hooks/useToast";
-import { PlatformIcon, PLATFORMS, platformLabel } from "@/components/distribute/PlatformIcon";
+import { PlatformIcon, PLATFORMS, platformLabel } from "@/components/common/PlatformIcon";
 import { oneLineSummary } from "@/lib/oneLineSummary";
 import { confirmAction } from "@/lib/swal";
 import { useAuthStore } from "@/stores/authStore";
