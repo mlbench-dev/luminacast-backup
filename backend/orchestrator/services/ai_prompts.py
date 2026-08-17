@@ -1334,31 +1334,36 @@ Rules:
     "music_mood_tags": {
         "name": "Music Mood → Mubert Tags",
         "description": (
-            "Maps a block / cast mood to the Mubert prompt keywords. The mubert.py "
-            "service joins the list with spaces to form the `prompt` field on the v3 "
-            "track-generation request. Edit to refine music style per mood without code changes."
+            "Maps a block / cast mood to the Mubert prompt text. mubert.py's "
+            "mood_to_prompt() uses each value directly as the `prompt` field on the "
+            "v3 track-generation request. Verified live against Mubert: a bare "
+            "space-joined keyword list (e.g. \"pop upbeat cheerful positive\") has a "
+            "real, reproducible chance of generating a silent track (structurally "
+            "valid mp3, empty audio) — natural-language sentences were reliable "
+            "across every test. Keep entries as full sentences, not keyword lists, "
+            "when editing."
         ),
         "category": "voice",
         "used_in": "services/mubert.py (mood_to_prompt)",
         "system": "",
         "mapping": {
             # high energy
-            "excited": ["energetic", "pop", "upbeat", "bright"],
-            "urgent": ["intense", "driving", "electronic", "fast"],
-            "hype": ["trap", "bass", "energetic", "powerful"],
-            "triumphant": ["epic", "cinematic", "powerful", "uplifting"],
+            "excited": "An energetic, upbeat, and bright pop track",
+            "urgent": "An intense, driving, fast-paced electronic track",
+            "hype": "A powerful, energetic trap track with heavy bass",
+            "triumphant": "An epic, cinematic, and uplifting orchestral track",
             # medium
-            "enthusiastic": ["pop", "upbeat", "cheerful", "positive"],
-            "confident": ["corporate", "motivational", "modern", "confident"],
-            "informative": ["ambient", "light", "electronic", "calm"],
-            "trustworthy": ["corporate", "warm", "acoustic", "gentle"],
-            "playful": ["fun", "quirky", "light", "bouncy"],
+            "enthusiastic": "An upbeat, cheerful pop track with a positive feel",
+            "confident": "A modern, motivational corporate track",
+            "informative": "A calm, light ambient electronic track",
+            "trustworthy": "A warm, gentle corporate acoustic track",
+            "playful": "A fun, quirky, and bouncy light track",
             # low
-            "calm": ["ambient", "chill", "relaxing", "soft"],
-            "intimate": ["lofi", "acoustic", "intimate", "warm"],
-            "mysterious": ["cinematic", "dark", "atmospheric", "mysterious"],
-            "emotional": ["piano", "emotional", "cinematic", "slow"],
-            "dreamy": ["ethereal", "ambient", "airy", "gentle"],
+            "calm": "A relaxing, soft ambient chill track",
+            "intimate": "A warm, intimate lofi acoustic track",
+            "mysterious": "A dark, atmospheric, and mysterious cinematic track",
+            "emotional": "A slow, emotional piano-led cinematic track",
+            "dreamy": "An airy, gentle, ethereal ambient track",
         },
     },
 

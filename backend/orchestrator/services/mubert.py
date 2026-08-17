@@ -63,24 +63,33 @@ def _log(level: str, message: str, **kwargs):
 # `music_mood_tags` entry in services/ai_prompts.py registry, edited
 # via /preadmin. We mirror it here so a missing/corrupt registry never
 # breaks track generation.
+# Natural-language sentences, not bare space-joined keyword lists — verified
+# live against Mubert's generation endpoint that the keyword-list style
+# (e.g. "pop upbeat cheerful positive") has a real, reproducible chance of
+# coming back as a structurally valid but completely silent mp3 (confirmed
+# 3/3 on that exact string), while natural sentences generated reliably in
+# every test run. Mubert's own validation requires *some* non-empty prompt
+# (a literal empty string is hard-rejected with a 422), but a merely
+# present-but-terse prompt can still silently fail content-wise — this is
+# about prompt quality, not presence.
 FALLBACK_MOOD_PROMPTS: dict[str, str] = {
     # high energy
-    "excited": "energetic upbeat pop bright",
-    "urgent": "intense driving electronic fast",
-    "hype": "trap bass energetic powerful",
-    "triumphant": "epic cinematic powerful uplifting",
+    "excited": "An energetic, upbeat, and bright pop track",
+    "urgent": "An intense, driving, fast-paced electronic track",
+    "hype": "A powerful, energetic trap track with heavy bass",
+    "triumphant": "An epic, cinematic, and uplifting orchestral track",
     # medium
-    "enthusiastic": "pop upbeat cheerful positive",
-    "confident": "corporate motivational modern confident",
-    "informative": "ambient light electronic calm",
-    "trustworthy": "corporate warm acoustic gentle",
-    "playful": "fun quirky light bouncy",
+    "enthusiastic": "An upbeat, cheerful pop track with a positive feel",
+    "confident": "A modern, motivational corporate track",
+    "informative": "A calm, light ambient electronic track",
+    "trustworthy": "A warm, gentle corporate acoustic track",
+    "playful": "A fun, quirky, and bouncy light track",
     # low
-    "calm": "ambient chill relaxing soft",
-    "intimate": "lofi acoustic intimate warm",
-    "mysterious": "cinematic dark atmospheric mysterious",
-    "emotional": "piano emotional cinematic slow",
-    "dreamy": "ethereal ambient airy gentle",
+    "calm": "A relaxing, soft ambient chill track",
+    "intimate": "A warm, intimate lofi acoustic track",
+    "mysterious": "A dark, atmospheric, and mysterious cinematic track",
+    "emotional": "A slow, emotional piano-led cinematic track",
+    "dreamy": "An airy, gentle, ethereal ambient track",
 }
 
 
