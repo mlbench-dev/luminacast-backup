@@ -15,7 +15,7 @@ from models.user import User, UserRole, TeamMember, TeamRole, TeamMemberStatus
 from schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse, UserResponse,
     ForgotPasswordRequest, ResetPasswordRequest, MessageResponse,
-    WorkspaceInfo, ChangePasswordRequest,
+    WorkspaceInfo, ChangePasswordRequest, DeleteAccountRequest,
 )
 import sentry_sdk
 from services import audit_log
@@ -344,6 +344,46 @@ async def change_password(
         sentry_sdk.capture_exception(e)
 
     return MessageResponse(message="Your password has been updated.")
+
+
+@router.delete("/me", response_model=MessageResponse)
+async def delete_account(
+    req: DeleteAccountRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Self-service account deletion from Settings.
+
+    Admin accounts are exempt: the platform has exactly one bootstrapped
+    ADMIN account (seed_admin() in main.py), so letting it self-delete
+    would lock the whole app's /admin and /control surfaces with no way
+    back short of re-running the bootstrap script.
+
+    Deactivates rather than hard-deletes: `users` is referenced by ~60
+    tables (casts, billing, avatars, usage, ...) and most of those FKs
+    have no ON DELETE CASCADE, so a physical row delete isn't safe here.
+    `is_active=False` is already enforced everywhere auth is checked
+    (get_current_user, login, refresh, reset-password), so this fully
+    revokes access rather than just flipping a cosmetic flag.
+    """
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin accounts cannot be deleted")
+
+    if not pwd_context.verify(req.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    user.is_active = False
+    await db.commit()
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="auth.delete_account", entity_type="auth", entity_id=user.id,
+        )
+        await db.commit()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    return MessageResponse(message="Your account has been deleted.")
 
 
 @router.get("/me", response_model=UserResponse)

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Camera, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,7 @@ import { toast } from "@/hooks/useToast";
 import { confirmAction } from "@/lib/swal";
 import { extractErrorMessage, authApi, userApi } from "@/lib/api";
 import { useAuthStore } from "@/stores/authStore";
+import { UserRole } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
 function initials(label: string): string {
@@ -204,26 +206,73 @@ export function SettingsPasswordPage() {
 }
 
 export function SettingsDeleteAccountPage() {
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+  const navigate = useNavigate();
+  const [currentPassword, setCurrentPassword] = useState("");
+  const isAdmin = user?.role === UserRole.ADMIN;
+
+  const deleteMutation = useMutation({
+    mutationFn: () => authApi.deleteAccount({ current_password: currentPassword }),
+    onSuccess: () => {
+      toast({ title: "Your account has been deleted." });
+      logout();
+      navigate("/login");
+    },
+    onError: (err: unknown) =>
+      toast({
+        title: "Could not delete account",
+        description: extractErrorMessage(err, "Please check your password and try again."),
+        variant: "destructive",
+      }),
+  });
+
   const handleDeleteAccount = async () => {
-    await confirmAction({
-      title: "Account deletion isn't available yet",
-      text: "This is a placeholder — deleting an account needs careful handling of your subscription, casts, and billing history, which hasn't been built yet. Nothing has been deleted.",
-      icon: "info",
-      confirmButtonText: "Got it",
-      cancelButtonText: "Close",
+    const confirmed = await confirmAction({
+      title: "Delete your account?",
+      text: "This deactivates your account and signs you out everywhere. This cannot be undone.",
+      icon: "warning",
+      confirmButtonText: "Delete my account",
     });
+    if (confirmed) deleteMutation.mutate();
   };
+
+  if (isAdmin) {
+    return (
+      <SettingsLayout>
+        <div className="max-w-md space-y-4">
+          <h2 className="text-lg font-semibold text-text">Delete Account</h2>
+          <p className="text-sm text-text-dim">
+            Admin accounts can't be deleted from Settings. This platform has a single admin
+            account, and removing it would lock everyone out of the Admin and Control panels.
+          </p>
+        </div>
+      </SettingsLayout>
+    );
+  }
 
   return (
     <SettingsLayout>
       <div className={cn("max-w-md space-y-4")}>
         <h2 className="text-lg font-semibold text-danger">Delete Account</h2>
         <p className="text-sm text-text-dim">
-          Permanently deletes your account, avatars, casts, and billing history. This cannot be
-          undone.
+          Deactivates your account and signs you out everywhere. This cannot be undone.
         </p>
-        <Button variant="destructive" onClick={handleDeleteAccount}>
-          Delete my account
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-text">Confirm your password</label>
+          <Input
+            type="password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+        </div>
+        <Button
+          variant="destructive"
+          onClick={handleDeleteAccount}
+          disabled={currentPassword.length === 0 || deleteMutation.isPending}
+        >
+          {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Delete my account"}
         </Button>
       </div>
     </SettingsLayout>

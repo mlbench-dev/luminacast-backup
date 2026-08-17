@@ -74,6 +74,10 @@ class ChangePasswordRequest(BaseModel):
         return _validate_password_strength(v)
 
 
+class DeleteAccountRequest(BaseModel):
+    current_password: str
+
+
 class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = Field(None, max_length=100)
 

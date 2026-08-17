@@ -55,13 +55,17 @@ const adminItems = [
   { to: "/control", label: "Control Panel", icon: Settings2 },
 ];
 
-function NavItem({ to, label, icon: Icon }: { to: string; label: string; icon: React.ComponentType<{ className?: string }> }) {
-  const location = useLocation();
-  // Avatar sub-pages (/my-avatar/clone, etc.) should highlight "My Avatar"
-  const isActive = to === "/my-avatar"
-    ? location.pathname === "/my-avatar" || location.pathname.startsWith("/my-avatar/")
-    : location.pathname === to || location.pathname.startsWith(to + "/");
-
+function NavItem({
+  to,
+  label,
+  icon: Icon,
+  isActive,
+}: {
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  isActive: boolean;
+}) {
   return (
     <NavLink
       to={to}
@@ -81,6 +85,7 @@ function NavItem({ to, label, icon: Icon }: { to: string; label: string; icon: R
 
 export function Sidebar() {
   const navigate = useNavigate();
+  const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const hasTeamRole = useAuthStore((s) => s.hasTeamRole);
   const isAdmin = user?.role === UserRole.ADMIN;
@@ -88,6 +93,21 @@ export function Sidebar() {
   // allow-list in `utils/admin.py`) rather than the broad ADMIN role.
   const isCostOperator = user?.email === "3gorka72@gmail.com";
   const canReview = hasTeamRole(TeamRole.PUBLISHER);
+
+  // The active nav item is whichever visible route is the longest matching
+  // prefix of the current path — e.g. "/admin/costs" must win over "/admin"
+  // so Cost Dashboard doesn't also light up Admin Panel.
+  const visibleTos = [
+    ...mainNav.map((i) => i.to),
+    ...analyticsNav.map((i) => i.to),
+    ...(canReview ? publisherNav.map((i) => i.to) : []),
+    "/settings",
+    ...(isCostOperator ? ["/admin/costs"] : []),
+    ...(isAdmin ? adminItems.map((i) => i.to) : []),
+  ];
+  const activeTo = visibleTos
+    .filter((to) => location.pathname === to || location.pathname.startsWith(to + "/"))
+    .sort((a, b) => b.length - a.length)[0];
 
   return (
     <aside
@@ -104,7 +124,7 @@ export function Sidebar() {
       {/* Main Navigation */}
       <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
         {mainNav.map((item) => (
-          <NavItem key={item.to} {...item} />
+          <NavItem key={item.to} {...item} isActive={item.to === activeTo} />
         ))}
 
         {/* Analytics section */}
@@ -113,14 +133,14 @@ export function Sidebar() {
           Analytics
         </div>
         {analyticsNav.map((item) => (
-          <NavItem key={item.to} {...item} />
+          <NavItem key={item.to} {...item} isActive={item.to === activeTo} />
         ))}
 
         {canReview && (
           <>
             <div className="my-3 border-t border-border" />
             {publisherNav.map((item) => (
-              <NavItem key={item.to} {...item} />
+              <NavItem key={item.to} {...item} isActive={item.to === activeTo} />
             ))}
           </>
         )}
@@ -129,17 +149,17 @@ export function Sidebar() {
             My Channels all live inside the Settings page's own left rail
             (see pages/Settings.tsx) instead of being listed flat here. */}
         <div className="my-3 border-t border-border" />
-        <NavItem to="/settings" label="Settings" icon={Settings} />
+        <NavItem to="/settings" label="Settings" icon={Settings} isActive={activeTo === "/settings"} />
 
         {isCostOperator && (
-          <NavItem to="/admin/costs" label="Cost Dashboard" icon={DollarSign} />
+          <NavItem to="/admin/costs" label="Cost Dashboard" icon={DollarSign} isActive={activeTo === "/admin/costs"} />
         )}
 
         {isAdmin && (
           <>
             <div className="my-3 border-t border-border" />
             {adminItems.map((item) => (
-              <NavItem key={item.to} {...item} />
+              <NavItem key={item.to} {...item} isActive={item.to === activeTo} />
             ))}
           </>
         )}

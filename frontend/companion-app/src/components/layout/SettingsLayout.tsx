@@ -3,6 +3,7 @@ import { CreditCard, KeyRound, LogOut, Tag, Trash2, User as UserIcon } from "luc
 import { Card } from "@/components/ui/card";
 import { confirmAction } from "@/lib/swal";
 import { useAuthStore } from "@/stores/authStore";
+import { UserRole } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
 function initials(label: string): string {
@@ -33,6 +34,10 @@ export function SettingsLayout({ children }: { children: React.ReactNode }) {
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
   const location = useLocation();
+  // The platform's single bootstrapped ADMIN account can't self-delete
+  // (backend rejects it too — see routers/auth.py's delete_account), so
+  // don't dangle the option in front of them.
+  const navItems = user?.role === UserRole.ADMIN ? NAV_ITEMS.filter((i) => i.to !== "/settings/delete-account") : NAV_ITEMS;
 
   const handleLogout = async () => {
     if (
@@ -63,7 +68,7 @@ export function SettingsLayout({ children }: { children: React.ReactNode }) {
               </div>
 
               <nav className="mt-4 flex-1 space-y-1">
-                {NAV_ITEMS.map((item) => {
+                {navItems.map((item) => {
                   const isActive = location.pathname === item.to;
                   const Icon = item.icon;
                   return (

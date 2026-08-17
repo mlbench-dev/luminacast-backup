@@ -56,7 +56,7 @@ async def get_variant_performance(
         .join(Block)
         .join(Cast, Block.cast_id == Cast.id)
         .where(Cast.user_id == user.id, Variant.times_played > 0)
-        .options(selectinload(Variant.block))
+        .options(selectinload(Variant.block).selectinload(Block.product))
         .order_by(Variant.performance_score.desc().nullslast())
     )
     variants = result.scalars().all()
@@ -67,6 +67,7 @@ async def get_variant_performance(
             variant_id=v.id,
             block_id=v.block_id,
             block_type=v.block.type.value if v.block else "unknown",
+            product_name=v.block.product.name if v.block and v.block.product else None,
             times_played=v.times_played,
             purchases_during=v.purchases_during,
             performance_score=v.performance_score,
