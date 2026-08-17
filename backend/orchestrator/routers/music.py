@@ -375,11 +375,15 @@ from services.mubert import (
     MubertConfigurationError,
     MubertGenerationError,
     get_cached_library_params,
+    get_track_name_pool,
+    pick_track_name,
 )
 from config import settings as app_settings
 
 
-def _normalise_library_track(t: dict, *, theme_hint: Optional[str] = None) -> dict:
+def _normalise_library_track(
+    t: dict, *, theme_hint: Optional[str] = None, name_pool: Optional[dict[str, list[str]]] = None
+) -> dict:
     """Map a single curated-library track to the frontend's expected shape.
 
     The upstream payload looks like:
@@ -392,11 +396,13 @@ def _normalise_library_track(t: dict, *, theme_hint: Optional[str] = None) -> di
         "key": "D",
         "generations": [{"status": "done", "url": "https://...mp3", ...}],
       }
-    There is no top-level name/title or genre/mood — those are determined
-    by the *filter* used to fetch the track, not the track itself. So we
-    synthesize a friendly title from bpm + intensity + key (e.g.
-    "Cinematic · 120 BPM · Dm") and surface the requested filter as the
-    track's primary genre/mood for display.
+    There is no top-level name/title or genre/mood on the track itself —
+    when a filter (theme/genre/mood/activity) is applied we use that as
+    the title (most informative — "Cinematic", "Corporate", ...). When
+    browsing unfiltered, there's no per-track label upstream at all, so we
+    derive an evocative, stable name from bpm/key/intensity via the
+    process-wide name pool (see services.mubert.pick_track_name) instead
+    of showing a bare "120 BPM · Dm".
     """
     if not isinstance(t, dict):
         return {}
@@ -412,11 +418,11 @@ def _normalise_library_track(t: dict, *, theme_hint: Optional[str] = None) -> di
     key = t.get("key") or ""
     duration_v = t.get("duration") or 0
 
-    # Friendly title — lead with the theme/genre/activity the user filtered
-    # on (most informative), fall back to BPM/key. Drop the redundant
-    # "120 BPM" appearing both in the title and the description below.
+    vibe_label = ""
     if theme_hint:
         name = theme_hint
+    elif name_pool:
+        name, vibe_label = pick_track_name(name_pool, str(track_id), key, intensity)
     elif bpm and key:
         name = f"{int(bpm)} BPM · {key}"
     elif bpm:
@@ -427,9 +433,13 @@ def _normalise_library_track(t: dict, *, theme_hint: Optional[str] = None) -> di
         name = "Library track"
 
     # Description — every signal we have, in a compact one-liner. The
-    # frontend renders this directly under the title (replacing the
-    # previous duplicate "120 BPM" line).
+    # frontend renders this directly under the title. Lead with the vibe
+    # label (derived mood, e.g. "Dreamy") when there's no explicit filter,
+    # so the card still reads as having a genre/mood even though Mubert's
+    # track object doesn't carry one.
     desc_parts: list[str] = []
+    if vibe_label:
+        desc_parts.append(vibe_label)
     if bpm:
         desc_parts.append(f"{int(bpm)} BPM")
     if key:
@@ -440,13 +450,14 @@ def _normalise_library_track(t: dict, *, theme_hint: Optional[str] = None) -> di
         desc_parts.append(mode)
     description = " · ".join(desc_parts)
 
+    display_mood = theme_hint or vibe_label
     return {
         "id": str(track_id),
         "name": name,
         "description": description,
-        "mood": theme_hint or "",
+        "mood": display_mood,
         "genre": theme_hint or "",
-        "moods": [theme_hint] if theme_hint else [],
+        "moods": [display_mood] if display_mood else [],
         "genres": [theme_hint] if theme_hint else [],
         "intensity": intensity,
         "mode": mode,
@@ -676,7 +687,10 @@ async def list_library_tracks(
 
     raw_tracks = data.get("tracks") or []
     theme_hint = mood or genre or activity or None
-    tracks = [_normalise_library_track(t, theme_hint=theme_hint) for t in raw_tracks if t]
+    # Only needed when there's no filter to use as the title — skip the
+    # (cached, but still a dict lookup + possible first-fetch) call otherwise.
+    name_pool = None if theme_hint else await get_track_name_pool()
+    tracks = [_normalise_library_track(t, theme_hint=theme_hint, name_pool=name_pool) for t in raw_tracks if t]
     tracks = [t for t in tracks if t.get("url")]
     total = int(data.get("total", len(tracks)))
     has_more = (offset + len(tracks)) < total and len(raw_tracks) > 0

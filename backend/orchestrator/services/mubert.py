@@ -26,6 +26,7 @@ We fall back to a small default dict if the registry is empty.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -464,6 +465,115 @@ async def get_cached_library_params(service: "MubertService", customer_id: str, 
     _library_params_cache["value"] = fresh
     _library_params_cache["fetched_at"] = now
     return fresh
+
+
+# ── Evocative track naming ───────────────────────────────────────────────
+#
+# Raw library track objects carry no name/genre/mood of their own — only
+# bpm, musical key, intensity, and mode (see _normalise_library_track in
+# routers/music.py). We bucket tracks into 6 "vibes" from those signals
+# and assign each bucket a small pool of evocative names (e.g. "Crystal
+# Lagoon"), so the same track always gets the same readable title instead
+# of a raw "130 BPM · C#m". The pool is generated once via an LLM call
+# and cached process-wide — never per track/request, so it costs nothing
+# per page load regardless of library size or traffic.
+
+_VIBE_LABELS: dict[str, str] = {
+    "low_major": "Peaceful",
+    "low_minor": "Dreamy",
+    "medium_major": "Warm",
+    "medium_minor": "Atmospheric",
+    "high_major": "Uplifting",
+    "high_minor": "Intense",
+}
+
+# Used whenever the LLM call fails or OpenRouter isn't configured, and
+# merged in per-bucket if the LLM response is missing/short on a bucket.
+_FALLBACK_NAME_POOL: dict[str, list[str]] = {
+    "low_major": ["Morning Glow", "Soft Horizon", "Gentle Bloom", "Quiet Meadow", "Pale Sunrise", "Calm Waters"],
+    "low_minor": ["Crystal Lagoon", "Velvet Haze", "Moonlit Drift", "Silver Mist", "Hollow Echo", "Fading Light"],
+    "medium_major": ["Golden Hour", "Amber Fields", "Warm Current", "Honey Glow", "Sunlit Path", "Open Road"],
+    "medium_minor": ["Slate Horizon", "Distant Signal", "Grey Tide", "Low Static", "Shadow Walk", "Ember Trail"],
+    "high_major": ["Neon Pulse", "Bright Surge", "Electric Bloom", "Solar Flare", "Wild Current", "Sky Ignition"],
+    "high_minor": ["Midnight Surge", "Iron Storm", "Dark Pulse", "Black Ice", "Static Storm", "Red Alert"],
+}
+
+_TRACK_NAME_POOL_TTL_SECONDS = 7 * 24 * 60 * 60  # a week — this is flavor text, not data
+_track_name_pool_cache: dict = {"value": None, "fetched_at": 0.0}
+
+
+def vibe_bucket(key: Optional[str], intensity: Optional[str]) -> str:
+    """Map Mubert's raw key + intensity to one of 6 vibe buckets."""
+    key = (key or "").strip()
+    key_mode = "minor" if key.endswith("m") and key.upper() != "ALL" else "major"
+    intensity_bucket = intensity if intensity in ("low", "medium", "high") else "medium"
+    return f"{intensity_bucket}_{key_mode}"
+
+
+async def get_track_name_pool() -> dict[str, list[str]]:
+    """Process-wide cached pool of evocative track names, bucketed by vibe.
+
+    Generated once via OpenRouter (falls back to a static hand-written
+    pool if that fails or isn't configured) — never called per track, so
+    the entire 12K-track library shares this one cached fetch.
+    """
+    now = time.time()
+    cached = _track_name_pool_cache
+    if cached["value"] is not None and (now - cached["fetched_at"]) < _TRACK_NAME_POOL_TTL_SECONDS:
+        return cached["value"]
+
+    pool = dict(_FALLBACK_NAME_POOL)
+    try:
+        from services.openrouter import get_openrouter_service
+
+        prompt = (
+            "Generate evocative, short (2-3 word) royalty-free music track names, "
+            "in the style a music library like Epidemic Sound or Artlist would use "
+            "(e.g. \"Crystal Lagoon\", \"Neon Pulse\", \"Golden Hour\"). "
+            "Return ONLY JSON, no prose, no markdown fences, shaped exactly as:\n"
+            '{"low_major": [...8 names...], "low_minor": [...], "medium_major": [...], '
+            '"medium_minor": [...], "high_major": [...], "high_minor": [...]}\n'
+            "Vibe guide per bucket: low_major=peaceful/calm, low_minor=dreamy/melancholic, "
+            "medium_major=warm/feel-good, medium_minor=atmospheric/moody, "
+            "high_major=uplifting/energetic, high_minor=intense/dark. "
+            "Every name must be unique across the whole response."
+        )
+        raw = await get_openrouter_service().generate_text(
+            prompt, model="anthropic/claude-3-haiku", max_tokens=800, temperature=0.9,
+        )
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            cleaned = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+        generated = json.loads(cleaned)
+        for bucket in _VIBE_LABELS:
+            names = generated.get(bucket)
+            if isinstance(names, list) and len(names) >= 4:
+                pool[bucket] = [str(n).strip() for n in names if str(n).strip()]
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        logger.warning("Track name pool generation failed, using static fallback: %s", e)
+
+    _track_name_pool_cache["value"] = pool
+    _track_name_pool_cache["fetched_at"] = now
+    return pool
+
+
+def pick_track_name(
+    pool: dict[str, list[str]], track_id: str, key: Optional[str], intensity: Optional[str]
+) -> tuple[str, str]:
+    """Deterministically pick a name for a track from its vibe bucket.
+
+    The same track_id always yields the same name (stable across
+    reloads/users) since the index comes from a hash of the id, not
+    randomness. Returns (name, vibe_label) — vibe_label is the
+    human-readable bucket name (e.g. "Dreamy") for display alongside
+    bpm/key/intensity.
+    """
+    bucket = vibe_bucket(key, intensity)
+    names = pool.get(bucket) or _FALLBACK_NAME_POOL[bucket]
+    idx = int(hashlib.sha256((track_id or "").encode()).hexdigest(), 16) % len(names)
+    return names[idx], _VIBE_LABELS[bucket]
 
 
 _singleton: Optional[MubertService] = None
