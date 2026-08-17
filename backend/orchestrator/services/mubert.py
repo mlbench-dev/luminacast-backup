@@ -90,8 +90,8 @@ def mood_to_prompt(mood: str) -> str:
     Reads the admin-editable knowledge base first, falls back to the dict above.
     """
     try:
-        from services.ai_prompts import PROMPTS
-        kb = (PROMPTS or {}).get("music_mood_tags") or {}
+        from services.ai_prompts import AI_PROMPTS
+        kb = (AI_PROMPTS or {}).get("music_mood_tags") or {}
         mapping = kb.get("mapping") or {}
         if mood in mapping and mapping[mood]:
             tags = mapping[mood]
