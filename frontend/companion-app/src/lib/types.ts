@@ -1,9 +1,12 @@
 // ── Enums ──
 
+// Matches backend UserRole (models/user.py) exactly — uppercase on both
+// sides. Unlike TeamRole below, this is the account-level role and its
+// values are compared directly against the API's `user.role` string.
 export enum UserRole {
-  CREATOR = "creator",
-  OPERATOR = "operator",
-  ADMIN = "admin",
+  CREATOR = "CREATOR",
+  OPERATOR = "OPERATOR",
+  ADMIN = "ADMIN",
 }
 
 // Per-workspace Teams role — distinct from UserRole (account-holder /

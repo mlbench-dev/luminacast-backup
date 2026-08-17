@@ -2454,7 +2454,7 @@ function ClonePreviewPhase({
       {isFailed && (
         <div className="text-center py-8">
           <p className="text-sm text-red-400">
-            Generation failed. Please try again or contact support.
+            {avatarStatus?.progress_step || "Generation failed. Please try again or contact support."}
           </p>
           <div className="flex gap-3 justify-center mt-3">
             <Button
