@@ -1192,12 +1192,18 @@ async def list_sfx_library(user: User = Depends(get_current_user)):
     Each entry includes a public preview URL on our CDN. Files are
     seeded synthetically by scripts/seed_sfx_library.py until the CC0
     clips arrive.
+
+    URL extension must be .wav, not .mp3 — seed_sfx_library.py uploads
+    each clip as sfx/{name}.wav (matching services/sfx_library.py's
+    SFX_CATALOG, the canonical catalog the renderer uses for [sfx:NAME]
+    markers). This endpoint used to hardcode .mp3, which 404'd for every
+    single entry regardless of whether the seed script had ever run.
     """
     return {
         "items": [
             {
                 **sfx,
-                "url": f"{CDN_BASE}/sfx/{sfx['key']}.mp3",
+                "url": f"{CDN_BASE}/sfx/{sfx['key']}.wav",
             }
             for sfx in SFX_LIBRARY
         ]
