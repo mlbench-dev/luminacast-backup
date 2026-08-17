@@ -757,6 +757,11 @@ const GENERATE_MOOD_OPTIONS: Array<{ value: string; label: string }> = [
 function GenerateTab({ castId }: { castId: string | null }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  // Mutually exclusive by design: the backend only ever uses the typed
+  // description OR the mood preset, never both (a typed prompt silently
+  // overrides mood entirely). This toggle makes that explicit in the UI
+  // instead of showing both inputs as if they combine.
+  const [inputMode, setInputMode] = useState<"mood" | "custom">("mood");
   const [prompt, setPrompt] = useState("");
   const [mood, setMood] = useState("enthusiastic");
   const [duration, setDuration] = useState(60);
@@ -768,15 +773,15 @@ function GenerateTab({ castId }: { castId: string | null }) {
   const generateMutation = useMutation({
     mutationFn: () =>
       musicApi.generate({
-        prompt: prompt.trim() || undefined,
-        mood,
+        prompt: inputMode === "custom" ? prompt.trim() || undefined : undefined,
+        mood: inputMode === "mood" ? mood : undefined,
         duration_seconds: duration,
         intensity,
         cast_id: castId || undefined,
       }),
     onSuccess: (track) => {
       setGenerated((prev) => [track, ...prev]);
-      toast({ title: "Track generated", description: prompt || mood });
+      toast({ title: "Track generated", description: inputMode === "custom" ? prompt : mood });
     },
     onError: (e: any) =>
       toast({
@@ -830,23 +835,30 @@ function GenerateTab({ castId }: { castId: string | null }) {
       </p>
 
       <div className="p-4 bg-white/[0.03] border border-white/10 rounded-xl space-y-4">
-        <div>
-          <label className="text-[11px] text-white/40 mb-1.5 block">
-            Describe the vibe (optional)
-          </label>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value.slice(0, 300))}
-            placeholder="upbeat pop music for a TikTok product showcase"
-            rows={2}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-hidden focus:ring-1 focus:ring-primary"
-          />
-          <span className="text-[10px] text-white/25">
-            {prompt.length}/300 — leave blank to use the mood preset
-          </span>
+        <div className="flex gap-1 bg-white/5 p-1 rounded-lg w-fit">
+          <button
+            type="button"
+            onClick={() => setInputMode("mood")}
+            className={cn(
+              "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+              inputMode === "mood" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70",
+            )}
+          >
+            Mood preset
+          </button>
+          <button
+            type="button"
+            onClick={() => setInputMode("custom")}
+            className={cn(
+              "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+              inputMode === "custom" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70",
+            )}
+          >
+            Describe your own vibe
+          </button>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        {inputMode === "mood" ? (
           <div>
             <label className="text-[11px] text-white/40 mb-1 block">Mood</label>
             <Select value={mood} onValueChange={setMood}>
@@ -862,6 +874,23 @@ function GenerateTab({ castId }: { castId: string | null }) {
               </SelectContent>
             </Select>
           </div>
+        ) : (
+          <div>
+            <label className="text-[11px] text-white/40 mb-1.5 block">
+              Describe the vibe
+            </label>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value.slice(0, 300))}
+              placeholder="upbeat pop music for a TikTok product showcase"
+              rows={2}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-hidden focus:ring-1 focus:ring-primary"
+            />
+            <span className="text-[10px] text-white/25">{prompt.length}/300</span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-[11px] text-white/40 mb-1 block">
               Duration
