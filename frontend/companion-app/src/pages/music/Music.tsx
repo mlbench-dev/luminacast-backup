@@ -344,6 +344,9 @@ function TrackCard({
   onTogglePlay,
   onAdd,
   onDelete,
+  onSave,
+  saved,
+  saving,
 }: {
   title: string;
   subtitle?: string;
@@ -353,6 +356,9 @@ function TrackCard({
   onTogglePlay: (url: string) => void;
   onAdd?: () => void;
   onDelete?: () => void;
+  onSave?: () => void;
+  saved?: boolean;
+  saving?: boolean;
 }) {
   const isPlaying = playingUrl === url;
   return (
@@ -382,6 +388,22 @@ function TrackCard({
           <span className="text-[10px] text-white/30 w-12 text-right flex-shrink-0">
             {formatDuration(duration)}
           </span>
+        )}
+
+        {onSave && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onSave}
+            disabled={saved || saving}
+          >
+            {saving ? (
+              <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+            ) : (
+              <Bookmark className={cn("w-3.5 h-3.5 mr-1", saved && "fill-current")} />
+            )}
+            {saved ? "Saved" : "Save"}
+          </Button>
         )}
 
         {onAdd && (
@@ -740,6 +762,7 @@ function GenerateTab({ castId }: { castId: string | null }) {
   const [duration, setDuration] = useState(60);
   const [intensity, setIntensity] = useState("medium");
   const [generated, setGenerated] = useState<AIGeneratedTrack[]>([]);
+  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const { playingUrl, toggle } = useAudioPreview();
 
   const generateMutation = useMutation({
@@ -753,14 +776,26 @@ function GenerateTab({ castId }: { castId: string | null }) {
       }),
     onSuccess: (track) => {
       setGenerated((prev) => [track, ...prev]);
-      // The backend saves every generation server-side (Saved tab) — keep
-      // that list fresh so a newly generated track shows up there too.
-      queryClient.invalidateQueries({ queryKey: ["ai-generated-music"] });
       toast({ title: "Track generated", description: prompt || mood });
     },
     onError: (e: any) =>
       toast({
         title: "Generation failed",
+        description: e?.response?.data?.detail || e?.message || "",
+        variant: "destructive",
+      }),
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: (track: AIGeneratedTrack) => musicApi.generatedSave(track),
+    onSuccess: (_res, track) => {
+      setSavedIds((prev) => new Set(prev).add(track.id));
+      queryClient.invalidateQueries({ queryKey: ["ai-generated-music"] });
+      toast({ title: "Saved" });
+    },
+    onError: (e: any) =>
+      toast({
+        title: "Couldn't save track",
         description: e?.response?.data?.detail || e?.message || "",
         variant: "destructive",
       }),
@@ -897,6 +932,9 @@ function GenerateTab({ castId }: { castId: string | null }) {
               duration={t.duration}
               playingUrl={playingUrl}
               onTogglePlay={toggle}
+              onSave={() => saveMutation.mutate(t)}
+              saved={savedIds.has(t.id)}
+              saving={saveMutation.isPending && saveMutation.variables?.id === t.id}
               onAdd={() => handleAdd(t)}
             />
           ))}

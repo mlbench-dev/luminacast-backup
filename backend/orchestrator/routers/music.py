@@ -363,6 +363,9 @@ async def cancel_training(sc_id: str, user: User = Depends(get_current_user), db
 # uses this section.
 # =========================================================================
 
+import asyncio
+import subprocess
+import tempfile
 import sentry_sdk
 import httpx
 from typing import Optional
@@ -378,6 +381,36 @@ from services.mubert import (
     pick_track_name,
 )
 from config import settings as app_settings
+
+# Below this dB, ffmpeg's volumedetect basically means "digital silence"
+# (true silence measures ~-91dB at 16-bit) rather than just a quiet track.
+SILENCE_THRESHOLD_DB = -60.0
+
+
+def _mean_volume_db(mp3_bytes: bytes) -> Optional[float]:
+    """Decode audio and return its mean volume in dB via ffmpeg's
+    volumedetect filter. Mubert's on-demand generation endpoint has been
+    observed to occasionally return a "done" status with a structurally
+    valid mp3 (right size, right frame headers) that's actually silent —
+    this is how generate_ai_music catches that before handing it to a
+    user. Returns None (never blocks generation) if ffmpeg itself fails
+    to run for any reason — that's a tooling problem, not a signal the
+    track is bad.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+            f.write(mp3_bytes)
+            f.flush()
+            r = subprocess.run(
+                ["ffmpeg", "-i", f.name, "-af", "volumedetect", "-f", "null", "-"],
+                capture_output=True, text=True, timeout=30,
+            )
+        for line in r.stderr.splitlines():
+            if "mean_volume:" in line:
+                return float(line.split("mean_volume:")[1].strip().split(" ")[0])
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+    return None
 
 
 def _normalise_library_track(t: dict, *, theme_hint: Optional[str] = None) -> dict:
@@ -758,6 +791,26 @@ class GenerateAIMusicRequest(BaseModel):
     cast_id: Optional[str] = None  # if set, attach result to this cast
 
 
+class SaveGeneratedTrackRequest(BaseModel):
+    """Request body for /api/music/ai/generated (explicit save).
+
+    Generation itself no longer persists anything — the caller must
+    already hold a track dict from a prior /ai/generate response (or the
+    "Recent generations" list) and re-submit it here via the card's Save
+    button. Restricted to our own CDN below so this can't be used as a
+    generic "add an arbitrary URL to my saved list" endpoint.
+    """
+    id: str
+    url: str
+    name: Optional[str] = None
+    prompt: Optional[str] = None
+    mood: Optional[str] = None
+    intensity: Optional[str] = None
+    bpm: Optional[int] = None
+    key: Optional[str] = None
+    duration: Optional[int] = None
+
+
 @router.post("/ai/generate")
 async def generate_ai_music(
     req: GenerateAIMusicRequest,
@@ -767,7 +820,8 @@ async def generate_ai_music(
     """Generate a single royalty-free AI music track via Mubert v3.
 
     Flow: ensure customer → POST /tracks → poll until done → download →
-    upload to R2 → attach to cast (if requested) → return public URL.
+    verify it isn't silent (retrying once if it is) → upload to R2 →
+    attach to cast (if requested) → return public URL.
     """
     mubert = get_mubert_service_optional()
     if mubert is None:
@@ -776,38 +830,63 @@ async def generate_ai_music(
     prompt = (req.prompt or "").strip() or mood_to_prompt(req.mood or "enthusiastic")
     duration = max(15, min(int(req.duration_seconds or 60), 600))
 
-    try:
-        result = await mubert.generate_for_user(
-            db=db,
-            user=user,
-            prompt=prompt,
-            duration_seconds=duration,
-            intensity=req.intensity,
-        )
-    except MubertConfigurationError as e:
-        sentry_sdk.capture_exception(e)
-        raise HTTPException(503, "AI music is not configured")
-    except MubertGenerationError as e:
-        sentry_sdk.capture_exception(e)
-        raise HTTPException(502, f"AI music generation failed: {e}")
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-        raise HTTPException(502, "AI music generation failed")
+    # Mubert's on-demand generation endpoint occasionally reports a track
+    # as "done" with a fully valid mp3 container that's actually silent
+    # (verified by decoding real failures — see _mean_volume_db). One
+    # retry clears it in practice; if the retry is also silent, fail
+    # loudly instead of handing the user a dead file with no explanation.
+    max_attempts = 2
+    loop = asyncio.get_event_loop()
+    result = None
+    mp3_bytes = b""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = await mubert.generate_for_user(
+                db=db,
+                user=user,
+                prompt=prompt,
+                duration_seconds=duration,
+                intensity=req.intensity,
+            )
+        except MubertConfigurationError as e:
+            sentry_sdk.capture_exception(e)
+            raise HTTPException(503, "AI music is not configured")
+        except MubertGenerationError as e:
+            sentry_sdk.capture_exception(e)
+            raise HTTPException(502, f"AI music generation failed: {e}")
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            raise HTTPException(502, "AI music generation failed")
 
-    # Download the track from Mubert and re-host on our own CDN. Mubert
-    # URLs expire (usually within 24h) and are slower than R2 in our edge.
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.get(result["url"])
+                resp.raise_for_status()
+                mp3_bytes = resp.content
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            raise HTTPException(502, "Failed to download the generated track")
+
+        mean_db = await loop.run_in_executor(None, _mean_volume_db, mp3_bytes)
+        if mean_db is None or mean_db >= SILENCE_THRESHOLD_DB:
+            break
+        logger.warning(
+            "Mubert generation came back silent (mean_volume=%.1fdB), attempt %d/%d, track_id=%s",
+            mean_db, attempt, max_attempts, result.get("track_id"),
+        )
+        if attempt == max_attempts:
+            raise HTTPException(502, "The generated track came back silent. Please try again.")
+
+    # Re-host on our own CDN. Mubert URLs expire (usually within 24h) and
+    # are slower than R2 in our edge.
     track_url = result["url"]
     music_key = f"music/users/{user.id}/{result['track_id']}.mp3"
     public_url = f"{CDN_BASE}/{music_key}"
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.get(track_url)
-            resp.raise_for_status()
-            mp3_bytes = resp.content
         r2 = get_r2_storage_service()
         await r2.upload_bytes(mp3_bytes, music_key, content_type="audio/mpeg")
     except Exception as e:
-        # Re-hosting failed but the Mubert URL is still valid for hours —
+        # Re-hosting failed but the Mubert URL is still valid for a while —
         # return that so the user gets immediate audio. Best-effort R2
         # upload happens in the background separately if we want it.
         sentry_sdk.capture_exception(e)
@@ -828,32 +907,6 @@ async def generate_ai_music(
 
     track_name = (prompt or req.mood or "AI track").strip()[:200]
     duration_out = result.get("duration", duration)
-    try:
-        await db.execute(
-            _sa_text(
-                "INSERT INTO ai_generated_music "
-                "(id, user_id, name, prompt, mood, intensity, bpm, musical_key, public_url, duration_seconds) "
-                "VALUES (:id, :user_id, :name, :prompt, :mood, :intensity, :bpm, :key, :public_url, :duration) "
-                "ON CONFLICT (id) DO NOTHING"
-            ),
-            {
-                "id": result["track_id"],
-                "user_id": user.id,
-                "name": track_name,
-                "prompt": prompt,
-                "mood": req.mood,
-                "intensity": req.intensity,
-                "bpm": result.get("bpm"),
-                "key": result.get("key"),
-                "public_url": public_url,
-                "duration": duration_out,
-            },
-        )
-        await db.commit()
-    except Exception as e:
-        # Saving the history row is best-effort — a failure here shouldn't
-        # take away the track the user just successfully generated.
-        sentry_sdk.capture_exception(e)
 
     return {
         "id": result["track_id"],
@@ -868,15 +921,48 @@ async def generate_ai_music(
     }
 
 
+@router.post("/ai/generated")
+async def save_generated_ai_music(
+    req: SaveGeneratedTrackRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicit save — triggered by the Save button on a Recent Generations
+    card. Generation (/ai/generate) no longer writes this table itself."""
+    if not req.url.startswith(CDN_BASE):
+        raise HTTPException(400, "Can only save tracks hosted on our own CDN")
+
+    track_name = (req.name or req.prompt or req.mood or "AI track").strip()[:200]
+    await db.execute(
+        _sa_text(
+            "INSERT INTO ai_generated_music "
+            "(id, user_id, name, prompt, mood, intensity, bpm, musical_key, public_url, duration_seconds) "
+            "VALUES (:id, :user_id, :name, :prompt, :mood, :intensity, :bpm, :key, :public_url, :duration) "
+            "ON CONFLICT (id) DO NOTHING"
+        ),
+        {
+            "id": req.id,
+            "user_id": user.id,
+            "name": track_name,
+            "prompt": req.prompt,
+            "mood": req.mood,
+            "intensity": req.intensity,
+            "bpm": req.bpm,
+            "key": req.key,
+            "public_url": req.url,
+            "duration": req.duration,
+        },
+    )
+    await db.commit()
+    return {"success": True}
+
+
 @router.get("/ai/generated")
 async def list_generated_ai_music(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Saved history of this user's AI Generate tab results — persisted
-    server-side so it survives a page reload (previously the "Recent
-    generations" list was local React state only and vanished the moment
-    you left the tab, even though the underlying track was still live)."""
+    """This user's explicitly-saved AI Generate tab results (Saved tab)."""
     res = await db.execute(
         _sa_text(
             "SELECT id, name, prompt, mood, intensity, bpm, musical_key, public_url, duration_seconds, created_at "

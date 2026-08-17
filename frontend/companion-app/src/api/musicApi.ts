@@ -111,6 +111,8 @@ export const musicApi = {
   }) => api.post<AIGeneratedTrack>("/music/ai/generate", req).then((r) => r.data),
   generatedList: () =>
     api.get<{ tracks: AIGeneratedTrack[]; total: number }>("/music/ai/generated").then((r) => r.data),
+  generatedSave: (track: AIGeneratedTrack) =>
+    api.post<{ success: boolean }>("/music/ai/generated", track).then((r) => r.data),
   generatedDelete: (id: string) =>
     api.delete<{ success: boolean }>("/music/ai/generated/" + id).then((r) => r.data),
   uploadedList: () =>
