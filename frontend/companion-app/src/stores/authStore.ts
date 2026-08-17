@@ -17,6 +17,7 @@ interface AuthState {
 
   login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   register: (email: string, password: string, tiktokHandle?: string) => Promise<void>;
+  reactivateAccount: (token: string, password: string) => Promise<void>;
   logout: () => void;
   fetchUser: () => Promise<void>;
   hydrate: () => void;
@@ -65,6 +66,24 @@ export const useAuthStore = create<AuthState>()(
           const message = extractErrorMessage(
             err,
             err instanceof Error ? err.message : "Registration failed. Try again."
+          );
+          set({ error: message, isLoading: false });
+          throw err;
+        }
+      },
+
+      reactivateAccount: async (token, password) => {
+        set({ isLoading: true, error: null });
+        try {
+          const res = await authApi.reactivateAccount({ token, password });
+          setAuthToken(res.access_token);
+          set({ token: res.access_token });
+          const user = await authApi.me();
+          set({ user, isLoading: false });
+        } catch (err: unknown) {
+          const message = extractErrorMessage(
+            err,
+            err instanceof Error ? err.message : "This verification link is invalid or has expired."
           );
           set({ error: message, isLoading: false });
           throw err;

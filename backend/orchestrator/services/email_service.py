@@ -62,6 +62,27 @@ async def send_password_reset_email(to_email: str, reset_link: str) -> None:
     await send_email(to_email, subject, html_body, text_body)
 
 
+async def send_reactivation_email(to_email: str, reactivate_link: str) -> None:
+    subject = "Reactivate your Luminacast account"
+    text_body = (
+        "Someone tried to sign up with this email, which belongs to a deactivated Luminacast account.\n\n"
+        f"To reactivate it and set a new password: {reactivate_link}\n\n"
+        "This link expires in 30 minutes. If this wasn't you, you can safely ignore this email — your account stays deactivated."
+    )
+    html_body = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;color:#1a1a1a;">
+      <h2 style="margin-bottom:8px;">Reactivate your account</h2>
+      <p>Someone tried to sign up with this email, which belongs to a deactivated Luminacast account.</p>
+      <p style="margin:24px 0;">
+        <a href="{reactivate_link}" style="display:inline-block;padding:12px 24px;background:#6d28d9;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Reactivate Account</a>
+      </p>
+      <p style="color:#666;font-size:13px;">This link expires in 30 minutes. If this wasn't you, you can safely ignore this email — your account stays deactivated.</p>
+      <p style="color:#999;font-size:12px;">If the button doesn't work, copy and paste this link:<br>{reactivate_link}</p>
+    </div>
+    """
+    await send_email(to_email, subject, html_body, text_body)
+
+
 async def send_team_invite_email(
     to_email: str, accept_link: str, owner_label: str, role: str,
 ) -> None:

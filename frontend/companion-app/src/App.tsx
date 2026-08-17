@@ -11,6 +11,7 @@ import { LoginPage } from "@/pages/auth/Login";
 import { SignupPage } from "@/pages/auth/Signup";
 import { ForgotPasswordPage } from "@/pages/auth/ForgotPassword";
 import { ResetPasswordPage } from "@/pages/auth/ResetPassword";
+import { ReactivateAccountPage } from "@/pages/auth/ReactivateAccount";
 import { AcceptInvitePage } from "@/pages/teams/AcceptInvite";
 import { CastBuilderPage } from "@/pages/cast-builder/CastBuilder";
 import { MyCastsPage } from "@/pages/cast-builder/MyCasts";
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="/register" element={<Navigate to="/signup" replace />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/reactivate-account" element={<ReactivateAccountPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
             <Route path="/integrations/zernio/callback" element={<ZernioCallback />} />
 

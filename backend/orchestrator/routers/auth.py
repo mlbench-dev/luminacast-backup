@@ -19,7 +19,7 @@ from schemas.auth import (
 )
 import sentry_sdk
 from services import audit_log
-from services.email_service import send_password_reset_email
+from services.email_service import send_password_reset_email, send_reactivation_email
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +49,24 @@ def _password_fingerprint(password_hash: str) -> str:
     return hashlib.sha256(password_hash.encode()).hexdigest()[:16]
 
 
-def create_reset_token(user: User) -> str:
+def create_verification_token(user: User, purpose: str) -> str:
+    """Short-lived, email-ownership-proving token for password_reset and
+    reactivate_account. Embeds a fingerprint of the current password hash
+    so the token self-invalidates the moment it's used (or the password
+    changes some other way) — no separate revocation list needed."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
     data = {
         "sub": user.id,
-        "purpose": "password_reset",
+        "purpose": purpose,
         "pwf": _password_fingerprint(user.password_hash),
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(data, settings.APP_SECRET_KEY, algorithm="HS256")
+
+
+def create_reset_token(user: User) -> str:
+    return create_verification_token(user, "password_reset")
 
 
 async def get_current_user(
@@ -174,8 +182,30 @@ async def require_owner(ctx: WorkspaceContext = Depends(get_workspace_context)) 
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     # Check duplicate
     result = await db.execute(select(User).where(User.email == req.email))
-    if result.scalar_one_or_none():
+    existing = result.scalar_one_or_none()
+    if existing and existing.is_active:
         raise HTTPException(status_code=409, detail="Email already registered")
+    if existing and not existing.is_active:
+        # A deactivated account owns this email. Register has no proof the
+        # caller actually controls the inbox, so it can't reactivate
+        # directly (that would let anyone "reactivate" someone else's
+        # deleted account just by knowing their email). Instead, verify
+        # ownership the same way forgot-password does: email a token-
+        # bearing link; /auth/reactivate-account (below) does the actual
+        # reactivation once that's clicked.
+        reactivate_link = (
+            f"{settings.FRONTEND_URL.rstrip('/')}/reactivate-account"
+            f"?token={create_verification_token(existing, 'reactivate_account')}"
+        )
+        try:
+            await send_reactivation_email(existing.email, reactivate_link)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            logger.error("Failed to send reactivation email to %s: %s", existing.email, e)
+        raise HTTPException(
+            status_code=403,
+            detail="This email belongs to a deactivated account. Check your inbox for a link to reactivate it.",
+        )
 
     user_id = f"usr_{uuid.uuid4().hex[:12]}"
     user = User(
@@ -317,6 +347,51 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
         sentry_sdk.capture_exception(e)
 
     return MessageResponse(message="Your password has been reset. You can now sign in.")
+
+
+@router.post("/reactivate-account", response_model=TokenResponse)
+async def reactivate_account(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    """Completes the reactivation flow started when /register hit a
+    deactivated email. Reuses ResetPasswordRequest's shape (token +
+    new password) since it's the same "prove you own this inbox, then set
+    a password" pattern as password reset — just also flips is_active.
+    """
+    try:
+        payload = jwt.decode(req.token, settings.APP_SECRET_KEY, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(status_code=400, detail="This verification link is invalid or has expired")
+
+    if payload.get("purpose") != "reactivate_account":
+        raise HTTPException(status_code=400, detail="This verification link is invalid or has expired")
+
+    user = await db.get(User, payload.get("sub")) if payload.get("sub") else None
+    if not user:
+        raise HTTPException(status_code=400, detail="This verification link is invalid or has expired")
+
+    if user.is_active:
+        raise HTTPException(status_code=400, detail="This account is already active — sign in instead")
+
+    if payload.get("pwf") != _password_fingerprint(user.password_hash):
+        # Password changed (or link reused) since this link was issued.
+        raise HTTPException(status_code=400, detail="This verification link is invalid or has expired")
+
+    user.is_active = True
+    user.password_hash = pwd_context.hash(req.password)
+    await db.commit()
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="auth.reactivate_account", entity_type="auth", entity_id=user.id,
+        )
+        await db.commit()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    wsid = await _resolve_login_workspace(user, db)
+    token = create_access_token({
+        "sub": user.id, "email": user.email, "role": user.role.value, "wsid": wsid,
+    })
+    return TokenResponse(access_token=token)
 
 
 @router.post("/change-password", response_model=MessageResponse)
