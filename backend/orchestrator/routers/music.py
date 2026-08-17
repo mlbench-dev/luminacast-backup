@@ -375,15 +375,12 @@ from services.mubert import (
     MubertConfigurationError,
     MubertGenerationError,
     get_cached_library_params,
-    get_track_name_pool,
     pick_track_name,
 )
 from config import settings as app_settings
 
 
-def _normalise_library_track(
-    t: dict, *, theme_hint: Optional[str] = None, name_pool: Optional[dict[str, list[str]]] = None
-) -> dict:
+def _normalise_library_track(t: dict, *, theme_hint: Optional[str] = None) -> dict:
     """Map a single curated-library track to the frontend's expected shape.
 
     The upstream payload looks like:
@@ -420,17 +417,7 @@ def _normalise_library_track(
     key = t.get("key") or ""
     duration_v = t.get("duration") or 0
 
-    vibe_label = ""
-    if name_pool:
-        name, vibe_label = pick_track_name(name_pool, str(track_id), key, intensity)
-    elif bpm and key:
-        name = f"{int(bpm)} BPM · {key}"
-    elif bpm:
-        name = f"{int(bpm)} BPM"
-    elif intensity:
-        name = f"{intensity.capitalize()} track"
-    else:
-        name = "Library track"
+    name, vibe_label = pick_track_name(str(track_id), key, intensity)
 
     # Description — every signal we have, in a compact one-liner. The
     # frontend renders this directly under the title. Lead with the
@@ -689,10 +676,7 @@ async def list_library_tracks(
 
     raw_tracks = data.get("tracks") or []
     theme_hint = mood or genre or activity or None
-    # Always needed now — the title comes from the per-track name pool
-    # regardless of whether a filter is applied (see _normalise_library_track).
-    name_pool = await get_track_name_pool()
-    tracks = [_normalise_library_track(t, theme_hint=theme_hint, name_pool=name_pool) for t in raw_tracks if t]
+    tracks = [_normalise_library_track(t, theme_hint=theme_hint) for t in raw_tracks if t]
     tracks = [t for t in tracks if t.get("url")]
     total = int(data.get("total", len(tracks)))
     has_more = (offset + len(tracks)) < total and len(raw_tracks) > 0
