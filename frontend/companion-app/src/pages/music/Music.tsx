@@ -43,6 +43,7 @@ import {
   Construction,
   Search,
   X,
+  Bookmark,
 } from "lucide-react";
 
 // Reusable compact search box used across all music tabs.
@@ -150,7 +151,7 @@ async function attachToCast(
 // Top-level Music page
 // ─────────────────────────────────────────────────────────────────────────
 
-type MainTab = "browse" | "generate" | "sfx" | "uploaded";
+type MainTab = "browse" | "generate" | "sfx" | "uploaded" | "saved";
 
 export function MusicPage() {
   const [tab, setTab] = useState<MainTab>("browse");
@@ -193,6 +194,12 @@ export function MusicPage() {
           icon={<Upload className="w-3.5 h-3.5" />}
           label="Uploaded"
         />
+        <TabButton
+          active={tab === "saved"}
+          onClick={() => setTab("saved")}
+          icon={<Bookmark className="w-3.5 h-3.5" />}
+          label="Saved"
+        />
       </div>
 
       <div className="border-t border-white/[0.06] pt-5">
@@ -200,6 +207,7 @@ export function MusicPage() {
         {tab === "generate" && <GenerateTab castId={castId} />}
         {tab === "sfx" && <SFXTab />}
         {tab === "uploaded" && <UploadedTab castId={castId} />}
+        {tab === "saved" && <SavedTab castId={castId} />}
       </div>
 
       {/* Parked AI Music Studio (ACE-Step) section */}
@@ -726,6 +734,7 @@ const GENERATE_MOOD_OPTIONS: Array<{ value: string; label: string }> = [
 
 function GenerateTab({ castId }: { castId: string | null }) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [prompt, setPrompt] = useState("");
   const [mood, setMood] = useState("enthusiastic");
   const [duration, setDuration] = useState(60);
@@ -744,6 +753,9 @@ function GenerateTab({ castId }: { castId: string | null }) {
       }),
     onSuccess: (track) => {
       setGenerated((prev) => [track, ...prev]);
+      // The backend saves every generation server-side (Saved tab) — keep
+      // that list fresh so a newly generated track shows up there too.
+      queryClient.invalidateQueries({ queryKey: ["ai-generated-music"] });
       toast({ title: "Track generated", description: prompt || mood });
     },
     onError: (e: any) =>
@@ -1180,6 +1192,116 @@ function UploadedTab({ castId }: { castId: string | null }) {
                   ? `${(t.file_size_bytes / 1024 / 1024).toFixed(1)} MB`
                   : undefined
               }
+              url={t.url}
+              duration={t.duration}
+              playingUrl={playingUrl}
+              onTogglePlay={toggle}
+              onAdd={() => handleAdd(t)}
+              onDelete={() => deleteMutation.mutate(t.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Saved tab — persisted history of AI Generate results
+// ─────────────────────────────────────────────────────────────────────────
+
+function SavedTab({ castId }: { castId: string | null }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [search, setSearch] = useState("");
+  const { playingUrl, toggle } = useAudioPreview();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["ai-generated-music"],
+    queryFn: () => musicApi.generatedList(),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => musicApi.generatedDelete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ai-generated-music"] });
+      toast({ title: "Deleted" });
+    },
+    onError: (e: any) =>
+      toast({
+        title: "Delete failed",
+        description: e?.response?.data?.detail || e?.message || "",
+        variant: "destructive",
+      }),
+  });
+
+  const handleAdd = async (t: AIGeneratedTrack) => {
+    if (!castId) {
+      toast({
+        title: "Open a cast first",
+        description: "Open a cast in the builder, then add music from here.",
+      });
+      return;
+    }
+    try {
+      await attachToCast(castId, t.url, t.mood ?? null);
+      toast({ title: "Music added to cast", description: t.name || t.prompt });
+    } catch (e: any) {
+      toast({
+        title: "Couldn't add music",
+        description: e?.message || "",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const tracksRaw = data?.tracks ?? [];
+  const tracks = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return tracksRaw;
+    return tracksRaw.filter((t) =>
+      [t.name, t.prompt, t.mood, t.intensity].filter(Boolean).some((s) => String(s).toLowerCase().includes(q)),
+    );
+  }, [tracksRaw, search]);
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-white/45 leading-relaxed">
+        Every track you've generated in AI Generate, saved automatically so
+        it's still here after you leave the page.
+      </p>
+
+      <SearchBox
+        value={search}
+        onChange={setSearch}
+        onSubmit={setSearch}
+        placeholder="Search saved tracks…"
+      />
+
+      {isLoading && (
+        <div className="text-center py-8 text-white/30 text-sm">
+          <Loader2 className="w-5 h-5 mx-auto animate-spin mb-2" />
+          Loading…
+        </div>
+      )}
+
+      {!isLoading && tracks.length === 0 && (
+        <div className="text-center py-12 border border-dashed border-white/10 rounded-xl">
+          <Bookmark className="w-10 h-10 mx-auto mb-3 text-white/15" />
+          <p className="text-sm text-white/40">No saved tracks yet</p>
+          <p className="text-[11px] text-white/25 mt-1">
+            Tracks you generate in <span className="text-white/50">AI Generate</span> show up here automatically.
+          </p>
+        </div>
+      )}
+
+      {!isLoading && tracks.length > 0 && (
+        <div className="space-y-2">
+          {tracks.map((t) => (
+            <TrackCard
+              key={t.id}
+              title={t.name || t.prompt || "AI track"}
+              subtitle={`${t.mood ?? ""}${t.intensity ? ` · ${t.intensity}` : ""}${t.bpm ? ` · ${t.bpm} BPM` : ""}`}
               url={t.url}
               duration={t.duration}
               playingUrl={playingUrl}

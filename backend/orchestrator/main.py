@@ -354,6 +354,26 @@ async def lifespan(app: FastAPI):
             await _s.execute(_sa_text(
                 "CREATE INDEX IF NOT EXISTS ix_uploaded_music_user_id ON uploaded_music(user_id)"
             ))
+            # ai_generated_music: Mubert AI-Generate results, saved per user so
+            # they survive a page reload instead of only living in local React
+            # state (previously they vanished the moment you left the tab).
+            await _s.execute(_sa_text(
+                "CREATE TABLE IF NOT EXISTS ai_generated_music ("
+                "id VARCHAR(40) PRIMARY KEY, "
+                "user_id VARCHAR(40) REFERENCES users(id) ON DELETE CASCADE, "
+                "name VARCHAR(200) NOT NULL, "
+                "prompt TEXT, "
+                "mood VARCHAR(40), "
+                "intensity VARCHAR(10), "
+                "bpm INTEGER, "
+                "musical_key VARCHAR(10), "
+                "public_url TEXT NOT NULL, "
+                "duration_seconds INTEGER, "
+                "created_at TIMESTAMP NOT NULL DEFAULT now())"
+            ))
+            await _s.execute(_sa_text(
+                "CREATE INDEX IF NOT EXISTS ix_ai_generated_music_user_id ON ai_generated_music(user_id)"
+            ))
             # avatar_looks: scene environment + visible-mic toggle for look
             # generation (studio/room/outdoor backdrop, lavalier mic in shot).
             await _s.execute(_sa_text(

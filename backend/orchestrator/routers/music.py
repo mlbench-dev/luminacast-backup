@@ -826,16 +826,99 @@ async def generate_ai_music(
         except Exception as e:
             sentry_sdk.capture_exception(e)
 
+    track_name = (prompt or req.mood or "AI track").strip()[:200]
+    duration_out = result.get("duration", duration)
+    try:
+        await db.execute(
+            _sa_text(
+                "INSERT INTO ai_generated_music "
+                "(id, user_id, name, prompt, mood, intensity, bpm, musical_key, public_url, duration_seconds) "
+                "VALUES (:id, :user_id, :name, :prompt, :mood, :intensity, :bpm, :key, :public_url, :duration) "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {
+                "id": result["track_id"],
+                "user_id": user.id,
+                "name": track_name,
+                "prompt": prompt,
+                "mood": req.mood,
+                "intensity": req.intensity,
+                "bpm": result.get("bpm"),
+                "key": result.get("key"),
+                "public_url": public_url,
+                "duration": duration_out,
+            },
+        )
+        await db.commit()
+    except Exception as e:
+        # Saving the history row is best-effort — a failure here shouldn't
+        # take away the track the user just successfully generated.
+        sentry_sdk.capture_exception(e)
+
     return {
         "id": result["track_id"],
         "url": public_url,
-        "duration": result.get("duration", duration),
+        "duration": duration_out,
         "prompt": prompt,
+        "name": track_name,
         "mood": req.mood,
         "intensity": req.intensity,
         "bpm": result.get("bpm"),
         "key": result.get("key"),
     }
+
+
+@router.get("/ai/generated")
+async def list_generated_ai_music(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Saved history of this user's AI Generate tab results — persisted
+    server-side so it survives a page reload (previously the "Recent
+    generations" list was local React state only and vanished the moment
+    you left the tab, even though the underlying track was still live)."""
+    res = await db.execute(
+        _sa_text(
+            "SELECT id, name, prompt, mood, intensity, bpm, musical_key, public_url, duration_seconds, created_at "
+            "FROM ai_generated_music WHERE user_id = :uid ORDER BY created_at DESC LIMIT 100"
+        ),
+        {"uid": user.id},
+    )
+    rows = res.fetchall()
+    return {
+        "tracks": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "prompt": r.prompt,
+                "mood": r.mood,
+                "intensity": r.intensity,
+                "bpm": r.bpm,
+                "key": r.musical_key,
+                "url": r.public_url,
+                "duration": r.duration_seconds,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@router.delete("/ai/generated/{track_id}")
+async def delete_generated_ai_music(
+    track_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await db.execute(
+        _sa_text("DELETE FROM ai_generated_music WHERE id = :id AND user_id = :uid RETURNING id"),
+        {"id": track_id, "uid": user.id},
+    )
+    if not res.fetchone():
+        raise HTTPException(404, "Track not found")
+    await db.commit()
+    return {"success": True}
 
 
 @router.get("/catalog")

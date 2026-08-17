@@ -37,10 +37,12 @@ export interface AIGeneratedTrack {
   url: string;
   duration: number;
   prompt: string;
+  name?: string;
   mood?: string | null;
   intensity?: string | null;
   bpm?: number | null;
   key?: string | null;
+  created_at?: string | null;
 }
 
 export interface LibraryParamOption {
@@ -107,6 +109,10 @@ export const musicApi = {
     intensity: string;
     cast_id?: string;
   }) => api.post<AIGeneratedTrack>("/music/ai/generate", req).then((r) => r.data),
+  generatedList: () =>
+    api.get<{ tracks: AIGeneratedTrack[]; total: number }>("/music/ai/generated").then((r) => r.data),
+  generatedDelete: (id: string) =>
+    api.delete<{ success: boolean }>("/music/ai/generated/" + id).then((r) => r.data),
   uploadedList: () =>
     api.get<{ tracks: UploadedTrack[]; total: number }>("/music/uploaded").then((r) => r.data),
   uploadedUpload: (file: File) => {
