@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 import { cn } from "@/lib/cn";
 import {
   Plus,
@@ -1322,6 +1323,15 @@ function SavedTab({ castId }: { castId: string | null }) {
     }
   };
 
+  const handleDelete = async (t: AIGeneratedTrack) => {
+    const confirmed = await confirmAction({
+      title: "Delete this track?",
+      text: `"${t.name || t.prompt || "This track"}" will be removed from your saved music. This cannot be undone.`,
+      confirmButtonText: "Delete",
+    });
+    if (confirmed) deleteMutation.mutate(t.id);
+  };
+
   const tracksRaw = data?.tracks ?? [];
   const tracks = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1374,7 +1384,7 @@ function SavedTab({ castId }: { castId: string | null }) {
               playingUrl={playingUrl}
               onTogglePlay={toggle}
               onAdd={() => handleAdd(t)}
-              onDelete={() => deleteMutation.mutate(t.id)}
+              onDelete={() => handleDelete(t)}
             />
           ))}
         </div>
