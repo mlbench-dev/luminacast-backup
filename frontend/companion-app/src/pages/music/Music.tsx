@@ -255,17 +255,41 @@ function TabButton({
 // Audio preview (single shared <audio> element across cards)
 // ─────────────────────────────────────────────────────────────────────────
 
+// HTMLMediaElement's own "error" event (via a.error.code) is the
+// authoritative source for *why* playback failed — a rejected play()
+// promise alone doesn't distinguish "blocked by autoplay policy" from
+// "404" from "not actually audio". MediaError codes: 1 aborted,
+// 2 network, 3 decode (corrupt/truncated file), 4 src unsupported
+// (missing, wrong content-type, or a genuinely bad format).
+const MEDIA_ERROR_MESSAGES: Record<number, string> = {
+  1: "Playback was interrupted.",
+  2: "A network error prevented the track from loading.",
+  3: "This file looks corrupted or truncated — try generating it again.",
+  4: "This audio source isn't available (missing file or unsupported format).",
+};
+
 function useAudioPreview() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingUrl, setPlayingUrl] = useState<string | null>(null);
+  const { toast } = useToast();
 
   const toggle = useCallback((url: string) => {
     if (!audioRef.current) {
-      audioRef.current = new Audio();
-      audioRef.current.addEventListener("ended", () => setPlayingUrl(null));
-      audioRef.current.addEventListener("pause", () => {
+      const el = new Audio();
+      el.addEventListener("ended", () => setPlayingUrl(null));
+      el.addEventListener("pause", () => {
         if (audioRef.current && audioRef.current.paused) setPlayingUrl(null);
       });
+      el.addEventListener("error", () => {
+        setPlayingUrl(null);
+        const code = el.error?.code;
+        toast({
+          title: "Couldn't play track",
+          description: (code && MEDIA_ERROR_MESSAGES[code]) || "The audio file couldn't be played.",
+          variant: "destructive",
+        });
+      });
+      audioRef.current = el;
     }
     const a = audioRef.current;
     if (playingUrl === url) {
@@ -274,8 +298,22 @@ function useAudioPreview() {
       return;
     }
     a.src = url;
-    a.play().then(() => setPlayingUrl(url)).catch(() => setPlayingUrl(null));
-  }, [playingUrl]);
+    a.play()
+      .then(() => setPlayingUrl(url))
+      .catch((err: unknown) => {
+        setPlayingUrl(null);
+        // The element's own "error" listener above already fires (and
+        // toasts) for load/decode failures — only toast here for
+        // rejections that don't, like the browser blocking autoplay.
+        if (err instanceof DOMException && err.name === "NotAllowedError") {
+          toast({
+            title: "Couldn't play track",
+            description: "Your browser blocked playback — click play again.",
+            variant: "destructive",
+          });
+        }
+      });
+  }, [playingUrl, toast]);
 
   useEffect(() => () => {
     audioRef.current?.pause();
