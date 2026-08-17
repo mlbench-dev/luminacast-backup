@@ -396,13 +396,15 @@ def _normalise_library_track(
         "key": "D",
         "generations": [{"status": "done", "url": "https://...mp3", ...}],
       }
-    There is no top-level name/title or genre/mood on the track itself —
-    when a filter (theme/genre/mood/activity) is applied we use that as
-    the title (most informative — "Cinematic", "Corporate", ...). When
-    browsing unfiltered, there's no per-track label upstream at all, so we
-    derive an evocative, stable name from bpm/key/intensity via the
-    process-wide name pool (see services.mubert.pick_track_name) instead
-    of showing a bare "120 BPM · Dm".
+    There is no top-level name/title or genre/mood on the track itself.
+    The title always comes from the per-track name pool (see
+    services.mubert.pick_track_name) derived from bpm/key/intensity, so
+    every row gets a distinct, evocative, stable name — including under a
+    genre/mood filter, where naively using the filter's own name as the
+    title made every result in the list show the identical title (e.g.
+    filtering by "Atmosphere" showed a list of tracks all titled
+    "Atmosphere"). The applied filter is surfaced in the description
+    instead, since it's still useful context, just not a good title.
     """
     if not isinstance(t, dict):
         return {}
@@ -419,9 +421,7 @@ def _normalise_library_track(
     duration_v = t.get("duration") or 0
 
     vibe_label = ""
-    if theme_hint:
-        name = theme_hint
-    elif name_pool:
+    if name_pool:
         name, vibe_label = pick_track_name(name_pool, str(track_id), key, intensity)
     elif bpm and key:
         name = f"{int(bpm)} BPM · {key}"
@@ -433,12 +433,14 @@ def _normalise_library_track(
         name = "Library track"
 
     # Description — every signal we have, in a compact one-liner. The
-    # frontend renders this directly under the title. Lead with the vibe
-    # label (derived mood, e.g. "Dreamy") when there's no explicit filter,
-    # so the card still reads as having a genre/mood even though Mubert's
-    # track object doesn't carry one.
+    # frontend renders this directly under the title. Lead with the
+    # applied filter (theme/genre/mood) when present, else the derived
+    # vibe label (e.g. "Dreamy") — either way the card reads as having a
+    # genre/mood even though Mubert's track object doesn't carry one.
     desc_parts: list[str] = []
-    if vibe_label:
+    if theme_hint:
+        desc_parts.append(theme_hint)
+    elif vibe_label:
         desc_parts.append(vibe_label)
     if bpm:
         desc_parts.append(f"{int(bpm)} BPM")
@@ -687,9 +689,9 @@ async def list_library_tracks(
 
     raw_tracks = data.get("tracks") or []
     theme_hint = mood or genre or activity or None
-    # Only needed when there's no filter to use as the title — skip the
-    # (cached, but still a dict lookup + possible first-fetch) call otherwise.
-    name_pool = None if theme_hint else await get_track_name_pool()
+    # Always needed now — the title comes from the per-track name pool
+    # regardless of whether a filter is applied (see _normalise_library_track).
+    name_pool = await get_track_name_pool()
     tracks = [_normalise_library_track(t, theme_hint=theme_hint, name_pool=name_pool) for t in raw_tracks if t]
     tracks = [t for t in tracks if t.get("url")]
     total = int(data.get("total", len(tracks)))
