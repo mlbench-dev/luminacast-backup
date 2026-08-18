@@ -341,21 +341,26 @@ def detect_and_frame_face(
     Uploaded photos vary wildly in framing (arbitrary aspect ratio, subject
     positioned anywhere), but the downstream talking-head model always fits
     the image into a fixed ~9:16 canvas — naively fitting an off-center
-    subject into that canvas is what cuts people off. This recenters the
-    crop around the detected face instead, using the same pad-around-bbox
-    approach already used for video-sourced frames (see _crop_portrait), so
-    the subject stays fully framed regardless of where they were in the
-    original photo.
+    subject into that canvas is what cuts people off.
+
+    This trims only whichever dimension doesn't already match the target
+    aspect ratio (width if the source is relatively too wide, height if it's
+    relatively too tall), sliding that trim so the detected face stays
+    centered within it. Deliberately NOT a tight pad-around-the-face crop
+    (like _crop_portrait, built for pulling a portrait out of a big video
+    frame) — a photo that's already reasonably framed keeps its existing
+    body/shoulder framing; only the minimum needed to fix centering and hit
+    the target ratio gets cut away.
 
     Returns one of:
         {"ok": True, "confidence": float, "jpeg_bytes": bytes}
         {"ok": False, "reason": "no_face", "confidence": 0.0}
         {"ok": False, "reason": "too_close_to_edge", "confidence": float}
 
-    "too_close_to_edge" means the subject sits so close to the photo's
-    border that even a recentered crop can't give normal headroom/shoulder
-    room without running past the source image's own edge — the photo
-    itself doesn't contain enough of the person to fix by reframing alone.
+    "too_close_to_edge" means the source photo's own aspect ratio is so far
+    from the target that trimming down to it can't keep the whole face (with
+    reasonable margin) in frame no matter where the trim window slides — the
+    photo itself doesn't contain a usable frame, not just an off-center one.
     """
     try:
         arr = np.frombuffer(image_bytes, dtype=np.uint8)
@@ -390,46 +395,42 @@ def detect_and_frame_face(
         if img_area > 0 and (face_area / img_area) < 0.02:
             confidence = min(confidence, 0.5)
 
-        # Same padding ratios as _crop_portrait, applied around the detected
-        # face bbox — headroom above, more room below for shoulders/chest.
-        pad_x = int(w * 0.6)
-        pad_y_top = int(h * 0.5)
-        pad_y_bottom = int(h * 0.8)
+        # Anchor near eye-level rather than the face's dead center, so the
+        # trim below leaves more room for shoulders/chest than for empty
+        # space above the head.
+        anchor_x = x + w / 2
+        anchor_y = y + h * 0.35
 
-        ideal_x1, ideal_y1 = x - pad_x, y - pad_y_top
-        ideal_x2, ideal_y2 = x + w + pad_x, y + h + pad_y_bottom
-        ideal_area = max((ideal_x2 - ideal_x1) * (ideal_y2 - ideal_y1), 1)
+        target_ratio = target_w / target_h
+        current_ratio = frame_w / frame_h
 
-        crop_x1, crop_y1 = max(0, ideal_x1), max(0, ideal_y1)
-        crop_x2, crop_y2 = min(frame_w, ideal_x2), min(frame_h, ideal_y2)
-        clipped_area = max(0, crop_x2 - crop_x1) * max(0, crop_y2 - crop_y1)
+        if current_ratio > target_ratio:
+            # Source is relatively too wide — trim width, keep full height.
+            crop_h = frame_h
+            crop_w = max(1, int(round(crop_h * target_ratio)))
+        else:
+            # Source is relatively too tall/narrow — trim height, keep full width.
+            crop_w = frame_w
+            crop_h = max(1, int(round(crop_w / target_ratio)))
 
-        # If a third or more of the padding we'd want falls outside the
-        # source photo, the subject is too close to the edge to fix by
-        # recentering alone — reject rather than return a still-cut-off crop.
-        if clipped_area / ideal_area < 0.67:
+        # Slide the crop window to center it on the face anchor, clamped to
+        # stay fully within the source image.
+        crop_x1 = int(round(anchor_x - crop_w / 2))
+        crop_y1 = int(round(anchor_y - crop_h * 0.4))
+        crop_x1 = max(0, min(crop_x1, frame_w - crop_w))
+        crop_y1 = max(0, min(crop_y1, frame_h - crop_h))
+        crop_x2, crop_y2 = crop_x1 + crop_w, crop_y1 + crop_h
+
+        # Even after sliding the window as far as it can go toward the face,
+        # check the whole face bbox (plus a little margin) still fits inside
+        # it — if not, the source photo's aspect ratio is too far off for
+        # any trim window to keep the person fully framed.
+        margin_x, margin_y = w * 0.15, h * 0.15
+        if (x - margin_x < crop_x1 or x + w + margin_x > crop_x2
+                or y - margin_y < crop_y1 or y + h + margin_y > crop_y2):
             return {"ok": False, "reason": "too_close_to_edge", "confidence": confidence}
 
         crop = img[crop_y1:crop_y2, crop_x1:crop_x2]
-        ch, cw = crop.shape[:2]
-        if ch < 10 or cw < 10:
-            return {"ok": False, "reason": "too_close_to_edge", "confidence": confidence}
-
-        # Trim the crop down to exactly the target aspect ratio (never
-        # stretch/letterbox) before the final resize.
-        target_ratio = target_w / target_h
-        current_ratio = cw / ch
-        if current_ratio > target_ratio:
-            new_w = max(1, int(ch * target_ratio))
-            offset = max(0, (cw - new_w) // 2)
-            crop = crop[:, offset:offset + new_w]
-        elif current_ratio < target_ratio:
-            new_h = max(1, int(cw / target_ratio))
-            # Bias toward keeping the top (headroom) rather than pure
-            # center, so trimming height doesn't cut off the chin.
-            offset = max(0, int((ch - new_h) * 0.35))
-            crop = crop[offset:offset + new_h, :]
-
         crop = cv2.resize(crop, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
         success, jpeg_buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
         if not success:
