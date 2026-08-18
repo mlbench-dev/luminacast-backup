@@ -329,6 +329,118 @@ def detect_face_in_image(image_bytes: bytes, min_confidence: float = 0.4) -> tup
         return (False, 0.0)
 
 
+def detect_and_frame_face(
+    image_bytes: bytes,
+    min_confidence: float = 0.4,
+    target_w: int = 720,
+    target_h: int = 1280,
+) -> dict:
+    """Detect a face in a single uploaded photo and reframe it around that
+    face to the portrait canvas the avatar animation pipeline expects.
+
+    Uploaded photos vary wildly in framing (arbitrary aspect ratio, subject
+    positioned anywhere), but the downstream talking-head model always fits
+    the image into a fixed ~9:16 canvas — naively fitting an off-center
+    subject into that canvas is what cuts people off. This recenters the
+    crop around the detected face instead, using the same pad-around-bbox
+    approach already used for video-sourced frames (see _crop_portrait), so
+    the subject stays fully framed regardless of where they were in the
+    original photo.
+
+    Returns one of:
+        {"ok": True, "confidence": float, "jpeg_bytes": bytes}
+        {"ok": False, "reason": "no_face", "confidence": 0.0}
+        {"ok": False, "reason": "too_close_to_edge", "confidence": float}
+
+    "too_close_to_edge" means the subject sits so close to the photo's
+    border that even a recentered crop can't give normal headroom/shoulder
+    room without running past the source image's own edge — the photo
+    itself doesn't contain enough of the person to fix by reframing alone.
+    """
+    try:
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return {"ok": False, "reason": "no_face", "confidence": 0.0}
+
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+
+        base_options = mp_tasks.BaseOptions(model_asset_path=_get_model_path())
+        opts = vision.FaceDetectorOptions(base_options=base_options, min_detection_confidence=min_confidence)
+        detector = vision.FaceDetector.create_from_options(opts)
+        try:
+            results = detector.detect(mp_image)
+        finally:
+            detector.close()
+
+        if not results.detections:
+            return {"ok": False, "reason": "no_face", "confidence": 0.0}
+
+        best = max(results.detections, key=lambda d: d.categories[0].score)
+        confidence = round(best.categories[0].score, 3)
+        bb = best.bounding_box
+        frame_h, frame_w = img.shape[:2]
+        x, y, w, h = int(bb.origin_x), int(bb.origin_y), int(bb.width), int(bb.height)
+        if w <= 0 or h <= 0:
+            return {"ok": False, "reason": "no_face", "confidence": 0.0}
+
+        img_area = frame_w * frame_h
+        face_area = w * h
+        if img_area > 0 and (face_area / img_area) < 0.02:
+            confidence = min(confidence, 0.5)
+
+        # Same padding ratios as _crop_portrait, applied around the detected
+        # face bbox — headroom above, more room below for shoulders/chest.
+        pad_x = int(w * 0.6)
+        pad_y_top = int(h * 0.5)
+        pad_y_bottom = int(h * 0.8)
+
+        ideal_x1, ideal_y1 = x - pad_x, y - pad_y_top
+        ideal_x2, ideal_y2 = x + w + pad_x, y + h + pad_y_bottom
+        ideal_area = max((ideal_x2 - ideal_x1) * (ideal_y2 - ideal_y1), 1)
+
+        crop_x1, crop_y1 = max(0, ideal_x1), max(0, ideal_y1)
+        crop_x2, crop_y2 = min(frame_w, ideal_x2), min(frame_h, ideal_y2)
+        clipped_area = max(0, crop_x2 - crop_x1) * max(0, crop_y2 - crop_y1)
+
+        # If a third or more of the padding we'd want falls outside the
+        # source photo, the subject is too close to the edge to fix by
+        # recentering alone — reject rather than return a still-cut-off crop.
+        if clipped_area / ideal_area < 0.67:
+            return {"ok": False, "reason": "too_close_to_edge", "confidence": confidence}
+
+        crop = img[crop_y1:crop_y2, crop_x1:crop_x2]
+        ch, cw = crop.shape[:2]
+        if ch < 10 or cw < 10:
+            return {"ok": False, "reason": "too_close_to_edge", "confidence": confidence}
+
+        # Trim the crop down to exactly the target aspect ratio (never
+        # stretch/letterbox) before the final resize.
+        target_ratio = target_w / target_h
+        current_ratio = cw / ch
+        if current_ratio > target_ratio:
+            new_w = max(1, int(ch * target_ratio))
+            offset = max(0, (cw - new_w) // 2)
+            crop = crop[:, offset:offset + new_w]
+        elif current_ratio < target_ratio:
+            new_h = max(1, int(cw / target_ratio))
+            # Bias toward keeping the top (headroom) rather than pure
+            # center, so trimming height doesn't cut off the chin.
+            offset = max(0, int((ch - new_h) * 0.35))
+            crop = crop[offset:offset + new_h, :]
+
+        crop = cv2.resize(crop, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+        success, jpeg_buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if not success:
+            return {"ok": False, "reason": "no_face", "confidence": confidence}
+
+        return {"ok": True, "confidence": confidence, "jpeg_bytes": jpeg_buf.tobytes()}
+    except Exception as e:
+        _log("warning", "face_extraction", f"detect_and_frame_face failed: {e}")
+        return {"ok": False, "reason": "no_face", "confidence": 0.0}
+
+
 async def extract_face_from_url(video_url: str, **kwargs) -> bytes | None:
     """Download a video from URL and extract the best face.
 

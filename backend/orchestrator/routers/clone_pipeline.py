@@ -187,18 +187,35 @@ async def upload_face(
 
 
 async def _handle_image_face(data, ext, avatar, user, r2, db):
-    """Process uploaded image as a single face candidate."""
-    from services.face_extraction import detect_face_in_image
+    """Process uploaded image as a single face candidate.
 
-    has_face, confidence = detect_face_in_image(data)
-    if not has_face:
+    Reframes the photo around the detected face (see detect_and_frame_face)
+    rather than uploading the raw bytes as-is — otherwise an off-center
+    subject gets cut off later when the avatar animation pipeline fits the
+    image into its fixed portrait canvas, and that same cropped framing
+    then propagates into every Cast video rendered from this avatar.
+    """
+    from services.face_extraction import detect_and_frame_face
+
+    result = detect_and_frame_face(data)
+    if not result["ok"]:
+        if result["reason"] == "too_close_to_edge":
+            raise HTTPException(
+                400,
+                "You're positioned too close to the edge of this photo for us to frame you "
+                "properly. Please upload a photo with more space around your head and shoulders.",
+            )
         raise HTTPException(
             400,
             "No face detected in the uploaded image. Please upload a clear photo with a visible face.",
         )
+    confidence = result["confidence"]
+    framed_bytes = result["jpeg_bytes"]
 
-    key = f"creators/{user.id}/avatar/{avatar.id}/candidates/face_upload{ext}"
-    await r2.upload_bytes(data, key, _image_content_type(ext))
+    # Always store as .jpg — detect_and_frame_face re-encodes to JPEG
+    # regardless of the uploaded file's original format.
+    key = f"creators/{user.id}/avatar/{avatar.id}/candidates/face_upload.jpg"
+    await r2.upload_bytes(framed_bytes, key, "image/jpeg")
 
     url = r2.get_public_url(key)
     candidate = {"url": url, "r2_key": key, "score": float(confidence)}
