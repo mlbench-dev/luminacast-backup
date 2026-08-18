@@ -539,37 +539,52 @@ async def resolve_effective_product_id(
         return None
 
 
-async def resolve_voiceover_visual_source(
+async def resolve_voiceover_visual_sources(
     block_id: str,
     session,
     r2,
     cast_id: str,
-) -> tuple[str, str] | None:
-    """Resolve the visual source a voiceover block's B-roll should use.
+) -> list[tuple[str, str]]:
+    """Resolve EVERY viable visual source for a voiceover block's B-roll,
+    in priority order (most-preferred first).
 
-    Voiceover blocks carry narration but no face track. To avoid the
-    compose pass laying down pure black behind the audio, the dispatcher
-    needs a video clip for the slot. This resolves the best available
-    source, in the priority order from the bug brief:
+    Same priority order as ``resolve_voiceover_visual_source`` used to
+    stop at, but this returns every match instead of just the first — the
+    caller now tries each candidate in turn until one both bakes AND
+    passes Phase 3 validation.
+
+    Why: a single AI-picked stock clip (block.parallel_media[0]) can be a
+    perfectly valid, downloadable video file that is nonetheless
+    near-motionless — e.g. a locked-off product shot — which freezedetect
+    correctly flags as clip_mostly_frozen. Retrying the SAME clip forever
+    always fails the same way. But the script engine frequently attaches
+    MORE than one candidate clip to a beat (block.parallel_media often has
+    2+ entries for a multi-shot B-roll sequence), and a later candidate is
+    often fine. Confirmed on render rnd_999f49e0c8d6 / block
+    blk_f75c94e0833a: parallel_media[0] (a static stocking shot) was 87.5%
+    frozen and hard-failed the block every render attempt, while
+    parallel_media[1] (a gift-wrapping shot, already attached to the same
+    block) had zero detected freeze — but was never tried.
 
       1. ("video"/"image", url) — a registered explicit asset
          (block.video_asset_id / block.image_asset_id).
-      2. ("video"/"image", url) — block.parallel_media[0], the AI-picked
-         stock B-roll the script engine attaches to this beat. Most
-         auto-generated stock-footage casts have no registered product
-         asset at all, so this is the primary source in practice.
-      3. ("video", url) — the effective product's first video ProductAsset.
-      4. ("image", url) — the product hero (cover_image_key), or
+      2. ("video"/"image", url) — each entry in block.parallel_media, the
+         AI-picked stock B-roll the script engine attaches to this beat.
+      3. ("video"/"image", url) — stock_photo/stock_video blocks' pick
+         (block.stock_media_url).
+      4. ("video", url) — the effective product's first video ProductAsset.
+      5. ("image", url) — the product hero (cover_image_key), or
          block.scene_image_key.
       Videos are looped/trimmed to the slot by the caller; images are
       animated with a Ken-Burns pan-zoom (NEVER shown as a still — a still
       trips clip_mostly_frozen).
 
-    Returns ``(kind, url)`` or ``None`` when nothing resolves (the caller
-    then renders avatar-idle B-roll as the last resort). Any DB / resolver
-    error is captured to Sentry and treated as "unresolved" so the render
-    still falls through to a working fallback.
+    Returns ``[]`` when nothing resolves (the caller then renders
+    avatar-idle B-roll as the last resort). Any DB / resolver error is
+    captured to Sentry and treated as "nothing further resolved" so the
+    render still falls through to whatever candidates were found so far.
     """
+    candidates: list[tuple[str, str]] = []
     try:
         from models.block import Block as _Block
         from models.product import Product as _Product
@@ -578,7 +593,7 @@ async def resolve_voiceover_visual_source(
 
         blk = await session.get(_Block, block_id)
 
-        # 1a. Explicit block video asset, then explicit block image asset.
+        # 1. Explicit block video asset, then explicit block image asset.
         video_asset_id = getattr(blk, "video_asset_id", None) if blk else None
         image_asset_id = getattr(blk, "image_asset_id", None) if blk else None
         for asset_id, want in ((video_asset_id, "video"), (image_asset_id, "image")):
@@ -589,18 +604,12 @@ async def resolve_voiceover_visual_source(
             if key:
                 url = r2.get_public_url(key)
                 if url:
-                    return (want, url)
+                    candidates.append((want, url))
 
-        # 1c. AI-picked stock B-roll (block.parallel_media). This is what the
-        # script engine actually attaches to voiceover beats for casts with
-        # no registered product asset — most auto-generated stock-footage
-        # casts have nothing in video_asset_id/product_assets/scene_image_key
-        # at all, so without this check every such block fell straight
-        # through to the avatar-idle Ken-Burns fallback below: the narration
-        # played over the avatar's face instead of the b-roll the editor
-        # preview (and the user) actually see. The first video entry is
-        # looped/trimmed to the slot by the caller, matching how a registered
-        # product video is handled just below.
+        # 2. AI-picked stock B-roll (block.parallel_media) — ALL entries,
+        # not just the first, so a bad first pick has a fallback candidate
+        # already attached to the same block instead of skipping straight
+        # to the avatar-idle Ken-Burns clip.
         parallel_media = getattr(blk, "parallel_media", None) if blk else None
         if isinstance(parallel_media, list):
             for pm in parallel_media:
@@ -609,21 +618,18 @@ async def resolve_voiceover_visual_source(
                 pm_url = pm.get("url")
                 pm_kind = pm.get("kind")
                 if pm_url and pm_kind in ("video", "photo"):
-                    return ("video" if pm_kind == "video" else "image", pm_url)
+                    candidates.append(("video" if pm_kind == "video" else "image", pm_url))
 
-        # 1d. stock_photo / stock_video blocks carry their pick in
+        # 3. stock_photo / stock_video blocks carry their pick in
         # stock_media_url (a different field than parallel_media — set by
         # the auto-populate step, not the multi-angle b-roll attacher).
-        # These blocks are pure B-roll by category (no avatar face is meant
-        # to appear), so this is checked before falling back to a generic
-        # product asset.
         stock_media_url = getattr(blk, "stock_media_url", None) if blk else None
         if stock_media_url:
             stock_media_kind = (getattr(blk, "stock_media_kind", None) or "").lower()
-            return ("video" if stock_media_kind == "video" else "image", stock_media_url)
+            candidates.append(("video" if stock_media_kind == "video" else "image", stock_media_url))
 
-        # 1b / 2b. Resolve the effective product and pull a video first,
-        # then fall back to its hero image.
+        # 4/5. Resolve the effective product and pull a video first, then
+        # fall back to its hero image.
         product_id = await resolve_effective_product_id(blk, session, cast_id)
         if product_id:
             res = await session.execute(
@@ -638,26 +644,41 @@ async def resolve_voiceover_visual_source(
             if vkey:
                 url = r2.get_public_url(vkey)
                 if url:
-                    return ("video", url)
+                    candidates.append(("video", url))
 
             prod = await session.get(_Product, product_id)
             ckey = getattr(prod, "cover_image_key", None) if prod else None
             if ckey:
                 url = r2.get_public_url(ckey)
                 if url:
-                    return ("image", url)
+                    candidates.append(("image", url))
 
-        # 3. Scene image key on the block.
+        # Scene image key on the block.
         scene_key = getattr(blk, "scene_image_key", None) if blk else None
         if scene_key:
             url = r2.get_public_url(scene_key)
             if url:
-                return ("image", url)
+                candidates.append(("image", url))
 
-        return None
+        return candidates
     except Exception as e:
         sentry_sdk.capture_exception(e)
-        return None
+        return candidates
+
+
+async def resolve_voiceover_visual_source(
+    block_id: str,
+    session,
+    r2,
+    cast_id: str,
+) -> tuple[str, str] | None:
+    """Best-single-match convenience wrapper around
+    ``resolve_voiceover_visual_sources`` — kept for existing callers/tests
+    that only want the top candidate. The render loop itself now calls the
+    plural form directly so it can fall through multiple candidates.
+    """
+    candidates = await resolve_voiceover_visual_sources(block_id, session, r2, cast_id)
+    return candidates[0] if candidates else None
 
 
 async def resolve_avatar_idle_image(
@@ -4699,79 +4720,98 @@ async def _render_async(task, render_id: str):
             if broll_s > 0:
                 voiceover_real_durations[block_id] = broll_s
 
-            # Resolve the visual source in priority order, then the avatar
-            # idle as last resort. We render LONGER than the slot so the
-            # post-bake trim lands exactly on length without undershoot.
+            # Resolve EVERY viable visual source in priority order (not
+            # just the first), then append avatar-idle as the guaranteed-
+            # safe last resort candidate. We render LONGER than the slot so
+            # the post-bake trim lands exactly on length without undershoot.
+            #
+            # Each candidate is baked, muxed, normalized, and run through
+            # the SAME Phase 3 validator right here in the loop — so a
+            # candidate that's a legitimate, downloadable video but happens
+            # to be near-motionless (clip_mostly_frozen) is skipped in
+            # favor of the next candidate instead of hard-failing the whole
+            # block. Previously only the single best-priority candidate was
+            # ever tried, and only a download/ffmpeg *exception* triggered
+            # the avatar-idle fallback — a candidate that baked fine but
+            # failed the freeze/black validator had no fallback at all.
             render_s = broll_s + 0.5
-            video_bytes: bytes | None = None
-            broll_source = "none"
             async with factory() as _vo_session:
-                src = await resolve_voiceover_visual_source(
+                candidates = await resolve_voiceover_visual_sources(
                     block_id, _vo_session, r2, cast_id,
                 )
-                if src is None:
-                    idle_url = await resolve_avatar_idle_image(cast_id, _vo_session, r2)
-                    if idle_url:
-                        src = ("image", idle_url)
+                idle_url = await resolve_avatar_idle_image(cast_id, _vo_session, r2)
+            if idle_url:
+                candidates.append(("image", idle_url))
 
+            video_bytes: bytes | None = None
+            broll_source = "none"
             broll_error: str | None = None
-            if src is not None:
-                kind, url = src
+            for cand_idx, (kind, url) in enumerate(candidates):
                 try:
                     if kind == "video":
-                        video_bytes = await voiceover_broll.render_video_to_slot(
+                        cand_bytes = await voiceover_broll.render_video_to_slot(
                             video_url=url, slot_s=render_s,
                             width=cw, height=ch, fps=fps,
                         )
-                        broll_source = "product_video"
                     else:
-                        video_bytes = await voiceover_broll.render_ken_burns_from_image(
+                        cand_bytes = await voiceover_broll.render_ken_burns_from_image(
                             image_url=url, slot_s=render_s,
                             width=cw, height=ch, fps=fps,
                         )
+
+                    if audio_url:
+                        try:
+                            cand_bytes = await _mux_audio_into_clip(
+                                cand_bytes, audio_url, duration_s=broll_s,
+                            )
+                        except Exception as mux_e:
+                            sentry_sdk.capture_exception(mux_e)
+                            logger.warning(
+                                "Voiceover block %s audio mux failed, padding silent: %s",
+                                block_id, mux_e,
+                            )
+                            cand_bytes = await _mux_silent_audio_into_clip(
+                                cand_bytes, duration_s=broll_s,
+                            )
+                    else:
+                        cand_bytes = await _mux_silent_audio_into_clip(
+                            cand_bytes, duration_s=broll_s,
+                        )
+
+                    cand_bytes = await _normalize_for_canvas(
+                        video_bytes=cand_bytes,
+                        timeline=timeline,
+                        block_id=block_id,
+                        render_id=render_id,
+                        fallback_duration_s=broll_s,
+                        r2=r2,
+                    )
+                    await _validate_baked_clip_bytes(
+                        cand_bytes, block_id=block_id, render_id=render_id,
+                        require_audio=bool(audio_url),
+                    )
+
+                    video_bytes = cand_bytes
+                    if url == idle_url:
+                        broll_source = "ken_burns_avatar_idle_after_failure"
+                    elif kind == "video":
+                        broll_source = "product_video"
+                    else:
                         broll_source = "ken_burns_image"
+                    broll_error = None
+                    break
                 except Exception as e:
                     sentry_sdk.capture_exception(e)
-                    broll_error = f"{type(e).__name__}: {e}"
                     logger.warning(
-                        "Voiceover block %s B-roll render failed for %s source "
-                        "%s (%s) — trying avatar-idle as a last resort so the "
-                        "slot doesn't ship empty",
-                        block_id, kind, url, e,
+                        "Voiceover block %s candidate %d/%d (%s source %s) "
+                        "failed bake/validate (%s) — trying next candidate",
+                        block_id, cand_idx + 1, len(candidates), kind, url, e,
                     )
-                    video_bytes = None
-                    # The resolved source (product/parallel_media/stock_media_url)
-                    # download or ffmpeg step failed — voiceover_broll._download
-                    # already retries once internally, so this is a harder
-                    # failure (dead URL, corrupt file, unsupported codec, or a
-                    # CPU-contention ffmpeg timeout — every block in a cast
-                    # bakes concurrently, see voiceover_broll._BROLL_CONCURRENCY_LIMIT).
-                    # Fall back to the avatar-idle Ken Burns clip rather than
-                    # leaving the block with nothing baked at all, matching the
-                    # "must still emit a video clip for the slot" contract.
-                    try:
-                        async with factory() as _vo_fallback_session:
-                            idle_url = await resolve_avatar_idle_image(
-                                cast_id, _vo_fallback_session, r2,
-                            )
-                        if idle_url:
-                            video_bytes = await voiceover_broll.render_ken_burns_from_image(
-                                image_url=idle_url, slot_s=render_s,
-                                width=cw, height=ch, fps=fps,
-                            )
-                            broll_source = "ken_burns_avatar_idle_after_failure"
-                            broll_error = None  # fallback succeeded — not a failure anymore
-                    except Exception as fallback_e:
-                        sentry_sdk.capture_exception(fallback_e)
-                        logger.warning(
-                            "Voiceover block %s avatar-idle fallback also "
-                            "failed: %s", block_id, fallback_e,
-                        )
-                        video_bytes = None
-                        broll_error = (
-                            f"{broll_error} | fallback also failed: "
-                            f"{type(fallback_e).__name__}: {fallback_e}"
-                        )
+                    broll_error = (
+                        f"candidate {cand_idx + 1}/{len(candidates)} "
+                        f"({kind}): {type(e).__name__}: {e}"
+                    )
+                    continue
 
             if not video_bytes:
                 if broll_error is None:
@@ -4817,44 +4857,9 @@ async def _render_async(task, render_id: str):
             if audio_url:
                 lipsync_audio_by_block[block_id] = audio_url
 
-            # Mux the narration onto the silent B-roll so the concat-copy
-            # compose pass sees a uniform a/v layout (and the audio rides the
-            # baked clip rather than a parallel A1 the compose pass drops).
-            if audio_url:
-                try:
-                    video_bytes = await _mux_audio_into_clip(
-                        video_bytes, audio_url, duration_s=broll_s,
-                    )
-                except Exception as e:
-                    sentry_sdk.capture_exception(e)
-                    logger.warning(
-                        "Voiceover block %s audio mux failed, padding silent: %s",
-                        block_id, e,
-                    )
-                    video_bytes = await _mux_silent_audio_into_clip(
-                        video_bytes, duration_s=broll_s,
-                    )
-            else:
-                video_bytes = await _mux_silent_audio_into_clip(
-                    video_bytes, duration_s=broll_s,
-                )
-
-            # Conform to canvas + trim to the slot, then gate on the Phase 3
-            # validators. The Ken Burns / video motion guarantees the clip
-            # passes clip_mostly_frozen; require_audio enforces the narration
-            # is present (TTS is the source of truth for this block).
-            video_bytes = await _normalize_for_canvas(
-                video_bytes=video_bytes,
-                timeline=timeline,
-                block_id=block_id,
-                render_id=render_id,
-                fallback_duration_s=broll_s,
-                r2=r2,
-            )
-            await _validate_baked_clip_bytes(
-                video_bytes, block_id=block_id, render_id=render_id,
-                require_audio=bool(audio_url),
-            )
+            # Mux, canvas-normalize, and Phase 3 validation already happened
+            # per-candidate inside the resolution loop above — video_bytes
+            # here is the first candidate that cleared all three.
             await r2.upload_bytes(video_bytes, baked_key, "video/mp4")
             logger.info(
                 "Voiceover block %s baked B-roll (%s) → %s (%d bytes)",

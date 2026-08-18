@@ -227,8 +227,9 @@ def test_voiceover_branch_bakes_instead_of_returning_none():
     branch = _voiceover_branch(src)
 
     assert "voiceover_broll" in branch, "branch must invoke the B-roll service"
-    assert "resolve_voiceover_visual_source(" in branch, (
-        "branch must resolve a visual source (video/image) for the slot"
+    assert "resolve_voiceover_visual_sources(" in branch, (
+        "branch must resolve visual source candidates (video/image) for "
+        "the slot"
     )
     assert "resolve_avatar_idle_image(" in branch, (
         "branch must fall back to avatar idle B-roll as a last resort"

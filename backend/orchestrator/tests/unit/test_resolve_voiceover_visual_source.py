@@ -97,6 +97,11 @@ def test_explicit_block_asset_still_wins_over_parallel_media(monkeypatch):
     session = types.SimpleNamespace(get=_fake_get)
     r2 = types.SimpleNamespace(get_public_url=lambda key: f"https://cdn/{key}")
 
+    import tasks.cast_render as cr
+    monkeypatch.setattr(
+        cr, "resolve_effective_product_id", AsyncMock(return_value=None),
+    )
+
     result = _run(resolve_voiceover_visual_source(
         "blk_test", session, r2, "cst_test",
     ))
@@ -115,6 +120,11 @@ def test_stock_media_url_used_for_stock_photo_video_blocks(monkeypatch):
     session = types.SimpleNamespace(get=AsyncMock(return_value=block))
     r2 = types.SimpleNamespace(get_public_url=lambda key: f"https://cdn/{key}")
 
+    import tasks.cast_render as cr
+    monkeypatch.setattr(
+        cr, "resolve_effective_product_id", AsyncMock(return_value=None),
+    )
+
     result = _run(resolve_voiceover_visual_source(
         "blk_test", session, r2, "cst_test",
     ))
@@ -129,6 +139,11 @@ def test_stock_media_url_video_kind_returns_video(monkeypatch):
     block.stock_media_kind = "video"
     session = types.SimpleNamespace(get=AsyncMock(return_value=block))
     r2 = types.SimpleNamespace(get_public_url=lambda key: f"https://cdn/{key}")
+
+    import tasks.cast_render as cr
+    monkeypatch.setattr(
+        cr, "resolve_effective_product_id", AsyncMock(return_value=None),
+    )
 
     result = _run(resolve_voiceover_visual_source(
         "blk_test", session, r2, "cst_test",
