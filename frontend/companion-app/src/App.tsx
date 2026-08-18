@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ProtectedRoute } from "@/components/layout/ProtectedRoute";
+import { PublicRoute } from "@/components/layout/PublicRoute";
 import { useAuthStore } from "@/stores/authStore";
 import { LoginPage } from "@/pages/auth/Login";
 import { SignupPage } from "@/pages/auth/Signup";
@@ -54,13 +55,15 @@ export default function App() {
       <ErrorBoundary>
         <BrowserRouter>
           <Routes>
-            {/* Public routes */}
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/signup" element={<SignupPage />} />
-            <Route path="/register" element={<Navigate to="/signup" replace />} />
-            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-            <Route path="/reset-password" element={<ResetPasswordPage />} />
-            <Route path="/reactivate-account" element={<ReactivateAccountPage />} />
+            {/* Public auth routes — protected so logged-in users can't access them */}
+            <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+            <Route path="/signup" element={<PublicRoute><SignupPage /></PublicRoute>} />
+            <Route path="/register" element={<PublicRoute><Navigate to="/signup" replace /></PublicRoute>} />
+            <Route path="/forgot-password" element={<PublicRoute><ForgotPasswordPage /></PublicRoute>} />
+            <Route path="/reset-password" element={<PublicRoute><ResetPasswordPage /></PublicRoute>} />
+            <Route path="/reactivate-account" element={<PublicRoute><ReactivateAccountPage /></PublicRoute>} />
+
+            {/* External flow routes — accessible by anyone */}
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
             <Route path="/integrations/zernio/callback" element={<ZernioCallback />} />
 
