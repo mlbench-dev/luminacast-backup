@@ -23,6 +23,31 @@ const TARGET_H = 1280;
 // resized down to something unusably tiny.
 const MIN_CROP_SIZE = 40;
 
+// One shared 1x1 sampling canvas, reused per call — cheap and avoids
+// allocating a new canvas per corner.
+const _sampleCanvas = document.createElement("canvas");
+_sampleCanvas.width = 1;
+_sampleCanvas.height = 1;
+const _sampleCtx = _sampleCanvas.getContext("2d", { willReadFrequently: true });
+
+function sampleEdgeColor(image: HTMLImageElement, sx: number, sy: number, sw: number, sh: number): string {
+  if (!_sampleCtx) return "#ffffff";
+  const corners: Array<[number, number]> = [
+    [sx + 1, sy + 1],
+    [sx + sw - 1, sy + 1],
+    [sx + 1, sy + sh - 1],
+    [sx + sw - 1, sy + sh - 1],
+  ];
+  let r = 0, g = 0, b = 0;
+  for (const [cx, cy] of corners) {
+    _sampleCtx.clearRect(0, 0, 1, 1);
+    _sampleCtx.drawImage(image, cx, cy, 1, 1, 0, 0, 1, 1);
+    const [pr, pg, pb] = _sampleCtx.getImageData(0, 0, 1, 1).data;
+    r += pr; g += pg; b += pb;
+  }
+  return `rgb(${Math.round(r / 4)}, ${Math.round(g / 4)}, ${Math.round(b / 4)})`;
+}
+
 async function buildFramedImage(
   image: HTMLImageElement,
   crop: PixelCrop,
@@ -42,14 +67,12 @@ async function buildFramedImage(
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas not supported");
 
-  // Blurred fill behind — the user's selection stretched/cropped to fully
-  // cover the canvas, so there's no hard edge or empty gap.
-  const coverScale = Math.max(TARGET_W / sw, TARGET_H / sh);
-  const bgW = sw * coverScale;
-  const bgH = sh * coverScale;
-  ctx.filter = "blur(24px)";
-  ctx.drawImage(image, sx, sy, sw, sh, (TARGET_W - bgW) / 2, (TARGET_H - bgH) / 2, bgW, bgH);
-  ctx.filter = "none";
+  // Fill behind any leftover padding with a plain color sampled from the
+  // selection's own corners (most avatar photos are shot against a flat
+  // studio background) — this blends the padding in instead of showing an
+  // obvious blurred/ghosted duplicate of the photo.
+  ctx.fillStyle = sampleEdgeColor(image, sx, sy, sw, sh);
+  ctx.fillRect(0, 0, TARGET_W, TARGET_H);
 
   // The actual selection on top, scaled to fit WITHOUT cropping or
   // stretching — this is what guarantees nothing the user selected gets
@@ -117,7 +140,10 @@ export function ImageCropModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[60vh] overflow-auto rounded-lg bg-black flex justify-center">
+        <div
+          className="max-h-[60vh] overflow-auto rounded-lg bg-black flex justify-center [&_.ReactCrop__crop-selection]:drop-shadow-[0_0_0_1px_rgba(0,0,0,0.85)]"
+          style={{ "--rc-border-color": "#a78bfa", "--rc-focus-color": "#a78bfa" } as React.CSSProperties}
+        >
           <ReactCrop
             crop={crop}
             onChange={(_, percentCrop) => setCrop(percentCrop)}
