@@ -52,6 +52,7 @@ import { toast } from "@/hooks/useToast";
 import { StepIndicator } from "./StepIndicator";
 import { PipelineProgressView } from "./PipelineProgressView";
 import { VoiceCorpusTab } from "./VoiceCorpusTab";
+import { ImageCropModal } from "./ImageCropModal";
 import type { VoiceCorpusEntry } from "@/lib/types";
 
 // ── Constants ──
@@ -514,6 +515,10 @@ function CloneUploadSubPhase({
   const [faceSourceType, setFaceSourceType] = useState<"image" | "video" | null>(null);
   const [faceFile, setFaceFile] = useState<{ name: string; size: number; thumbUrl?: string } | null>(null);
   const faceInputRef = useRef<HTMLInputElement>(null);
+  // Photo awaiting manual crop confirmation — auto-framing isn't always
+  // right, so images (not videos, which go through frame extraction
+  // instead) get a manual crop step before upload.
+  const [pendingCropFile, setPendingCropFile] = useState<File | null>(null);
 
   useEffect(() => {
     if (existingFace && faceCandidates.length === 0) {
@@ -676,10 +681,27 @@ function CloneUploadSubPhase({
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) handleFaceUpload(file);
+            if (file) {
+              if (file.type.startsWith("image/")) {
+                setPendingCropFile(file);
+              } else {
+                handleFaceUpload(file);
+              }
+            }
             e.target.value = "";
           }}
         />
+
+        {pendingCropFile && (
+          <ImageCropModal
+            file={pendingCropFile}
+            onCancel={() => setPendingCropFile(null)}
+            onConfirm={(croppedFile) => {
+              setPendingCropFile(null);
+              handleFaceUpload(croppedFile);
+            }}
+          />
+        )}
 
         {faceStatus === "idle" ? (
           <button
