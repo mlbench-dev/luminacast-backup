@@ -1232,11 +1232,13 @@ function CloneSourcePhase({
   ensureAvatarId,
   initialData,
   onComplete,
+  onLiveChange,
 }: {
   avatarId?: string | null;
   ensureAvatarId: () => Promise<string>;
   initialData?: SourcePhaseData | null;
   onComplete: (data: SourcePhaseData) => void;
+  onLiveChange?: (data: SourcePhaseData) => void;
 }) {
   const [method, setMethod] = useState<UploadMethod>("upload");
 
@@ -1459,6 +1461,22 @@ function CloneSourcePhase({
       setContinuing(false);
     }
   }, [canContinue, avatarId, ensureAvatarId, name, gender, voicePreviewText, selectedFaceIdx, candidates, onComplete]);
+
+  // Keep the parent's sourceData snapshot live, not just on "Continue" — the
+  // Source step stays mounted (only CSS-hidden) when navigating away via
+  // Back/Forward/step-indicator, so editing e.g. voicePreviewText and then
+  // jumping straight to Preview without re-clicking Continue would otherwise
+  // regenerate against the stale text captured at the last Continue click.
+  useEffect(() => {
+    if (!hydratedRef.current || selectedFaceIdx === null) return;
+    onLiveChange?.({
+      name: name.trim(),
+      gender,
+      voicePreviewText: voicePreviewText.trim(),
+      selectedFaceIdx,
+      candidates,
+    });
+  }, [name, gender, voicePreviewText, selectedFaceIdx, candidates, onLiveChange]);
 
   return (
     <div className="space-y-6" data-testid="clone-source-phase">
@@ -2706,6 +2724,7 @@ export function CloneFlow({ resumeAvatarId, resumeStep }: { resumeAvatarId?: str
             setVisitedSteps((prev) => new Set([...prev, "source"]));
             setPhaseAndSave("audience");
           }}
+          onLiveChange={setSourceData}
         />
         {canGoForward && (
           <div className="flex justify-end">

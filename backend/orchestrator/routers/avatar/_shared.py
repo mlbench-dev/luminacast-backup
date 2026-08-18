@@ -117,7 +117,11 @@ def _avatar_to_response(avatar: Avatar, voice_corpus_count: int = 0) -> AvatarRe
     # Use public CDN URLs — browser loads directly from Cloudflare edge
     from services.r2_storage import get_r2_storage_service
     r2 = get_r2_storage_service()
-    test_video_url = r2.get_public_url(avatar.test_video_key) if avatar.test_video_key else None
+    # cache_bust=True: Regenerate overwrites this same R2 key (test_video.mp4)
+    # with fresh audio/video for the edited preview text. Without a cache
+    # buster, the CDN/browser can keep serving the previous regeneration's
+    # video for this identical URL.
+    test_video_url = r2.get_public_url(avatar.test_video_key, cache_bust=True) if avatar.test_video_key else None
 
     # Convert R2 keys to CDN URLs at serialization time (B-068)
     candidate_frames = None
