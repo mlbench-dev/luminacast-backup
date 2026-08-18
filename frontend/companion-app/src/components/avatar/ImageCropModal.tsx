@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import Cropper, { type Area } from "react-easy-crop";
-import "react-easy-crop/react-easy-crop.css";
+import { useCallback, useEffect, useRef, useState } from "react";
+import ReactCrop, {
+  centerCrop,
+  makeAspectCrop,
+  cropToCanvas,
+  type Crop,
+  type PixelCrop,
+} from "react-image-crop";
+import "react-image-crop/dist/ReactCrop.css";
 import {
   Dialog,
   DialogContent,
@@ -14,42 +20,10 @@ import { Button } from "@/components/ui/button";
 // detect_and_frame_face target_w/target_h) so a manually-cropped photo needs
 // little to no further adjustment server-side.
 const TARGET_ASPECT = 720 / 1280;
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.addEventListener("load", () => resolve(img));
-    img.addEventListener("error", () => reject(new Error("Failed to load image")));
-    img.src = src;
-  });
-}
-
-async function getCroppedImageFile(
-  imageSrc: string,
-  area: Area,
-  fileName: string,
-): Promise<File> {
-  const image = await loadImage(imageSrc);
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(area.width));
-  canvas.height = Math.max(1, Math.round(area.height));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas not supported");
-  ctx.drawImage(
-    image,
-    area.x, area.y, area.width, area.height,
-    0, 0, canvas.width, canvas.height,
-  );
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        reject(new Error("Crop failed"));
-        return;
-      }
-      resolve(new File([blob], fileName, { type: "image/jpeg" }));
-    }, "image/jpeg", 0.95);
-  });
-}
+// Floor on the crop selection size (in on-screen pixels) so it can't be
+// resized down to something unusably tiny. There's no explicit max — the
+// library already clamps the selection to the image's own bounds.
+const MIN_CROP_WIDTH = 120;
 
 export function ImageCropModal({
   file,
@@ -61,28 +35,38 @@ export function ImageCropModal({
   onConfirm: (croppedFile: File) => void;
 }) {
   const [imageUrl] = useState(() => URL.createObjectURL(file));
-  const [crop, setCrop] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+  const [crop, setCrop] = useState<Crop>();
+  const [completedCrop, setCompletedCrop] = useState<PixelCrop>();
+  const imgRef = useRef<HTMLImageElement | null>(null);
   const [processing, setProcessing] = useState(false);
 
   useEffect(() => () => URL.revokeObjectURL(imageUrl), [imageUrl]);
 
-  const onCropComplete = useCallback((_area: Area, areaPixels: Area) => {
-    setCroppedAreaPixels(areaPixels);
+  const onImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    const { width, height } = e.currentTarget;
+    const initial = centerCrop(
+      makeAspectCrop({ unit: "%", width: 80 }, TARGET_ASPECT, width, height),
+      width, height,
+    );
+    setCrop(initial);
   }, []);
 
   const handleConfirm = useCallback(async () => {
-    if (!croppedAreaPixels) return;
+    if (!completedCrop || !imgRef.current) return;
     setProcessing(true);
     try {
+      const canvas = document.createElement("canvas");
+      await cropToCanvas(imgRef.current, canvas, completedCrop);
+      const blob: Blob | null = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", 0.95),
+      );
+      if (!blob) throw new Error("Crop failed");
       const baseName = file.name.replace(/\.[^./\\]+$/, "");
-      const croppedFile = await getCroppedImageFile(imageUrl, croppedAreaPixels, `${baseName}-cropped.jpg`);
-      onConfirm(croppedFile);
+      onConfirm(new File([blob], `${baseName}-cropped.jpg`, { type: "image/jpeg" }));
     } catch {
       setProcessing(false);
     }
-  }, [croppedAreaPixels, imageUrl, file.name, onConfirm]);
+  }, [completedCrop, file.name, onConfirm]);
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
@@ -90,42 +74,35 @@ export function ImageCropModal({
         <DialogHeader>
           <DialogTitle>Position your photo</DialogTitle>
           <DialogDescription>
-            Drag to reposition, use the slider to zoom. Keep your head and shoulders inside the frame — the auto-framing isn't always perfect, so adjust it yourself here if it looks off.
+            Drag the corners to resize the frame, or drag inside it to move it. Keep your head and shoulders inside — the auto-framing isn't always perfect, so adjust it yourself here if it looks off.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="relative w-full h-80 bg-black rounded-lg overflow-hidden">
-          <Cropper
-            image={imageUrl}
+        <div className="max-h-[60vh] overflow-auto rounded-lg bg-black flex justify-center">
+          <ReactCrop
             crop={crop}
-            zoom={zoom}
+            onChange={(_, percentCrop) => setCrop(percentCrop)}
+            onComplete={(c) => setCompletedCrop(c)}
             aspect={TARGET_ASPECT}
-            cropShape="rect"
-            showGrid
-            onCropChange={setCrop}
-            onZoomChange={setZoom}
-            onCropComplete={onCropComplete}
-          />
-        </div>
-
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-white/50 shrink-0">Zoom</span>
-          <input
-            type="range"
-            min={1}
-            max={3}
-            step={0.01}
-            value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
-            className="flex-1 accent-primary"
-          />
+            minWidth={MIN_CROP_WIDTH}
+            keepSelection
+          >
+            {/* eslint-disable-next-line jsx-a11y/alt-text */}
+            <img
+              ref={imgRef}
+              src={imageUrl}
+              onLoad={onImageLoad}
+              alt="Crop preview"
+              className="max-h-[60vh] w-auto"
+            />
+          </ReactCrop>
         </div>
 
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onCancel} disabled={processing}>
             Cancel
           </Button>
-          <Button onClick={handleConfirm} disabled={processing || !croppedAreaPixels}>
+          <Button onClick={handleConfirm} disabled={processing || !completedCrop}>
             {processing ? "Processing…" : "Use this crop"}
           </Button>
         </div>
