@@ -31,6 +31,7 @@ from schemas.cast import (
 from routers.auth import get_current_user, WorkspaceContext, require_role, require_owner
 from services import audit_log
 from services.cast_templates import get_template
+from services.render_planner import get_canvas_dimensions
 
 router = APIRouter()
 
@@ -270,12 +271,11 @@ async def auto_arrange_cast_timeline(
     stock_elements: list[dict] = []
     block_regions: list[dict] = []
 
-    # Visual overlays are emitted at native render-canvas size so
-    # extract_overlay_elements (which scales editor-canvas coords down to the
-    # render resolution) passes them through 1:1 — see CANVAS_W/H + the
-    # compositionWidth/Height stamped on twick_data below.
-    CANVAS_W = 480
-    CANVAS_H = 848
+    # Visual overlays are emitted at the cast's native render-canvas size so
+    # extract_overlay_elements scales editor-canvas coords 1:1 against the
+    # actual final frame dimensions. This must honor the selected output format
+    # instead of forcing a portrait 480x848 layout onto every render.
+    CANVAS_W, CANVAS_H = get_canvas_dimensions(getattr(cast, "output_format", None) or "9:16")
 
     cursor = 0.0
     blocks_arranged = 0

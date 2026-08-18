@@ -132,6 +132,35 @@ def test_arrange_emits_no_stock_track_when_no_stock_blocks():
     assert "stock" not in track_ids
 
 
+def test_arrange_uses_selected_output_format_for_canvas_size():
+    blocks = [_Block(bid="b0", position=0)]
+    cast = _Cast(blocks)
+    cast.output_format = "16:9"
+
+    db = AsyncMock()
+    exec_result = MagicMock()
+    exec_result.scalar_one_or_none.return_value = cast
+    db.execute = AsyncMock(return_value=exec_result)
+    db.commit = AsyncMock()
+
+    r2 = MagicMock()
+    r2.get_public_url.side_effect = lambda key, *a, **k: f"https://media/{key}"
+
+    user = MagicMock()
+    user.id = "usr_test"
+
+    with patch("services.r2_storage.get_r2_storage_service", return_value=r2), \
+         patch("services.audit_log.record", new=AsyncMock()), \
+         patch("sqlalchemy.orm.attributes.flag_modified"):
+        asyncio.run(
+            casts_mod.auto_arrange_cast_timeline(cast.id, user=user, db=db)
+        )
+
+    twick = cast.timeline_json["default"]["twick_data"]
+    assert twick["compositionWidth"] == 1920
+    assert twick["compositionHeight"] == 1080
+
+
 # ── Bug 3: _check_cast_completion never marks READY while in-flight ──────────
 
 class _WebhookVariant:
