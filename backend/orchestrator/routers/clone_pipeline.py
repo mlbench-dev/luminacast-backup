@@ -217,7 +217,12 @@ async def _handle_image_face(data, ext, avatar, user, r2, db):
     key = f"creators/{user.id}/avatar/{avatar.id}/candidates/face_upload.jpg"
     await r2.upload_bytes(framed_bytes, key, "image/jpeg")
 
-    url = r2.get_public_url(key)
+    # cache_bust=True: this key is a fixed name (face_upload.jpg) reused on
+    # every re-upload for this avatar, so a re-upload overwrites the exact
+    # same URL — without a cache buster the CDN/browser keeps serving the
+    # previous photo's bytes at that identical URL (same class of bug as
+    # test_video_url in routers/avatar/_shared.py).
+    url = r2.get_public_url(key, cache_bust=True)
     candidate = {"url": url, "r2_key": key, "score": float(confidence)}
 
     avatar.candidate_frames = [key]
@@ -252,7 +257,11 @@ async def _handle_video_face(data, ext, avatar, user, r2, db):
         candidates = []
         scores = []
         for i, (frame, key) in enumerate(zip(frames, keys)):
-            url = r2.get_public_url(key)
+            # Same fixed-name-per-index reasoning as the image-upload path
+            # above: re-uploading a different video reuses these same
+            # frame_{i}.jpg keys, so the URL must be cache-busted or the
+            # CDN/browser keeps serving the previous video's frames.
+            url = r2.get_public_url(key, cache_bust=True)
             score = float(frame.get("score", 0.0))
             candidates.append({"url": url, "r2_key": key, "score": score})
             scores.append(score)
