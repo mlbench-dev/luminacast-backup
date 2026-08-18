@@ -1,7 +1,7 @@
 import { cn } from "@/lib/cn";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 
-export type WizardPhase = "setup" | "script" | "audio_generating" | "editor" | "ready";
+export type WizardPhase = "setup" | "generating_script" | "script" | "audio_generating" | "editor" | "ready";
 
 const PHASES: { key: WizardPhase; label: string }[] = [
   { key: "setup", label: "Setup" },

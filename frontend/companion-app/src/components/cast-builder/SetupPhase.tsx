@@ -403,20 +403,25 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
             : undefined,
       } as any);
 
-      // Auto-fire outline + script generation immediately — don't await,
-      // let the Script phase show its loading state.
+      // Generate the outline before returning — script generation (kicked
+      // off by the caller, CastBuilder's handleCastCreated, which owns the
+      // "Generating Script" loading phase) depends on the outline already
+      // existing. This used to be a fire-and-forget chain that also called
+      // generateScripts itself, racing a SECOND generateScripts call fired
+      // by the caller — duplicate work, and no guarantee the outline had
+      // finished before either one ran.
       // Auto Cast → LLM designs avatar/PIP split + auto Pexels; manual →
       // plain avatar_speaking blocks the user can edit themselves.
-      const outlineCall = autoCast
-        ? castsApi.generateSmartOutline(newCast.id)
-        : castsApi.generateOutline(newCast.id);
-      outlineCall
-        .then(() => castsApi.generateScripts(newCast.id))
-        // Smart outline regenerates blocks (fresh IDs). Invalidate the cast
-        // cache so any already-mounted ScriptPhase swaps to the new blocks
-        // before the user can try editing the now-stale ones.
-        .then(() => qc.invalidateQueries({ queryKey: ["cast", newCast.id] }))
-        .catch(() => { /* Script phase will handle retry */ });
+      try {
+        await (autoCast
+          ? castsApi.generateSmartOutline(newCast.id)
+          : castsApi.generateOutline(newCast.id));
+        // Smart outline regenerates blocks (fresh IDs) — invalidate so
+        // anything already reading this cast's blocks picks up the new ones.
+        qc.invalidateQueries({ queryKey: ["cast", newCast.id] });
+      } catch (err) {
+        console.error("Outline generation failed:", err);
+      }
 
       return newCast;
     },

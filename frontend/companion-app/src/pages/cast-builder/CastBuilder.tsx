@@ -8,6 +8,7 @@ import { CastStatus, type Cast } from "@/lib/types";
 import { toast } from "@/hooks/useToast";
 import { PhaseHeader, type WizardPhase } from "@/components/cast-builder/PhaseHeader";
 import { SetupPhase } from "@/components/cast-builder/SetupPhase";
+import { ScriptGeneratingPhase } from "@/components/cast-builder/ScriptGeneratingPhase";
 import { ScriptPhase } from "@/components/cast-builder/ScriptPhase";
 import { AudioGeneratingPhase } from "@/components/cast-builder/AudioGeneratingPhase";
 import { ArrangePhase, type ArrangePhaseHandle } from "@/components/cast-builder/ArrangePhase";
@@ -122,6 +123,9 @@ export function CastBuilderPage() {
   // re-finishes immediately. From editor or ready, back jumps to script.
   const PREV_PHASE: Record<WizardPhase, WizardPhase | null> = {
     setup: null,
+    // Not reachable — the header (and its Back button) is hidden for the
+    // whole generating_script phase, see the render below.
+    generating_script: null,
     script: "setup",
     audio_generating: "script",
     editor: "script",
@@ -140,9 +144,20 @@ export function CastBuilderPage() {
     setPhase(statusToPhase(updatedCast.status));
   }, []);
 
-  const handleCastCreated = useCallback(async (newCast: Cast) => {
+  const handleCastCreated = useCallback(async (newCast: Cast, wasExisting?: boolean) => {
     setCast(newCast);
-    try { await castsApi.generateScripts(newCast.id); } catch (err) { console.error("Auto script gen failed:", err); }
+    // wasExisting = the user navigated back to Setup on an already-generated
+    // cast and hit Continue again (e.g. just to tweak duration/quality) —
+    // outline + script already exist and may have been reviewed/edited, so
+    // don't regenerate and clobber them. Only fresh casts get a script run.
+    if (!wasExisting) {
+      setPhase("generating_script");
+      try {
+        await castsApi.generateScripts(newCast.id);
+      } catch (err) {
+        console.error("Auto script gen failed:", err);
+      }
+    }
     setPhase("script");
     navigate(`/cast-builder/${newCast.id}/script`, { replace: true });
   }, [navigate]);
@@ -497,7 +512,7 @@ export function CastBuilderPage() {
   return (
     <div className="flex flex-col h-full">
       {/* Phase header */}
-      {!(isNew && phase === "setup") && (
+      {!(isNew && phase === "setup") && phase !== "generating_script" && (
         <div className="flex items-center">
           {/* Back button — shown on all phases except setup */}
           {phase !== "setup" && (
@@ -670,8 +685,10 @@ export function CastBuilderPage() {
       {/* Phase content */}
       <div className={phase === "editor" ? "flex-1 overflow-hidden min-h-0" : "flex-1 overflow-auto"}>
         {phase === "setup" && (
-          <SetupPhase onCreated={handleCastCreated} />
+          <SetupPhase cast={cast} onCreated={handleCastCreated} />
         )}
+
+        {phase === "generating_script" && <ScriptGeneratingPhase />}
 
         {phase === "script" && cast && (
           <ScriptPhase cast={cast} onDone={handleScriptDone} />
