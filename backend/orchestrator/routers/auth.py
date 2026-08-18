@@ -306,6 +306,7 @@ async def forgot_password(req: ForgotPasswordRequest, db: AsyncSession = Depends
         sentry_sdk.capture_exception(e)
         logger.error("Failed to send password reset email to %s: %s", user.email, e)
 
+
     try:
         await audit_log.record(
             db, user_id=user.id, action="auth.forgot_password", entity_type="auth", entity_id=user.id,
