@@ -4539,6 +4539,46 @@ async def _render_async(task, render_id: str):
         # Stable ID for return value — prefer V1, fall back to A1 for voiceover.
         primary_id = (v1_el or a1_el or {}).get("id")
 
+        async def _reconcile_motion_block_duration(current_duration_s: float) -> float:
+            """§2.1-equivalent safety net for motion/body_motion blocks.
+
+            The speaking cascade re-probes the REAL prepared lipsync audio
+            and reconciles the slot against it (_reconcile_slot_vs_audio,
+            below) before locking in duration_s — motion/body_motion blocks
+            never got that same check, so a pre-TTS word-count estimate (or
+            a stale saved slot) could flow straight into the T2V/I2V provider
+            request and the Phase 3 gate unverified. If it undershot the
+            block's own paired voiceover, the render failed as
+            motion_clip_too_short with zero user involvement (render
+            rnd_c97e73f83325, block blk_237054850a8b). Mirrors
+            _reconcile_slot_vs_audio: extends the slot to fit the audio,
+            never shrinks it.
+            """
+            if not audio_url:
+                return current_duration_s
+            real_audio_s = await _probe_audio_duration_s(audio_url)
+            if real_audio_s <= 0:
+                return current_duration_s
+            v1_meta = (v1_el or {}).get("metadata") or {}
+            fixed_len = bool(
+                v1_meta.get("fixed_length") or v1_meta.get("fixed_duration")
+            )
+            reconciled_s, mismatch = _reconcile_slot_vs_audio(
+                timeline,
+                block_id=block_id,
+                audio_duration_s=real_audio_s,
+                slot_duration_s=current_duration_s,
+                fixed_length=fixed_len,
+            )
+            if mismatch:
+                raise SlotAudioMismatch(
+                    f"block {block_id} render {render_id}: "
+                    f"slot={current_duration_s:.3f}s vs audio={real_audio_s:.3f}s "
+                    f"exceeds {_SLOT_AUDIO_MISMATCH_TOLERANCE:.0%} and slot is "
+                    f"fixed-length — planning defect, not re-baking."
+                )
+            return reconciled_s
+
         # Per-block routing breadcrumb. Each routing branch below logs a
         # finer-grained "product gate" line with the resolved product id,
         # but this top-of-dispatch line guarantees every block leaves a
@@ -4840,6 +4880,8 @@ async def _render_async(task, render_id: str):
         # No source face image; no audio-driven lip-sync. The voiceover (if
         # any) is muxed by the FFmpeg compose pass via the A1 element.
         if block_render_mode == "motion":
+            duration_s = await _reconcile_motion_block_duration(float(duration_s or 0))
+
             bake_start = datetime.now(timezone.utc)
             await _update_block_status(render_id, block_id, state="baking", started_at=bake_start)
 
@@ -5087,6 +5129,8 @@ async def _render_async(task, render_id: str):
             from models.cast import Cast as _Cast
             from models.avatar import Avatar as _Avatar
             from sqlalchemy import select as _sa_select
+
+            duration_s = await _reconcile_motion_block_duration(float(duration_s or 0))
 
             bake_start = datetime.now(timezone.utc)
             await _update_block_status(render_id, block_id, state="baking", started_at=bake_start)
