@@ -2332,13 +2332,24 @@ export function AIAvatarSetupPage() {
     } else {
       if (didCreateRef.current) return;   // ← add this guard
       didCreateRef.current = true;         // ← set synchronously, before the async call
-      avatarApi.createAIAvatar({ name: "AI Avatar" }).then((data) => {
-        setAvatarId(data.avatar_id);
-        navigate(`/my-avatar/ai/${data.avatar_id}/setup`, { replace: true });
-      }).catch(() => {
-        didCreateRef.current = false;   // allow retry if creation actually failed
-        toast({ title: "Failed to create avatar", variant: "destructive" });
-      });
+      // Two-arg .then(onSuccess, onError) — NOT .then(onSuccess).catch(onError).
+      // The chained-.catch() form also catches errors thrown INSIDE
+      // onSuccess (setAvatarId/navigate), wrongly reporting a request that
+      // actually succeeded as "Failed to create avatar" — the redirect
+      // would already have happened by then, so the user saw a working
+      // navigation plus a destructive-looking toast for no real failure.
+      // The two-arg form only invokes onError for an actual rejection of
+      // the createAIAvatar() call itself.
+      avatarApi.createAIAvatar({ name: "AI Avatar" }).then(
+        (data) => {
+          setAvatarId(data.avatar_id);
+          navigate(`/my-avatar/ai/${data.avatar_id}/setup`, { replace: true });
+        },
+        () => {
+          didCreateRef.current = false;   // allow retry if creation actually failed
+          toast({ title: "Failed to create avatar", variant: "destructive" });
+        },
+      );
     }
   }, []);
 
