@@ -104,14 +104,23 @@ export function BillingPage() {
     queryFn: () => api.get<UsageSummary>("/usage/summary?days=30").then((r) => r.data),
   });
 
-  const { data: dashboard, isLoading: dashboardLoading } = useQuery<BillingDashboard>({
+  const { data: dashboard, isLoading: dashboardLoading, error: dashboardError } = useQuery<BillingDashboard>({
     queryKey: ["billing-dashboard"],
     queryFn: () => billingApi.getDashboard(),
+    // Billing is owner-only (routers/billing.py: require_owner) — a team
+    // member viewing this while switched into someone else's workspace
+    // always gets 403, which will never resolve on retry. Without this,
+    // the default retry (3x) delays the error, and since the loading
+    // check below was `dashboardLoading || !dashboard` — true forever on
+    // a permanent error — the page showed an endless loading skeleton
+    // instead of ever explaining why.
+    retry: (failureCount, err: any) => err?.response?.status !== 403 && failureCount < 3,
   });
 
   const { data: transactions } = useQuery({
     queryKey: ["credit-transactions"],
     queryFn: () => billingApi.listCreditTransactions(10),
+    retry: (failureCount, err: any) => err?.response?.status !== 403 && failureCount < 3,
   });
 
   const portal = useMutation({
@@ -157,6 +166,27 @@ export function BillingPage() {
   const videosCreated = usage?.by_type?.["script_generation"]?.count ?? 0;
   const plan = dashboard?.plan ?? "free";
   const status = dashboard?.status ?? "free";
+
+  if ((dashboardError as any)?.response?.status === 403) {
+    return (
+      <div className="mx-auto w-full max-w-5xl space-y-6" data-testid="billing-page">
+        <div>
+          <h1 className="text-2xl font-bold text-text">Billing</h1>
+          <p className="text-sm text-text-dim">Your subscription, usage, and PAYG credits.</p>
+        </div>
+        <Card>
+          <CardContent className="p-10 text-center space-y-2">
+            <CreditCard className="h-8 w-8 mx-auto text-text-muted" />
+            <p className="text-sm text-text">Billing isn't available in a team workspace.</p>
+            <p className="text-xs text-text-muted max-w-sm mx-auto">
+              You're currently viewing someone else's workspace. Switch to your own workspace
+              from the switcher at the top of the page to view your billing.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-6" data-testid="billing-page">
