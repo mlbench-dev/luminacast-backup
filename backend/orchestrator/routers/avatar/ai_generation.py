@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 from sqlalchemy import update as sa_update
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from database import get_db
 from models.user import User, TeamRole
@@ -624,7 +624,7 @@ async def save_target_audience(
 class SaveSetupRequest(BaseModel):
     avatar_id: str
     target_audience: dict
-    name: str
+    name: str = Field(..., max_length=60)
     description: str
     gender: str
     body_description: Optional[str] = None
@@ -652,6 +652,8 @@ async def save_setup(
             avatar.body_description = req.body_description
         if req.style_preset is not None:
             avatar.style_preset = req.style_preset
+        if req.imperfections is not None:
+            avatar.imperfections = req.imperfections
         await db.commit()
         return {"status": "ok"}
     except HTTPException:

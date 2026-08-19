@@ -61,6 +61,7 @@ class Avatar(Base):
     runpod_job_id = Column(String, nullable=True)          # RunPod job ID for webhook-based test video rendering
     active_phase = Column(Enum(AvatarPhase, values_callable=lambda e: [m.value for m in e]), default=AvatarPhase.IMAGE, nullable=False, server_default="image", index=True)
     style_preset = Column(String(50), nullable=True, server_default="studio")
+    imperfections = Column(JSON, nullable=True)  # "Make It Real" chip ids from AI Avatar setup
     gender = Column(String(20), nullable=True)
     regeneration_count = Column(Integer, default=0, server_default="0", nullable=False)
     # PR #65: clip-mic toggle. When ON the TTS pipeline (a) appends a

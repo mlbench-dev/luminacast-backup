@@ -104,6 +104,7 @@ class AvatarResponse(BaseModel):
     preview_video_url: Optional[str] = None
     gender: Optional[str] = None
     style_preset: Optional[str] = None
+    imperfections: Optional[list[str]] = None
     wizard_step: Optional[str] = None
     detected_language: Optional[str] = None
     # PR #65: clip-on lavalier vs phone-mic toggle. Default false = phone mic.
@@ -166,6 +167,7 @@ def _avatar_to_response(avatar: Avatar, voice_corpus_count: int = 0) -> AvatarRe
         preview_video_url=r2.get_public_url(avatar.preview_video_key) if avatar.preview_video_key else None,
         gender=avatar.gender,
         style_preset=avatar.style_preset,
+        imperfections=avatar.imperfections,
         wizard_step=avatar.wizard_step,
         detected_language=avatar.detected_language,
         clip_mic_enabled=bool(getattr(avatar, "clip_mic_enabled", False)),

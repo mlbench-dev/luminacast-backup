@@ -35,6 +35,8 @@ const PHASE_STEPS = [
 
 type Phase = "setup" | "face" | "voice" | "body_shots" | "preview";
 
+const AVATAR_NAME_MAX_LENGTH = 60;
+
 /* ═══ Icon mapping for style presets ═══ */
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   camera: Camera, user: User, film: Film, palette: Palette,
@@ -222,6 +224,7 @@ function SetupPhase({
     gender?: string;
     body_description?: string;
     style_preset?: string;
+    imperfections?: string[];
   };
 }) {
   // Audience fields
@@ -255,7 +258,7 @@ function SetupPhase({
   const [selectedPresets, setSelectedPresets] = useState<string[]>(
     initialData?.style_preset ? [initialData.style_preset] : []
   );
-  const [selectedChips, setSelectedChips] = useState<string[]>([]);
+  const [selectedChips, setSelectedChips] = useState<string[]>(initialData?.imperfections || []);
   const [isGeneratingIdentity, setIsGeneratingIdentity] = useState(false);
 
   const [saving, setSaving] = useState(false);
@@ -304,10 +307,12 @@ function SetupPhase({
     } catch { /* best-effort */ }
   };
 
+  // Single-select: presets are competing overall visual styles (e.g. "Studio
+  // Pro" vs "Natural/Real"), not composable traits — picking more than one
+  // sends the AI description generator contradictory instructions. Clicking
+  // the already-selected preset clears the selection.
   const togglePreset = (id: string) => {
-    setSelectedPresets((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
-    );
+    setSelectedPresets((prev) => (prev.length === 1 && prev[0] === id ? [] : [id]));
     setDescriptionOverridden(false);
     setBodyDescOverridden(false);
   };
@@ -359,7 +364,15 @@ function SetupPhase({
     }
   }, [ageRange, interests, gender, nameOverridden, descriptionOverridden, selectedPresets, selectedChips]);
 
-  // Single LLM call: returns name + description + body_description
+  // Single LLM call: returns name + description + body_description.
+  // Every caller resets the *Overridden flags immediately before calling
+  // this (declaring intent to force a fresh regenerate) — this function
+  // used to re-check those same flags here too, but React batches state
+  // updates, so the flags this closure sees are still the PRE-click values
+  // (the reset hadn't applied yet), silently skipping the very update the
+  // caller just asked for. A second click would then see the now-applied
+  // reset and work. Always applying the result here removes that stale
+  // read and the "have to click twice" bug.
   const triggerIdentityGeneration = async (
     audDesc: string, gen: string, presets: string[], chips: string[], reqId?: number
   ) => {
@@ -373,9 +386,9 @@ function SetupPhase({
         imperfections: chips,
       });
       if (reqId !== undefined && reqId !== identityReqIdRef.current) return; // stale — a newer call superseded this one
-      if (!nameOverridden) setAvatarName(data.name);
-      if (!descriptionOverridden) setBaseDescription(data.description);
-      if (!bodyDescOverridden && data.body_description) setBodyDescription(data.body_description);
+      setAvatarName(data.name);
+      setBaseDescription(data.description);
+      if (data.body_description) setBodyDescription(data.body_description);
     } catch (err: any) {
       // Keep current values on failure
       console.error("triggerIdentityGeneration failed:", err);
@@ -391,9 +404,8 @@ function SetupPhase({
     setNameOverridden(false);
     setDescriptionOverridden(false);
     setBodyDescOverridden(false);
-    // if (audienceDesc.trim()) {
-    //   triggerIdentityGeneration(audienceDesc, newGender, selectedPresets, selectedChips);
-    // }
+    const audDesc = audienceDesc || `${ageRange} audience interested in ${interests.join(", ")}`;
+    void triggerIdentityGeneration(audDesc, newGender, selectedPresets, selectedChips);
   };
 
   // Preset/chip toggle -> regenerate description
@@ -410,10 +422,7 @@ function SetupPhase({
   // Inspire Me — randomize
   const handleInspireMe = async () => {
     const randomGender = GENDER_OPTIONS[Math.floor(Math.random() * GENDER_OPTIONS.length)].value;
-    const randomPresets = STYLE_PRESETS
-      .filter(() => Math.random() > 0.6)
-      .map((p) => p.id)
-      .slice(0, 2);
+    const randomPresets = [STYLE_PRESETS[Math.floor(Math.random() * STYLE_PRESETS.length)].id];
     const randomChips = MAKE_IT_REAL_CHIPS
       .filter(() => Math.random() > 0.7)
       .map((c) => c.id)
@@ -448,6 +457,7 @@ function SetupPhase({
           gender,
           body_description: bodyDescription,
           style_preset: selectedPresets[0] || undefined,
+          imperfections: selectedChips,
         });
         setSaveStatus("saved");
         setTimeout(() => setSaveStatus("idle"), 2000);
@@ -456,7 +466,7 @@ function SetupPhase({
       }
     }, 800);
     return () => { if (autoSaveRef.current) clearTimeout(autoSaveRef.current); };
-  }, [avatarId, ageRange, interests.join(","), audienceDesc, avatarName, baseDescription, gender, bodyDescription, selectedPresets.join(",")]);
+  }, [avatarId, ageRange, interests.join(","), audienceDesc, avatarName, baseDescription, gender, bodyDescription, selectedPresets.join(","), selectedChips.join(",")]);
 
   // Continue — save explicitly + navigate
   const handleContinue = async () => {
@@ -474,6 +484,7 @@ function SetupPhase({
         gender,
         body_description: bodyDescription,
         style_preset: selectedPresets[0] || undefined,
+        imperfections: selectedChips,
       });
       onContinue(baseDescription, audienceDesc, gender, bodyDescription);
     } catch (err: any) {
@@ -655,7 +666,7 @@ function SetupPhase({
 
         {/* Style Presets — 3x4 grid of 12 */}
         <div>
-          <label className="text-sm font-medium text-text mb-2 block">Style Presets</label>
+          <label className="text-sm font-medium text-text mb-2 block">Style Preset</label>
           <div className="grid grid-cols-3 gap-2">
             {STYLE_PRESETS.map((preset) => {
               const Icon = ICON_MAP[preset.icon] || Sparkles;
@@ -706,7 +717,7 @@ function SetupPhase({
                     "rounded-full px-2.5 py-1 text-[11px] font-medium transition-all",
                     isActive
                       ? "text-white shadow-xs"
-                      : "bg-surface text-text-muted hover:text-text border border-border"
+                      : "bg-surface text-text-dim hover:text-text border border-border/80 hover:border-accent/40"
                   )}
                   style={isActive ? { backgroundColor: "var(--accent-active)" } : undefined}
                   data-testid={`chip-${chip.id}`}
@@ -756,12 +767,16 @@ function SetupPhase({
           <ShimmerField isLoading={isGeneratingIdentity && !nameOverridden} className="h-10">
             <Input
               value={avatarName}
-              onChange={(e) => { setAvatarName(e.target.value); setNameOverridden(true); }}
+              onChange={(e) => { setAvatarName(e.target.value.slice(0, AVATAR_NAME_MAX_LENGTH)); setNameOverridden(true); }}
               placeholder={gender ? "Generating name..." : "Fill the fields above first"}
               className="text-lg font-semibold"
+              maxLength={AVATAR_NAME_MAX_LENGTH}
               data-testid="avatar-name-field"
             />
           </ShimmerField>
+          <p className="text-[10px] text-text-muted mt-1 text-right">
+            {avatarName.length}/{AVATAR_NAME_MAX_LENGTH}
+          </p>
         </div>
 
         {/* Action buttons */}
@@ -2236,7 +2251,18 @@ export function AIAvatarSetupPage() {
     gender?: string;
     body_description?: string;
     style_preset?: string;
+    imperfections?: string[];
   } | undefined>(undefined);
+  // SetupPhase only reads `initialData` once, at mount (it's a useState
+  // initializer, not something a later prop update can re-apply) — so on a
+  // return visit we must hold off mounting it until the fresh fetch below
+  // has actually landed, otherwise it mounts with whatever stale snapshot
+  // was left over from the first visit and the fetch result never reaches
+  // it. Not needed on the very first-ever visit (nothing saved yet to be
+  // stale about, and gating it there would only risk discarding the
+  // couple of characters a fast typist could enter before avatarId exists).
+  const hasEnteredSetupRef = useRef(false);
+  const [setupDataReady, setSetupDataReady] = useState(true);
 
   // Create avatar on mount OR resume existing avatar
   useEffect(() => {
@@ -2316,20 +2342,29 @@ export function AIAvatarSetupPage() {
     }
   }, []);
 
-  // Load setup data when navigating back to setup phase
+  // Load setup data whenever we (re)enter the setup phase — including
+  // navigating back to it after visiting Face/Voice/etc. This used to be
+  // guarded by `!setupInitialData`, which is truthy after the very first
+  // fetch (even one made before the user had entered anything), so it
+  // never ran again — meaning a return visit to Setup always remounted
+  // SetupPhase with that stale first-fetch snapshot instead of whatever
+  // had actually been saved since.
   useEffect(() => {
-    if (phase === "setup" && avatarId && !setupInitialData) {
-      avatarApi.status(avatarId).then((data) => {
-        setSetupInitialData({
-          target_audience: data.target_audience || undefined,
-          description: data.description || data.appearance_prompt || undefined,
-          gender: data.gender || undefined,
-          body_description: data.body_description || undefined,
-          style_preset: data.style_preset || undefined,
-        });
-        if (data.name) setAvatarName(data.name);
-      }).catch(() => { });
-    }
+    if (phase !== "setup" || !avatarId) return;
+    const isReturnVisit = hasEnteredSetupRef.current;
+    hasEnteredSetupRef.current = true;
+    if (isReturnVisit) setSetupDataReady(false);
+    avatarApi.status(avatarId).then((data) => {
+      setSetupInitialData({
+        target_audience: data.target_audience || undefined,
+        description: data.description || data.appearance_prompt || undefined,
+        gender: data.gender || undefined,
+        body_description: data.body_description || undefined,
+        style_preset: data.style_preset || undefined,
+        imperfections: data.imperfections || undefined,
+      });
+      if (data.name) setAvatarName(data.name);
+    }).catch(() => { }).finally(() => setSetupDataReady(true));
   }, [phase, avatarId]);
 
   // Phase transition helper — saves wizard_step and pushes URL
@@ -2451,7 +2486,11 @@ export function AIAvatarSetupPage() {
         </div>
 
         {/* Phase rendering — single expression to prevent React #310 hook mismatch */}
-        {phase === "setup" ? (
+        {phase === "setup" && !setupDataReady ? (
+          <div className="flex justify-center py-16">
+            <Loader2 className="h-6 w-6 animate-spin text-accent" />
+          </div>
+        ) : phase === "setup" ? (
           <SetupPhase
             key="setup"
             avatarId={avatarId}

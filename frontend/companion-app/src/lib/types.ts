@@ -626,6 +626,7 @@ export interface Avatar {
   preview_video_url?: string;
   gender?: string;
   style_preset?: string;
+  imperfections?: string[];
   render_status?: {
     state?: string;
     position?: number;
