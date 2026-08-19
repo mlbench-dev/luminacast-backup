@@ -39,6 +39,27 @@ class CreateAIAvatarRequest(BaseModel):
 class CreateAIAvatarResponse(BaseModel):
     avatar_id: str
 
+class AvatarSlotSummaryResponse(BaseModel):
+    included: int
+    purchased: int
+    total: int
+    used: int
+    remaining: int
+
+@router.get("/slots", response_model=AvatarSlotSummaryResponse)
+async def get_avatar_slots(
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Avatar slot usage for the current workspace — same permission level
+    and same underlying check as POST /ai/create and the Clone Yourself
+    creation endpoints, so the "New avatar" cards can grey themselves out
+    before the user clicks through to a creation flow that's just going to
+    402, instead of only finding out after landing on it."""
+    from services import billing_service
+    summary = await billing_service.get_avatar_slot_summary(db, ctx.workspace_owner_id)
+    return AvatarSlotSummaryResponse(**summary)
+
 @router.post("/ai/create", response_model=CreateAIAvatarResponse, status_code=201)
 async def create_ai_avatar(
     req: CreateAIAvatarRequest,

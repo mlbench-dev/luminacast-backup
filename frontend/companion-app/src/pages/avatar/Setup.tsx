@@ -57,6 +57,16 @@ export function SetupPage() {
   });
   const avatars: Avatar[] = (avatarData as any)?.avatars ?? [];
 
+  // Both creation flows hit the same plan-level avatar slot limit on the
+  // backend — check it here so an at-capacity user sees that up front
+  // instead of clicking through to a creation flow that's just going to
+  // 402 on them.
+  const { data: slotSummary } = useQuery({
+    queryKey: ["avatar-slots"],
+    queryFn: () => avatarApi.getSlotSummary(),
+  });
+  const atSlotLimit = !!slotSummary && slotSummary.remaining <= 0;
+
   // Shared state for exclusive video playback
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
 
@@ -83,8 +93,23 @@ export function SetupPage() {
       {/* ── Create New Avatar Section ── */}
       <div className="grid gap-4 md:grid-cols-2">
         <button
-          onClick={() => { setShowCloneFlow(true); navigate("/my-avatar/clone"); }}
-          className="group flex items-start gap-4 rounded-xl border-2 border-dashed border-border bg-surface p-6 text-left transition-all hover:border-accent hover:bg-accent/5"
+          onClick={() => {
+            if (atSlotLimit) {
+              toast({
+                title: "Avatar limit reached",
+                description: `You've used all ${slotSummary?.total} avatar slots on your plan. Upgrade your plan or purchase an additional avatar slot to continue.`,
+                variant: "destructive",
+              });
+              return;
+            }
+            setShowCloneFlow(true);
+            navigate("/my-avatar/clone");
+          }}
+          disabled={atSlotLimit}
+          className={cn(
+            "group flex items-start gap-4 rounded-xl border-2 border-dashed border-border bg-surface p-6 text-left transition-all",
+            atSlotLimit ? "opacity-50 cursor-not-allowed" : "hover:border-accent hover:bg-accent/5",
+          )}
           data-testid="create-clone-card"
         >
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent/10 group-hover:bg-accent/20 transition-colors">
@@ -104,15 +129,33 @@ export function SetupPage() {
                 <VideoIcon className="h-2.5 w-2.5" /> Record now
               </span>
             </div>
-            <div className="mt-2 flex items-center text-xs text-accent font-medium">
-              Get started <ArrowRight className="ml-1 h-3 w-3" />
-            </div>
+            {atSlotLimit ? (
+              <p className="mt-2 text-xs text-red-400 font-medium">Limit reached — upgrade to add more</p>
+            ) : (
+              <div className="mt-2 flex items-center text-xs text-accent font-medium">
+                Get started <ArrowRight className="ml-1 h-3 w-3" />
+              </div>
+            )}
           </div>
         </button>
 
         <button
-          onClick={() => navigate("/my-avatar/ai-avatar")}
-          className="group flex items-start gap-4 rounded-xl border-2 border-dashed border-border bg-surface p-6 text-left transition-all hover:border-purple-500 hover:bg-purple-500/5"
+          onClick={() => {
+            if (atSlotLimit) {
+              toast({
+                title: "Avatar limit reached",
+                description: `You've used all ${slotSummary?.total} avatar slots on your plan. Upgrade your plan or purchase an additional avatar slot to continue.`,
+                variant: "destructive",
+              });
+              return;
+            }
+            navigate("/my-avatar/ai-avatar");
+          }}
+          disabled={atSlotLimit}
+          className={cn(
+            "group flex items-start gap-4 rounded-xl border-2 border-dashed border-border bg-surface p-6 text-left transition-all",
+            atSlotLimit ? "opacity-50 cursor-not-allowed" : "hover:border-purple-500 hover:bg-purple-500/5",
+          )}
           data-testid="create-digital-card"
         >
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-purple-100 group-hover:bg-purple-200 transition-colors">
@@ -132,9 +175,13 @@ export function SetupPage() {
                 Preview & approve
               </span>
             </div>
-            <div className="mt-2 flex items-center text-xs text-purple-600 font-medium">
-              Create character <ArrowRight className="ml-1 h-3 w-3" />
-            </div>
+            {atSlotLimit ? (
+              <p className="mt-2 text-xs text-red-400 font-medium">Limit reached — upgrade to add more</p>
+            ) : (
+              <div className="mt-2 flex items-center text-xs text-purple-600 font-medium">
+                Create character <ArrowRight className="ml-1 h-3 w-3" />
+              </div>
+            )}
           </div>
         </button>
       </div>

@@ -206,6 +206,8 @@ export const avatarApi = {
 
   createAIAvatar: (data: { name?: string }) =>
     api.post<{ avatar_id: string }>("/avatar/ai/create", data).then((r) => r.data),
+  getSlotSummary: () =>
+    api.get<{ included: number; purchased: number; total: number; used: number; remaining: number }>("/avatar/slots").then((r) => r.data),
   aiGenerateFaces: async (avatarId: string, data: { description: string; reference_photo?: File }) => {
     if (data.reference_photo) {
       // Upload reference photo first, then pass URL
