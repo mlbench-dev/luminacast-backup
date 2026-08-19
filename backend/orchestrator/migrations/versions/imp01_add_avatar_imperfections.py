@@ -31,6 +31,7 @@ def upgrade() -> None:
         op.add_column("avatars", sa.Column("imperfections", sa.JSON(), nullable=True))
 
 
+
 def downgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
