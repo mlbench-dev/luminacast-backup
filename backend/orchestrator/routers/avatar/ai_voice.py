@@ -413,8 +413,16 @@ async def get_locked_voice_audio(
         r2 = get_r2_storage_service()
         fish = get_fish_audio_service()
 
-        # Check for cached audio
-        cache_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/locked_voice.mp3"
+        # Cache key includes a fingerprint of voice_id + script so changing
+        # either (re-locking the voice, editing the test script) naturally
+        # busts the cache instead of continuing to serve stale audio from
+        # before the change — a fixed filename here had no way to notice
+        # either had changed.
+        import hashlib
+        fingerprint = hashlib.sha256(
+            f"{avatar.voice_id}:{avatar.locked_test_script}".encode()
+        ).hexdigest()[:16]
+        cache_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar_id}/locked_voice_{fingerprint}.mp3"
         cached_url = r2.get_public_url(cache_key)
 
         # Check if cache exists by trying HEAD
@@ -431,20 +439,37 @@ async def get_locked_voice_audio(
             text=avatar.locked_test_script,
             voice_id=avatar.voice_id,
         )
-        tmp_path = tts_result["tmp_path"]
 
-        # Upload to R2
-        import aiofiles
-        async with aiofiles.open(tmp_path, "rb") as f:
-            audio_bytes = await f.read()
-        await r2.upload_bytes(audio_bytes, cache_key, "audio/mpeg")
-
-        # Clean up temp file
-        import os
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        # generate_tts() post-processes its raw synthesis (de-ess/EQ/
+        # compand/loudnorm — the same chain the video's lipsync audio goes
+        # through) and uploads that master to R2 under audio_key. Using
+        # tts_result["tmp_path"] here instead — the untouched raw output —
+        # is why this preview used to sound noticeably "lighter" than the
+        # voice baked into the avatar video: they were never the same
+        # audio. Fetch the already-processed master and cache that instead.
+        processed_key = tts_result.get("audio_key") or ""
+        if processed_key:
+            import httpx
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(r2.get_public_url(processed_key))
+                resp.raise_for_status()
+                audio_bytes = resp.content
+            await r2.upload_bytes(audio_bytes, cache_key, "audio/mpeg")
+        else:
+            # Post-processing failed upstream and fish_audio.py fell back
+            # to the raw result — tmp_path is all that's left in that case.
+            tmp_path = tts_result.get("tmp_path")
+            if not tmp_path:
+                raise HTTPException(status_code=502, detail="Voice generation failed")
+            import aiofiles
+            async with aiofiles.open(tmp_path, "rb") as f:
+                audio_bytes = await f.read()
+            await r2.upload_bytes(audio_bytes, cache_key, "audio/mpeg")
+            import os
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
         return {"audio_url": r2.get_public_url(cache_key, cache_bust=True), "cached": False}
 
