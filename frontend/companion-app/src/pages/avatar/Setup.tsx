@@ -496,7 +496,7 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
                             queryClient.invalidateQueries({ queryKey: ["avatars"] });
                             toast({ title: "Regenerating...", description: "~2 min for new video.", variant: "default" });
                             setShowRegenInput(false);
-                          }).catch(() => toast({ title: "Regeneration failed", variant: "destructive" }));
+                          }).catch((err: any) => toast({ title: "Regeneration failed", description: err?.response?.data?.detail || undefined, variant: "destructive" }));
                         }}
                       >
                         <Sparkles className="mr-1 h-3 w-3" /> Generate

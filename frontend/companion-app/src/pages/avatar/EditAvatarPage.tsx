@@ -284,7 +284,7 @@ export function EditAvatarPage() {
                       avatarApi.regenerate(avatarId!, script).then(() => {
                         qc.invalidateQueries({ queryKey: ["avatar-status", avatarId] });
                         toast({ title: "Regenerating...", description: "~2 min for new video." });
-                      }).catch(() => toast({ title: "Regeneration failed", variant: "destructive" }));
+                      }).catch((err: any) => toast({ title: "Regeneration failed", description: err?.response?.data?.detail || undefined, variant: "destructive" }));
                     }}
                   />
                 </div>
@@ -305,7 +305,7 @@ export function EditAvatarPage() {
                       avatarApi.regenerate(avatarId!, script).then(() => {
                         qc.invalidateQueries({ queryKey: ["avatar-status", avatarId] });
                         toast({ title: "Regenerating...", description: "~2 min for new video." });
-                      }).catch(() => toast({ title: "Regeneration failed", variant: "destructive" }));
+                      }).catch((err: any) => toast({ title: "Regeneration failed", description: err?.response?.data?.detail || undefined, variant: "destructive" }));
                     }}
                   />
                 </div>
@@ -388,7 +388,7 @@ export function EditAvatarPage() {
                     avatarApi.regenerate(avatarId!, script).then(() => {
                       qc.invalidateQueries({ queryKey: ["avatar-status", avatarId] });
                       toast({ title: "Regenerating...", description: "~2 min for new video." });
-                    }).catch(() => toast({ title: "Regeneration failed", variant: "destructive" }));
+                    }).catch((err: any) => toast({ title: "Regeneration failed", description: err?.response?.data?.detail || undefined, variant: "destructive" }));
                   }}
                 >
                   <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Regenerate ({regenRemaining} free left)
