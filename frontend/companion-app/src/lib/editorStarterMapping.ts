@@ -139,9 +139,11 @@ export function castToEditorStarterTimeline(
   const videoTrackId = "track-video";
   const audioTrackId = "track-audio";
   const productTrackId = "track-products";
+  const musicTrackId = "track-music";
 
   const videoTrackItemIds: string[] = [];
   const audioTrackItemIds: string[] = [];
+  const musicTrackItemIds: string[] = [];
   const captionTrackItemIds: string[] = [];
   const captionTrackId = "caption_track";
   const productTrackItemIds: string[] = [];
@@ -1288,6 +1290,60 @@ export function castToEditorStarterTimeline(
     cursor = end;
   }
 
+  // Auto-place background music as its own unbonded audio track spanning
+  // the whole cast, mirroring what the backend's headless auto-arrange
+  // endpoint already does (routers/casts/timeline.py) for API-driven
+  // callers. This editor path — the one every real cast actually goes
+  // through — never read cast.background_music_url at all, so attaching
+  // a track (whether via the auto-generate flow or the Music page's
+  // "+ Add") updated the cast row but never produced a timeline element,
+  // and the renderer's music mixer had nothing to pick up. metadata.kind
+  // "music" is what the composer's classifier keys off of to route this
+  // to the ducked-under-voice music mix instead of treating it as a
+  // second voice track.
+  const musicChoice = (cast as any).music_track_choice || "auto";
+  if (cast.background_music_url && musicChoice !== "off" && cursor > 0) {
+    const musicAssetId = "asset_music_bg";
+    const musicAsset: AudioAsset = {
+      type: "audio",
+      id: musicAssetId,
+      filename: "Background music",
+      size: 0,
+      remoteUrl: cast.background_music_url,
+      remoteFileKey: null,
+      mimeType: "audio/mpeg",
+      durationInSeconds: cursor,
+    };
+    assets[musicAssetId] = musicAsset;
+
+    const musicItemId = "music_bg";
+    const musicItem: AudioItem = {
+      type: "audio",
+      id: musicItemId,
+      assetId: musicAssetId,
+      from: 0,
+      durationInFrames: secondsToFrames(cursor, fps),
+      top: 0,
+      left: 0,
+      width: 0,
+      height: 0,
+      opacity: 1,
+      isDraggingInTimeline: false,
+      audioStartFromInSeconds: 0,
+      decibelAdjustment: 0,
+      playbackRate: 1,
+      audioFadeInDurationInSeconds: 0,
+      audioFadeOutDurationInSeconds: 0,
+      metadata: {
+        track_type: "audio_music",
+        kind: "music",
+        source: "auto",
+      },
+    };
+    items[musicItemId] = musicItem;
+    musicTrackItemIds.push(musicItemId);
+  }
+
   // Compute total duration in frames
   const totalFrames = Math.max(secondsToFrames(cursor, fps), 1);
 
@@ -1311,6 +1367,9 @@ export function castToEditorStarterTimeline(
       : []),
     { id: videoTrackId, items: videoTrackItemIds, hidden: false, muted: false },
     { id: audioTrackId, items: audioTrackItemIds, hidden: false, muted: false },
+    ...(musicTrackItemIds.length > 0
+      ? [{ id: musicTrackId, items: musicTrackItemIds, hidden: false, muted: false }]
+      : []),
   ];
 
   const state: UndoableState = {
