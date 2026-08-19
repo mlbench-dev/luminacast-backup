@@ -22,7 +22,6 @@ down_revision: Union[str, None] = "prof01_add_user_avatar"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
