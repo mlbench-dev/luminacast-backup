@@ -2345,9 +2345,17 @@ export function AIAvatarSetupPage() {
           setAvatarId(data.avatar_id);
           navigate(`/my-avatar/ai/${data.avatar_id}/setup`, { replace: true });
         },
-        () => {
+        (err: any) => {
           didCreateRef.current = false;   // allow retry if creation actually failed
-          toast({ title: "Failed to create avatar", variant: "destructive" });
+          // Surface the backend's actual reason (e.g. "You've used all N
+          // avatar slots on your plan...") instead of a generic message —
+          // this is a real, actionable error (plan limit, payment issue),
+          // not a mystery failure.
+          toast({
+            title: err?.response?.status === 402 ? "Avatar limit reached" : "Failed to create avatar",
+            description: err?.response?.data?.detail || undefined,
+            variant: "destructive",
+          });
         },
       );
     }
