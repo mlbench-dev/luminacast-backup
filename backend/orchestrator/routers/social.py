@@ -471,6 +471,51 @@ async def create_social_post(
     scheduled_iso = None
     if not req.publish_now and req.scheduled_for:
         scheduled_iso = req.scheduled_for
+        # Nothing downstream (Zernio's API included) rejects a past
+        # timestamp — it just treats it as immediately due and publishes
+        # right away, while our own status still gets set to "scheduled"
+        # and the frontend shows a "will post at <past time>" confirmation.
+        try:
+            scheduled_dt = datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00"))
+            if scheduled_dt.tzinfo is None:
+                scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            raise HTTPException(400, "Invalid scheduled_for timestamp.")
+        if scheduled_dt <= datetime.now(timezone.utc):
+            raise HTTPException(
+                400,
+                "You cannot schedule a post for a past date and time. Please select a future date and time.",
+            )
+
+        # Nothing previously checked for an already-scheduled post on this
+        # same cast at this same time — clicking Schedule twice (e.g. a
+        # double-click, or re-submitting after the page didn't visibly
+        # update) silently created a second SocialPost row and a second
+        # Zernio post, so the cast actually got published twice even
+        # though only one row showed in the Scheduled list.
+        requested_platforms = {p.platform for p in req.platforms}
+        # Match the exact normalization used below when scheduled_for is
+        # actually persisted (UTC, then tzinfo stripped) — SocialPost.
+        # scheduled_for is a naive column, so comparing against anything
+        # else would silently miss rows for non-UTC input.
+        scheduled_dt_naive = scheduled_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        existing_rows = (
+            await db.execute(
+                select(SocialPost).where(
+                    SocialPost.cast_id == req.cast_id,
+                    SocialPost.scheduled_for == scheduled_dt_naive,
+                    SocialPost.status.in_(["draft", "scheduled", "publishing", "published"]),
+                )
+            )
+        ).scalars().all()
+        for existing in existing_rows:
+            existing_platforms = {p.get("platform") for p in (existing.platforms or [])}
+            if requested_platforms & existing_platforms:
+                raise HTTPException(
+                    400,
+                    "This cast is already scheduled for this date and time. "
+                    "Pick a different time, or edit the existing scheduled post instead.",
+                )
 
     # A platform entry with no accountId (e.g. the client preselected a
     # platform the user never actually connected an account for) reaches

@@ -277,7 +277,17 @@ export default function PublishCast() {
     }
   };
 
-  const canSubmit = !!cast && selectedPlatforms.length > 0 && caption.trim() && !submitting;
+  // `datetime-local` values have no timezone, so treat them as local time
+  // to match what `new Date(scheduledAt)` does at submit — a naive string
+  // comparison against an ISO `now` would drift by the local UTC offset.
+  const minScheduleValue = useMemo(() => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16);
+  }, []);
+  const isScheduledInPast = !postNow && !!scheduledAt && new Date(scheduledAt).getTime() <= Date.now();
+
+  const canSubmit = !!cast && selectedPlatforms.length > 0 && caption.trim() && !submitting && !isScheduledInPast;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -495,9 +505,15 @@ export default function PublishCast() {
             <input
               type="datetime-local"
               value={scheduledAt}
+              min={minScheduleValue}
               onChange={(e) => setScheduledAt(e.target.value)}
               className="rounded-md bg-white/5 border border-white/10 px-3 py-2 text-sm text-white"
             />
+            {isScheduledInPast && (
+              <p className="text-xs text-red-400">
+                You cannot schedule a post for a past date and time. Please select a future date and time.
+              </p>
+            )}
           </div>
         )}
       </section>

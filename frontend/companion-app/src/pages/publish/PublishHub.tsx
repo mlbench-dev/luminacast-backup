@@ -388,6 +388,14 @@ function PublishCard({ cast }: { cast: any }) {
   const [platforms, setPlatforms] = useState<string[]>(["tiktok", "instagram_reels"]);
   const [scheduleMode, setScheduleMode] = useState<"now" | "later">("now");
   const [scheduleDate, setScheduleDate] = useState<string>("");
+  // datetime-local has no timezone — offset by the local UTC offset so
+  // `min` actually matches what `new Date(scheduleDate)` treats as "now"
+  // on the /publish/:id page this hands off to.
+  const minScheduleValue = useMemo(() => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16);
+  }, []);
   // TODO future: AI-generated caption + hashtags — until then the user
   // types these manually. The per-cast /publish/:id page already calls
   // socialApi.generateCaption; when we lift it here we'll prefill these.
@@ -514,6 +522,7 @@ function PublishCard({ cast }: { cast: any }) {
           <input
             type="datetime-local"
             value={scheduleDate}
+            min={minScheduleValue}
             onChange={(e) => setScheduleDate(e.target.value)}
             className="text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-white/70"
           />
