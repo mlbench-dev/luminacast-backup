@@ -269,6 +269,7 @@ async def try_chain(
     step_label: str,
     render_id: str | None = None,
     block_id: str | None = None,
+    on_attempt: Any = None,
     **kwargs: Any,
 ) -> dict:
     """Walk providers in tier order, return the first success, raise if all fail.
@@ -276,6 +277,14 @@ async def try_chain(
     Every exception is captured to Sentry with provider/tier/step/render_id/
     block_id tags. The successful result dict is returned with _provider_used
     and _tier_used keys merged in.
+
+    `on_attempt`, if given, is an async callback invoked as
+    `await on_attempt({"phase": "started"|"failed", "provider": ..., "tier": ...})`
+    right before a provider's generate() call and again on its failure — lets
+    the caller persist live progress (which tier is being tried right now)
+    instead of the caller only finding out after every tier has been
+    exhausted. A raising callback is swallowed so a status-write hiccup can
+    never affect the actual generation attempt.
     """
     if not providers:
         raise AllProvidersFailedError(step_label, errors=[])
@@ -337,6 +346,11 @@ async def try_chain(
         generate_kwargs = dict(kwargs)
         generate_kwargs.setdefault("render_id", render_id)
         generate_kwargs.setdefault("block_id", block_id)
+        if on_attempt:
+            try:
+                await on_attempt({"phase": "started", "provider": name, "tier": tier})
+            except Exception:
+                pass
         try:
             result = await provider.generate(**generate_kwargs)
         except Exception as exc:
@@ -363,6 +377,17 @@ async def try_chain(
                 "error": f"{type(exc).__name__}: {exc}",
                 "latency_ms": elapsed_ms,
             })
+            if on_attempt:
+                try:
+                    await on_attempt({
+                        "phase": "failed",
+                        "provider": name,
+                        "tier": tier,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "latency_ms": elapsed_ms,
+                    })
+                except Exception:
+                    pass
             if tier == 1:
                 tier1_failed = True
             continue

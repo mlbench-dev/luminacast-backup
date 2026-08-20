@@ -60,6 +60,16 @@ celery_app.conf.update(
             "task": "cleanup_stale_rendering_jobs",
             "schedule": crontab(minute="*/15"),  # Every 15 minutes
         },
+        # Separate from the job above — that one only cleans up the legacy
+        # Variant/RunPod-webhook pipeline. This one reaps CastRender rows
+        # (the pipeline actually in use today) that get hard-killed by the
+        # task's own 3600s Celery time_limit, which never runs cleanup code,
+        # leaving status="baking" forever otherwise. 5-minute cadence keeps
+        # detection lag small relative to the 18-minute staleness window.
+        "cleanup-stale-cast-renders": {
+            "task": "cleanup_stale_cast_renders",
+            "schedule": crontab(minute="*/5"),
+        },
         "refresh-trending-products": {
             "task": "refresh_trending_products",
             "schedule": crontab(hour=6, minute=0),  # 6 AM UTC daily

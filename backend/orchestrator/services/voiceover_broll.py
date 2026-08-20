@@ -69,14 +69,34 @@ def _derive_timeout_s(slot_s: float) -> float:
 # are network-bound, not CPU-bound, and already serialize the on-prem GPU
 # separately via render_dispatcher's own semaphore.
 _BROLL_CONCURRENCY_LIMIT = max(2, (os.cpu_count() or 4) // 2)
-_broll_semaphore: asyncio.Semaphore | None = None
+
+# Per-event-loop semaphore, not a module-level singleton — a plain
+# module-singleton asyncio.Semaphore binds to whatever event loop is
+# running at construction time, and a Celery worker that respawns its loop
+# between tasks ends up reusing a semaphore bound to a dead loop, raising
+# "Semaphore ... is bound to a different event loop" the moment a new task
+# tries to acquire it (confirmed in production: 7d of render logs showed
+# this as the single largest failure category for voiceover/B-roll blocks).
+# Same fix already applied to the HOSTKEY GPU semaphore in
+# render_dispatcher.py's `_get_loop_semaphore` — mirrored here.
+_broll_loop_semaphores: dict[int, asyncio.Semaphore] = {}
 
 
 def _get_broll_semaphore() -> asyncio.Semaphore:
-    global _broll_semaphore
-    if _broll_semaphore is None:
-        _broll_semaphore = asyncio.Semaphore(_BROLL_CONCURRENCY_LIMIT)
-    return _broll_semaphore
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError as exc:
+        sentry_sdk.capture_exception(exc)
+        # No running loop somehow — fall back to an unshared one-shot
+        # semaphore rather than crash; worst case this one call runs
+        # unserialized against the CPU-bound encode limit.
+        return asyncio.Semaphore(_BROLL_CONCURRENCY_LIMIT)
+    key = id(loop)
+    sem = _broll_loop_semaphores.get(key)
+    if sem is None:
+        sem = asyncio.Semaphore(_BROLL_CONCURRENCY_LIMIT)
+        _broll_loop_semaphores[key] = sem
+    return sem
 
 
 async def _download(url: str, dest_path: str, *, timeout_s: float) -> None:

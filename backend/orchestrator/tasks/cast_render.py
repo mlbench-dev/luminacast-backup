@@ -3729,11 +3729,18 @@ async def _init_block_statuses(render_id: str, bonded_blocks: list):
             await session.commit()
 
 
-async def _update_block_status(render_id: str, block_id: str, **updates):
+async def _update_block_status(render_id: str, block_id: str, append_attempt: dict | None = None, **updates):
     """Atomically update a single block's status row within the JSONB array.
 
     Uses a read-modify-write inside a single transaction. Safe enough at our
     concurrency (a render's blocks are serialized through one worker).
+
+    `append_attempt`, if given, is appended to that row's `provider_attempts`
+    list rather than overwriting a field — used to keep a running history of
+    every provider tier tried for this block (which one, when, why it
+    failed), instead of only learning the outcome after the whole chain is
+    exhausted. See `try_chain`'s `on_attempt` callback in
+    `services/provider_chain.py`.
     """
     from datetime import datetime, timezone
     from models.cast_render import CastRender
@@ -3752,12 +3759,115 @@ async def _update_block_status(render_id: str, block_id: str, **updates):
                     if isinstance(v, datetime):
                         v = v.isoformat()
                     row[k] = v
+                if append_attempt is not None:
+                    history = list(row.get("provider_attempts") or [])
+                    history.append({**append_attempt, "at": datetime.now(timezone.utc).isoformat()})
+                    row["provider_attempts"] = history
                 found = True
                 break
         if not found:
             return
         render.block_statuses = statuses
         flag_modified(render, "block_statuses")
+        await session.commit()
+
+
+# How long a block can sit with no progress signal (no new provider attempt,
+# no completion, no error) before we give up on it. Chosen well below the
+# task's own 3600s hard kill: a Celery hard time_limit is a SIGKILL-style
+# stop that never runs cleanup code, so without this reaper a genuinely stuck
+# render sits at status="baking" forever — and since Setup/Script editing is
+# now locked while any render is baking/queued/composing, a permanent zombie
+# render would permanently lock that cast's editing too. Deliberately
+# per-block silence, not "whole render older than N minutes" — a render with
+# several blocks can legitimately take well past this window in total (one
+# real successful block took ~14 min), so only a block that's gone quiet is
+# treated as dead.
+STALE_BLOCK_MINUTES = 18
+
+
+@celery_app.task(name="cleanup_stale_cast_renders")
+def cleanup_stale_cast_renders():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_cleanup_stale_cast_renders_async())
+    except Exception as exc:
+        logger.error(f"Stale cast-render cleanup failed: {exc}")
+        sentry_sdk.capture_exception(exc)
+    finally:
+        loop.close()
+
+
+async def _cleanup_stale_cast_renders_async():
+    from datetime import timedelta
+    from sqlalchemy import select
+    from models.cast_render import CastRender, CastRenderStatus
+
+    factory = _make_session_factory()
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALE_BLOCK_MINUTES)
+
+    async with factory() as session:
+        result = await session.execute(
+            select(CastRender).where(CastRender.status.in_([
+                CastRenderStatus.QUEUED.value,
+                CastRenderStatus.BAKING.value,
+                CastRenderStatus.COMPOSING.value,
+            ]))
+        )
+        active_renders = result.scalars().all()
+
+        for render in active_renders:
+            stale_block = None
+            for row in (render.block_statuses or []):
+                if row.get("state") != "baking":
+                    continue
+                # Last known activity for this block: its own start, or the
+                # most recent provider-fallback attempt recorded via
+                # try_chain's on_attempt callback — whichever is later. A
+                # block that's still cycling through fallback tiers is
+                # making progress and shouldn't be reaped just because it's
+                # been baking a while in total.
+                timestamps = []
+                if row.get("started_at"):
+                    timestamps.append(row["started_at"])
+                for attempt in (row.get("provider_attempts") or []):
+                    if attempt.get("at"):
+                        timestamps.append(attempt["at"])
+                if not timestamps:
+                    continue
+                try:
+                    last_activity = max(datetime.fromisoformat(t) for t in timestamps)
+                except ValueError:
+                    continue
+                if last_activity < cutoff:
+                    stale_block = row
+                    break
+
+            if stale_block is None:
+                continue
+
+            logger.warning(
+                "Reaping stale render %s — block %s silent since %s (no progress in %d+ min)",
+                render.id, stale_block.get("block_id"), stale_block.get("started_at"), STALE_BLOCK_MINUTES,
+            )
+            sentry_sdk.capture_message(
+                f"cast_render {render.id} reaped: block {stale_block.get('block_id')} "
+                f"had no progress for {STALE_BLOCK_MINUTES}+ minutes",
+                level="warning",
+            )
+            if render.celery_task_id:
+                try:
+                    celery_app.control.revoke(render.celery_task_id)
+                except Exception as exc:
+                    sentry_sdk.capture_exception(exc)
+            render.status = CastRenderStatus.FAILED.value
+            render.error_message = (
+                f"Render timed out — block #{(stale_block.get('index', 0) or 0) + 1} "
+                f"had no progress for over {STALE_BLOCK_MINUTES} minutes. Please retry."
+            )
+            render.completed_at = datetime.now(timezone.utc)
+
         await session.commit()
 
 
@@ -6116,12 +6226,37 @@ async def _render_async(task, render_id: str):
                     except Exception as _pp_exc:
                         sentry_sdk.capture_exception(_pp_exc)
                         speaking_prompt = motion_prompt
+                async def _on_speaking_attempt(event: dict) -> None:
+                    # Live progress: record which provider tier is being
+                    # tried right now (and why the last one failed) instead
+                    # of only writing block_statuses once the entire chain
+                    # has succeeded or exhausted every tier. A block that
+                    # cycles through 2-3 tiers before succeeding can look
+                    # like a silent multi-tens-of-minutes stall otherwise.
+                    if event.get("phase") == "started":
+                        await _update_block_status(
+                            render_id, block_id,
+                            current_provider=event["provider"],
+                            current_tier=event["tier"],
+                        )
+                    elif event.get("phase") == "failed":
+                        await _update_block_status(
+                            render_id, block_id,
+                            append_attempt={
+                                "provider": event["provider"],
+                                "tier": event["tier"],
+                                "error": event.get("error"),
+                                "latency_ms": event.get("latency_ms"),
+                            },
+                        )
+
                 try:
                     chain_result = await try_chain(
                         speaking_providers,
                         step_label="speaking",
                         render_id=render_id,
                         block_id=block_id,
+                        on_attempt=_on_speaking_attempt,
                         image_url=face_ref_url,
                         audio_url=effective_audio_url,
                         prompt=speaking_prompt,
