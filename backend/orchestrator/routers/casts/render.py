@@ -34,6 +34,27 @@ from services.cast_templates import get_template
 
 router = APIRouter()
 
+ACTIVE_RENDER_STATUSES = ["queued", "baking", "composing"]
+
+async def require_no_active_render(cast_id: str, db: AsyncSession = Depends(get_db)) -> None:
+    """Block edits to a cast while one of its renders is actively in flight.
+
+    The render task reads several cast/variant fields live rather than from
+    a frozen snapshot (quality, duration_target_seconds, per-block
+    script_text) — an edit here mid-render can produce a video that's part
+    old content, part new, with no error surfaced. Cancel the render via
+    POST /{cast_id}/renders/{render_id}/cancel to unblock editing.
+    """
+    from models.cast_render import CastRender
+    result = await db.execute(
+        select(CastRender.id).where(
+            CastRender.cast_id == cast_id,
+            CastRender.status.in_(ACTIVE_RENDER_STATUSES),
+        )
+    )
+    if result.first() is not None:
+        raise HTTPException(409, "A render is currently in progress. Cancel it or wait for it to finish before editing.")
+
 async def _ensure_framings_ready(db: AsyncSession, cast: Cast) -> int:
     """Round-6 Bug B follow-up — pre-warm per-block framing looks before render.
 
@@ -468,11 +489,7 @@ async def cancel_cast_render(
     if not render or render.cast_id != cast_id or render.user_id != user.id:
         raise HTTPException(404, "Render not found")
 
-    if render.status not in {
-        CastRenderStatus.QUEUED.value,
-        CastRenderStatus.BAKING.value,
-        CastRenderStatus.COMPOSING.value,
-    }:
+    if render.status not in ACTIVE_RENDER_STATUSES:
         raise HTTPException(400, f"Render is already {render.status} — nothing to cancel")
 
     # Surface why it was already going badly, if anything had failed before

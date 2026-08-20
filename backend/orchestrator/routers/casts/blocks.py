@@ -29,6 +29,7 @@ from schemas.cast import (
     BulkBlocksSave,
 )
 from routers.auth import get_current_user, WorkspaceContext, require_role, require_owner
+from routers.casts.render import require_no_active_render
 from services import audit_log
 from services.cast_templates import get_template
 
@@ -383,6 +384,7 @@ async def add_block(
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_no_active_render),
 ):
     cast = await db.get(Cast, cast_id)
     if not cast or cast.user_id != ctx.workspace_owner_id:
@@ -493,6 +495,7 @@ async def update_block(
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_no_active_render),
 ):
     cast = await db.get(Cast, cast_id)
     if not cast or cast.user_id != ctx.workspace_owner_id:
@@ -754,6 +757,7 @@ async def delete_block(
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_no_active_render),
 ):
     cast = await db.get(Cast, cast_id)
     if not cast or cast.user_id != ctx.workspace_owner_id:
@@ -814,6 +818,7 @@ async def reorder_blocks(
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_no_active_render),
 ):
     """Reorder blocks by providing their IDs in desired order."""
     cast = await db.get(Cast, cast_id)

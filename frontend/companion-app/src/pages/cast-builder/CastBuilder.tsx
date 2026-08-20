@@ -222,12 +222,13 @@ export function CastBuilderPage() {
     bakingTotal?: number;
   }>({ status: "idle" });
 
-  // Poll render status when in editor phase
+  // Poll render status continuously (not just in editor/ready phases) — Setup
+  // and Script need a live view of "is a render active" too, so they can lock
+  // editing while one is in flight (a mid-render edit can corrupt the output,
+  // since the render task reads several fields live rather than from a
+  // frozen snapshot).
   useEffect(() => {
-    // FIX 9 — Poll in editor AND ready phases so the Ready step in the
-    // header shows the correct green/amber color from the moment the
-    // user lands on either phase.
-    if (!cast?.id || (phase !== "editor" && phase !== "ready")) return;
+    if (!cast?.id) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -306,7 +307,7 @@ export function CastBuilderPage() {
     poll();
     const interval = setInterval(poll, 5000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [phase, cast?.id]);
+  }, [cast?.id]);
 
   const handleCancelRender = useCallback(async () => {
     if (!cast?.id || !renderStatus.renderId || cancellingRender) return;
@@ -691,13 +692,23 @@ export function CastBuilderPage() {
       {/* Phase content */}
       <div className={phase === "editor" ? "flex-1 overflow-hidden min-h-0" : "flex-1 overflow-auto"}>
         {phase === "setup" && (
-          <SetupPhase cast={cast} onCreated={handleCastCreated} />
+          <SetupPhase
+            cast={cast}
+            onCreated={handleCastCreated}
+            renderInProgress={renderStatus.status === "rendering"}
+            onCancelRender={handleCancelRender}
+          />
         )}
 
         {phase === "generating_script" && <ScriptGeneratingPhase />}
 
         {phase === "script" && cast && (
-          <ScriptPhase cast={cast} onDone={handleScriptDone} />
+          <ScriptPhase
+            cast={cast}
+            onDone={handleScriptDone}
+            renderInProgress={renderStatus.status === "rendering"}
+            onCancelRender={handleCancelRender}
+          />
         )}
 
         {phase === "audio_generating" && currentCastId && (

@@ -84,9 +84,16 @@ interface SetupPhaseProps {
   // generation — doing that unconditionally would silently overwrite a
   // script the user already reviewed/edited on an existing cast.
   onCreated: (cast: Cast, wasExisting?: boolean) => void;
+  // True while a render is actively queued/baking/composing for this cast.
+  // The render task reads several fields (quality, duration, script/voice)
+  // live rather than from a frozen snapshot, so an edit here mid-render can
+  // produce a video that's part old content, part new — lock the form while
+  // this is true rather than let that race happen silently.
+  renderInProgress?: boolean;
+  onCancelRender?: () => void;
 }
 
-export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
+export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }: SetupPhaseProps) {
   const qc = useQueryClient();
   // Left blank by default — name is optional. The backend's
   // _generate_cast_name (routers/casts/crud.py) already generates a
@@ -478,7 +485,23 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
   }, [tierDurationCapSeconds]);
 
   return (
-    <div className="max-w-5xl mx-auto px-6 pt-5 pb-10 space-y-5">
+    <div className="max-w-5xl mx-auto px-6 pt-5 pb-10 space-y-5 relative">
+      {renderInProgress && (
+        <div className="absolute inset-0 z-50 flex items-start justify-center bg-[#0f0f14]/90 backdrop-blur-sm pt-24 px-6">
+          <div className="max-w-md w-full rounded-lg border border-white/10 bg-[#1c1c28] p-5 text-center space-y-3">
+            <p className="text-sm text-white/80">
+              A render is currently in progress. Editing is locked until it finishes.
+            </p>
+            <button
+              type="button"
+              onClick={onCancelRender}
+              className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-4 py-2 text-sm text-white hover:bg-white/10 transition-colors"
+            >
+              Cancel Render
+            </button>
+          </div>
+        </div>
+      )}
       {/* HERO CHOICE — the first decision of Stage 1. Two big cards make the
           Recorded vs LIVE pick visually unmissable; LIVE pre-configures the
           cast for long-form voiceover + b-roll. Sits ABOVE everything else. */}
