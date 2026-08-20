@@ -141,8 +141,14 @@ class RenderUsageRecord(Base):
 
     duration_seconds = Column(Float, nullable=False)
     production_level = Column(String(20), nullable=False)
-    multiplier = Column(Float, nullable=False)
-    billable_minutes = Column(Float, nullable=False)  # duration_minutes * multiplier
+    multiplier = Column(Float, nullable=False)  # production-level multiplier only
+    # quality/quality_multiplier: a SEPARATE, independent multiplier
+    # (simple/hd/hd_plus) applied alongside `multiplier` above — nullable
+    # since historical rows predate this column. billable_minutes reflects
+    # BOTH multipliers combined, not just `multiplier`.
+    quality = Column(String(20), nullable=True)
+    quality_multiplier = Column(Float, nullable=True)
+    billable_minutes = Column(Float, nullable=False)  # duration_minutes * multiplier * quality_multiplier
 
     # How the billable minutes were paid for. A single render can span
     # multiple sources (e.g. 2 min included + 3 min overage) — captured as

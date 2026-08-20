@@ -23,7 +23,7 @@ import logging
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import sentry_sdk
 from fastapi import HTTPException
@@ -56,8 +56,10 @@ from services.billing_config import (
     OVERAGE_RATE_CENTS,
     PLAN_CATALOG,
     PRODUCTION_LEVEL_MULTIPLIERS,
+    QUALITY_MULTIPLIERS,
     get_overage_render_rate_cents,
     normalize_production_level,
+    normalize_quality,
 )
 
 logger = logging.getLogger(__name__)
@@ -284,13 +286,41 @@ async def refresh_usage_periods(db: AsyncSession) -> dict:
 # ── Render usage metering ───────────────────────────────────────────────
 
 
-def compute_billable_minutes(duration_seconds: float, production_level: str) -> tuple[float, float, str]:
-    """render usage = video duration (minutes) x production-level multiplier."""
+class BillableMinutesResult(NamedTuple):
+    """Named fields instead of a bare tuple — this grew from 3 values to 6
+    when quality became a second, independent multiplier alongside
+    production_level; positional unpacking of that many billing values is
+    exactly the kind of thing that produces a silent field-order bug."""
+    billable_minutes: float
+    production_level: str
+    production_multiplier: float
+    quality: str
+    quality_multiplier: float
+    combined_multiplier: float
+
+
+def compute_billable_minutes(
+    duration_seconds: float, production_level: str, quality: str = "simple",
+) -> BillableMinutesResult:
+    """render usage = video duration (minutes) x production-level multiplier
+    x quality multiplier. Quality (simple/hd/hd_plus) is a second,
+    independent cost driver on top of production_level — same mechanical
+    role, applied multiplicatively — see QUALITY_MULTIPLIERS."""
     level = normalize_production_level(production_level)
-    multiplier = PRODUCTION_LEVEL_MULTIPLIERS[level]
+    production_multiplier = PRODUCTION_LEVEL_MULTIPLIERS[level]
+    quality_level = normalize_quality(quality)
+    quality_multiplier = QUALITY_MULTIPLIERS[quality_level]
+    combined_multiplier = production_multiplier * quality_multiplier
     duration_minutes = max(float(duration_seconds), 0.0) / 60.0
-    billable_minutes = round(duration_minutes * multiplier, 4)
-    return billable_minutes, multiplier, level
+    billable_minutes = round(duration_minutes * combined_multiplier, 4)
+    return BillableMinutesResult(
+        billable_minutes=billable_minutes,
+        production_level=level,
+        production_multiplier=production_multiplier,
+        quality=quality_level,
+        quality_multiplier=quality_multiplier,
+        combined_multiplier=combined_multiplier,
+    )
 
 
 async def check_render_preflight(db: AsyncSession, owner_id: str) -> None:
@@ -330,6 +360,7 @@ async def deduct_render_usage(
     cast_id: Optional[str],
     duration_seconds: float,
     production_level: str,
+    quality: str = "simple",
 ) -> RenderUsageRecord:
     """Bill a completed render. Cascades: included allowance -> PAYG
     credits -> overage. Idempotent on `render_id`."""
@@ -339,7 +370,9 @@ async def deduct_render_usage(
     if existing:
         return existing
 
-    billable_minutes, multiplier, level = compute_billable_minutes(duration_seconds, production_level)
+    result = compute_billable_minutes(duration_seconds, production_level, quality)
+    billable_minutes = result.billable_minutes
+    level = result.production_level
     remaining = billable_minutes
 
     subscription = await get_active_subscription(db, owner_id)
@@ -417,7 +450,9 @@ async def deduct_render_usage(
         usage_period_id=period.id,
         duration_seconds=float(duration_seconds or 0.0),
         production_level=level,
-        multiplier=multiplier,
+        multiplier=result.production_multiplier,
+        quality=result.quality,
+        quality_multiplier=result.quality_multiplier,
         billable_minutes=billable_minutes,
         included_minutes_applied=included_applied,
         credits_minutes_applied=credits_applied,

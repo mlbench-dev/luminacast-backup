@@ -46,7 +46,8 @@ const ContextMenuContent = React.forwardRef<
 	<ContextMenuPrimitive.Portal>
 		<ContextMenuPrimitive.Content
 			ref={ref}
-			className={`bg-editor-starter-panel z-50 min-w-[8rem] overflow-hidden rounded-md p-1 text-white shadow-lg ${className || ''}`}
+			className={`border-editor-starter-border bg-editor-starter-panel z-50 min-w-[8rem] overflow-hidden rounded-md border p-1 text-white shadow-xl ${className || ''}`}
+			style={{backgroundColor: 'var(--color-editor-starter-panel, #16161e)'}}
 			{...props}
 		/>
 	</ContextMenuPrimitive.Portal>

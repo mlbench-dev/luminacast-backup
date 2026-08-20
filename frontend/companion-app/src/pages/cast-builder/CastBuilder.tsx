@@ -85,7 +85,13 @@ export function CastBuilderPage() {
       setCast((prev) => {
         if (!prev) return loadedCast; // initial load
         if (loadedCast.version && loadedCast.version > (prev.version ?? 0)) return loadedCast; // genuine update
-        if (!initialLoadDoneRef.current) { initialLoadDoneRef.current = true; return loadedCast; }
+        if (!initialLoadDoneRef.current) {
+          initialLoadDoneRef.current = true;
+          // Merge rather than replace: if the GET response is ever missing a
+          // field the just-created cast already had in memory (e.g. a field
+          // not yet wired into the GET serializer), don't silently drop it.
+          return { ...prev, ...loadedCast };
+        }
         return prev; // don't overwrite with stale cached data
       });
       const inferred = statusToPhase(loadedCast.status);

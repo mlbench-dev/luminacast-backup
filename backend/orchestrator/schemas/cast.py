@@ -117,6 +117,7 @@ class CastResponse(BaseModel):
     quality: Optional[str] = "simple"
     output_format: Optional[str] = None
     cast_type: Optional[str] = "recorded"
+    production_level: Optional[str] = "standard"
     total_clips: int = 0
     completed_clips: int = 0
     progress_step: Optional[str] = None

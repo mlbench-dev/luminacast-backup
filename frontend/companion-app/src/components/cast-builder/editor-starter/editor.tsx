@@ -10,7 +10,6 @@ import {Toaster} from "sonner";
 import {ActionRow} from "./action-row/action-row";
 import {CaptionStyleBar} from "./captioning/caption-style-bar";
 import {ContextProvider} from "./context-provider";
-import "./editor-starter.css";
 import {FEATURE_RESIZE_TIMELINE_PANEL} from "./flags";
 import {ForceSpecificCursor} from "./force-specific-cursor";
 import {PlaybackControls} from "./playback-controls";

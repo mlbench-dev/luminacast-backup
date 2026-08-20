@@ -3792,6 +3792,10 @@ async def _render_clip_from_parent(render_id: str, child_cast_id: str) -> None:
         block_ids = list(child.clip_block_ids or [])
         user_id = child.user_id
         production_level = child.production_level or "standard"
+        # Snapshot at render-creation time (CastRender.quality), not the
+        # Cast row's live quality — avoids billing the wrong tier if the
+        # user edits quality while this render is still in flight.
+        render_quality = render.quality or (child.quality.value if child.quality else None) or "simple"
         parent = await session.get(Cast, parent_id) if parent_id else None
         if not parent:
             raise RuntimeError(f"Parent cast {parent_id} not found for clip child {child_cast_id}")
@@ -3933,6 +3937,7 @@ async def _render_clip_from_parent(render_id: str, child_cast_id: str) -> None:
                 cast_id=child_cast_id,
                 duration_seconds=float(result.get("duration_seconds") or 0.0),
                 production_level=production_level,
+                quality=render_quality,
             )
     except Exception as bill_exc:
         sentry_sdk.capture_exception(bill_exc)
@@ -7093,13 +7098,24 @@ async def _render_async(task, render_id: str):
 
     # Update the cast with the final video URL
     production_level = "standard"
+    render_quality = "simple"
     async with factory() as session:
         from models.cast import Cast, CastStatus
+        from models.cast_render import CastRender
         cast = await session.get(Cast, cast_id)
         if cast:
             cast.final_video_url = r2.get_public_url(output_key)
             cast.status = CastStatus.READY
             production_level = cast.production_level or "standard"
+            # Snapshot at render-creation time (CastRender.quality), not the
+            # Cast row's live quality — avoids billing the wrong tier if the
+            # user edits quality while this render is still in flight.
+            render_row = await session.get(CastRender, render_id)
+            render_quality = (
+                (render_row.quality if render_row else None)
+                or (cast.quality.value if cast.quality else None)
+                or "simple"
+            )
             await session.commit()
 
     # Billing: meter this render (included allowance -> PAYG credits ->
@@ -7117,6 +7133,7 @@ async def _render_async(task, render_id: str):
                 cast_id=cast_id,
                 duration_seconds=final_duration_s,
                 production_level=production_level,
+                quality=render_quality,
             )
     except Exception as bill_exc:
         sentry_sdk.capture_exception(bill_exc)

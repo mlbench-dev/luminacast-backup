@@ -175,7 +175,7 @@ export const CaptionStyleBar: React.FC = () => {
 								'group flex h-12 min-w-[110px] shrink-0 flex-col items-center justify-center gap-0.5 rounded border px-2 transition-colors',
 								active
 									? 'border-editor-starter-accent bg-editor-starter-accent/10 text-white'
-									: 'border-white/10 text-white/70 hover:border-white/25 hover:text-white',
+									: 'border-white/15 bg-white/5 text-white/70 hover:border-white/30 hover:bg-white/10 hover:text-white',
 							)}
 						>
 							<span className="flex items-center gap-1 text-[9px] uppercase tracking-wider opacity-70">

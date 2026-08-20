@@ -97,23 +97,92 @@ async def _make_subscription(
 
 class TestComputeBillableMinutes:
     def test_standard_multiplier_is_one(self):
-        minutes, multiplier, level = billing_service.compute_billable_minutes(120, "standard")
-        assert minutes == 2.0
-        assert multiplier == 1.0
-        assert level == "standard"
+        result = billing_service.compute_billable_minutes(120, "standard")
+        assert result.billable_minutes == 2.0
+        assert result.production_multiplier == 1.0
+        assert result.production_level == "standard"
+        # Default quality ("simple") contributes a 1.0x multiplier too.
+        assert result.quality == "simple"
+        assert result.quality_multiplier == 1.0
+        assert result.combined_multiplier == 1.0
 
     def test_premium_multiplier_applies(self):
         # 2-minute video at 1.5x premium multiplier -> 3 billable minutes.
-        minutes, multiplier, level = billing_service.compute_billable_minutes(120, "premium")
-        assert minutes == 3.0
-        assert multiplier == 1.5
-        assert level == "premium"
+        result = billing_service.compute_billable_minutes(120, "premium")
+        assert result.billable_minutes == 3.0
+        assert result.production_multiplier == 1.5
+        assert result.production_level == "premium"
 
     def test_unknown_level_normalizes_to_standard(self):
-        minutes, multiplier, level = billing_service.compute_billable_minutes(60, "quick")
-        assert level == "standard"
-        assert multiplier == 1.0
-        assert minutes == 1.0
+        result = billing_service.compute_billable_minutes(60, "quick")
+        assert result.production_level == "standard"
+        assert result.production_multiplier == 1.0
+        assert result.billable_minutes == 1.0
+
+    def test_quality_multiplier_applies_independently_of_production_level(self):
+        # hd_plus (2.0x) at standard (1.0x) production -> combined 2.0x.
+        # 1-minute video -> 2.0 billable minutes.
+        result = billing_service.compute_billable_minutes(60, "standard", "hd_plus")
+        assert result.quality == "hd_plus"
+        assert result.quality_multiplier == 2.0
+        assert result.production_multiplier == 1.0
+        assert result.combined_multiplier == 2.0
+        assert result.billable_minutes == 2.0
+
+    def test_both_multipliers_combine_multiplicatively(self):
+        # premium (1.5x) * hd_plus (2.0x) = 3.0x combined.
+        # 1-minute video -> 3.0 billable minutes.
+        result = billing_service.compute_billable_minutes(60, "premium", "hd_plus")
+        assert result.combined_multiplier == 3.0
+        assert result.billable_minutes == 3.0
+
+    def test_unknown_quality_normalizes_to_simple(self):
+        result = billing_service.compute_billable_minutes(60, "standard", "ultra_hd")
+        assert result.quality == "simple"
+        assert result.quality_multiplier == 1.0
+
+    def test_none_quality_defaults_to_simple(self):
+        result = billing_service.compute_billable_minutes(60, "standard", None)
+        assert result.quality == "simple"
+        assert result.quality_multiplier == 1.0
+
+
+class TestQualityAwareBilling:
+    @pytest.mark.asyncio
+    async def test_deduct_render_usage_persists_quality(self, db_session, make_user):
+        # Subscribed so the render bills at the overage rate rather than
+        # tripping the free-tier/preflight path — isolates the quality math.
+        user = await make_user(email=f"quality1_{uuid.uuid4().hex[:6]}@test.com")
+        await _make_subscription(db_session, user, plan="pro", interval="month")
+        render = await _make_cast_render(db_session, user)
+
+        # 2-minute render at standard production + hd quality (1.4x) ->
+        # 2.8 billable minutes.
+        record = await billing_service.deduct_render_usage(
+            db_session, user_id=user.id, owner_id=user.id, render_id=render.id,
+            cast_id=render.cast_id, duration_seconds=120,
+            production_level="standard", quality="hd",
+        )
+        assert record.quality == "hd"
+        assert record.quality_multiplier == 1.4
+        assert record.multiplier == 1.0  # production multiplier unaffected
+        assert record.billable_minutes == 2.8
+
+    @pytest.mark.asyncio
+    async def test_deduct_render_usage_defaults_quality_to_simple(self, db_session, make_user):
+        # Existing callers that never pass `quality` must keep working
+        # unchanged — default preserves prior behavior exactly.
+        user = await make_user(email=f"quality2_{uuid.uuid4().hex[:6]}@test.com")
+        await _make_subscription(db_session, user, plan="pro", interval="month")
+        render = await _make_cast_render(db_session, user)
+
+        record = await billing_service.deduct_render_usage(
+            db_session, user_id=user.id, owner_id=user.id, render_id=render.id,
+            cast_id=render.cast_id, duration_seconds=120, production_level="standard",
+        )
+        assert record.quality == "simple"
+        assert record.quality_multiplier == 1.0
+        assert record.billable_minutes == 2.0
 
 
 class TestFreeTier:

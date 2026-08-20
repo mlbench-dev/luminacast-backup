@@ -59,6 +59,30 @@ PRODUCTION_LEVEL_MULTIPLIERS: dict[str, float] = {
     ProductionLevel.PREMIUM.value: 1.5,
 }
 
+# Cast.quality (simple/hd/hd_plus) is a SEPARATE, independent multiplier on
+# billable render-minutes, applied alongside (multiplied with) the
+# production-level multiplier above — quality previously had zero effect on
+# real billing despite being a real render-resolution/cost driver. Values
+# match routers/casts/crud.py's estimate-cost endpoint (the number users
+# already see live in Setup), so the displayed estimate and the real charge
+# agree.
+#
+# Deliberately NOT normalized via normalize_production_level/
+# PRODUCTION_LEVEL_ALIASES above — that dict already contains "hd"/"hd_plus"
+# as keys (mapped to "premium", an unrelated pre-existing accident), so
+# routing a quality value through it would silently misinterpret it as a
+# production tier instead of a quality multiplier.
+QUALITY_MULTIPLIERS: dict[str, float] = {
+    "simple": 1.0,
+    "hd": 1.4,
+    "hd_plus": 2.0,
+}
+
+
+def normalize_quality(value: str | None) -> str:
+    level = (value or "").lower()
+    return level if level in QUALITY_MULTIPLIERS else "simple"
+
 # Starter is marketed as "Unlimited social accounts" with a fair-use limit
 # enforced (not advertised) internally. Configurable here rather than
 # scattered through the social-account-connect flow.

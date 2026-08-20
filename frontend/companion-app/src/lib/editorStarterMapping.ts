@@ -285,6 +285,7 @@ export function castToEditorStarterTimeline(
 
     // Determine V1 source: prefer rendered video, fall back to avatar face image
     const videoSrc =
+      (variant.final_video_key ? cdnUrl(variant.final_video_key) : "") ||
       variant.stream_url ||
       variant.clip_url ||
       (variant.video_key ? cdnUrl(variant.video_key) : "");
