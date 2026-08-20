@@ -974,7 +974,7 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
           generator's block-category mix. Visible only in Auto Cast — in
           manual mode the LQ↔HQ slider already drives the spend dial. */}
       {autoCast && (
-        <ProductionLevelSelector value={productionLevel} onChange={setProductionLevel} />
+        <ProductionLevelSelector value={productionLevel} onChange={setProductionLevel} hasTemplate={!!selectedTemplate} />
       )}
 
       {/* Background music picker — Off / Auto / Specific track. Auto (default)
@@ -1251,11 +1251,19 @@ function TemplateGrid({
  * ProductionLevelSelector — three-card picker for the production budget.
  *
  * Replaces the legacy AI-Plan chip preview. The user picks one of three
- * archetypes; the backend uses it at outline-time to constrain the block-
- * category mix:
- *   - Quick:    avatar talking to camera, single shot (cheap, fast).
- *   - Standard: mixed shots + b-roll cutaways + voiceover + talking head.
- *   - Premium:  full production — adds motion, effects, graphics, music.
+ * tiers, applied ON TOP of whichever Template is selected above — it never
+ * overrides the template's identity, only how lean/full a cut of it you get:
+ *   - Quick:    the leanest structurally-valid cut — repeated beats
+ *               collapsed to one, b-roll trimmed toward the template's low
+ *               end, shortest duration in the template's range.
+ *   - Standard: the template's natural block count, bias, and duration —
+ *               unchanged from today's behavior.
+ *   - Premium:  one extra beat, b-roll pushed toward the template's high
+ *               end, longest duration in the template's range.
+ *
+ * This is a no-op with no Template selected (Auto mode) — there's no
+ * per-template data to derive a lean/full cut from, same as how the
+ * Template constraint itself only applies once one is picked.
  *
  * The numbers shown are rough per-cast GPU estimates so the user knows
  * the order of magnitude before they hit Generate.
@@ -1263,30 +1271,32 @@ function TemplateGrid({
 function ProductionLevelSelector({
   value,
   onChange,
+  hasTemplate,
 }: {
   value: "quick" | "standard" | "premium";
   onChange: (v: "quick" | "standard" | "premium") => void;
+  hasTemplate: boolean;
 }) {
   const LEVELS = [
     {
       id: "quick" as const,
       name: "Quick",
       icon: "⚡",
-      desc: "Avatar talking to camera. Fast, simple, authentic.",
+      desc: "Fewer beats (no repeats), mostly talking-head, shortest cut of your chosen format.",
       price: "~$0.35",
     },
     {
       id: "standard" as const,
       name: "Standard",
       icon: "✦",
-      desc: "Mixed shots, B-roll cutaways, voiceover, talking head.",
+      desc: "Your template's natural beat count, shot mix, and length — unchanged.",
       price: "~$0.85",
     },
     {
       id: "premium" as const,
       name: "Premium",
       icon: "★",
-      desc: "Full production. Effects, motion, graphics, music.",
+      desc: "One extra beat, more b-roll, longest cut of your chosen format.",
       price: "~$1.50",
     },
   ];
@@ -1295,6 +1305,11 @@ function ProductionLevelSelector({
       <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-accent/80 flex items-center gap-1.5">
         <Sparkles className="w-3 h-3" /> Production Level
       </h3>
+      {!hasTemplate && (
+        <p className="text-[10px] text-amber-400/70 -mt-1">
+          Applies to the format you pick above — select one to unlock this.
+        </p>
+      )}
       <div className="grid grid-cols-3 gap-3">
         {LEVELS.map((level) => {
           const active = value === level.id;

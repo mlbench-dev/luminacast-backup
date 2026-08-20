@@ -755,7 +755,7 @@ async def generate_outline(
     duration_target_seconds: int = None, platform_target: str = "tiktok",
     user_id: Optional[str] = None, template: Optional[dict] = None,
     live_assessment: Optional[dict] = None, live_reference_id: Optional[str] = None,
-    live_mode_defaults: Optional[dict] = None,
+    live_mode_defaults: Optional[dict] = None, production_level: str = "standard",
 ) -> list[dict]:
     """
     Generate script outline for a Cast using LLM.
@@ -780,6 +780,10 @@ async def generate_outline(
     logger.warning("[prompt-audit-entry] cast=%s generator=generate_outline", cast_id)
 
     template_constraint = _build_template_constraint(template)
+    production_level = _normalize_production_level_for_generation(production_level)
+    effective_duration_target = _effective_duration_target_seconds(
+        duration_target_seconds, template, production_level,
+    )
     live_defaults_section = _build_live_defaults_section(live_mode_defaults)
     if live_defaults_section:
         logger.info("[live-defaults] cast=%s applying live_mode_defaults=%s", cast_id, live_mode_defaults)
@@ -833,8 +837,8 @@ Description: {av_desc or 'Professional creator'}
 """
 
         duration_directive = (
-            f"Exactly {duration_target_seconds} seconds"
-            if duration_target_seconds
+            f"Exactly {effective_duration_target} seconds"
+            if effective_duration_target
             else "Between 30 and 90 seconds, pick what fits the goal"
         )
 
@@ -984,15 +988,15 @@ Return valid JSON array of scenes."""
                 cast_id, _framings, len(set(f for f in _framings if f)),
             )
 
-            # Duration sanity check: if duration_target_seconds is set, verify total ±20%
-            if duration_target_seconds and scenes:
+            # Duration sanity check: if effective_duration_target is set, verify total ±20%
+            if effective_duration_target and scenes:
                 total_est = sum(s.get("estimated_duration_seconds", 10) for s in scenes)
-                deviation = abs(total_est - duration_target_seconds) / duration_target_seconds
+                deviation = abs(total_est - effective_duration_target) / effective_duration_target
                 if deviation > 0.2:
-                    _log("warning", f"Outline total duration {total_est}s deviates {deviation*100:.0f}% from target {duration_target_seconds}s, re-prompting once",
-                         cast_id=cast_id, total_est=total_est, target=duration_target_seconds)
-                    correction = f"""The blocks you produced total {total_est}s but the user requested {duration_target_seconds}s.
-Adjust the number of blocks and per-block durations to hit {duration_target_seconds}s (±20%). Return the corrected JSON array only."""
+                    _log("warning", f"Outline total duration {total_est}s deviates {deviation*100:.0f}% from target {effective_duration_target}s, re-prompting once",
+                         cast_id=cast_id, total_est=total_est, target=effective_duration_target)
+                    correction = f"""The blocks you produced total {total_est}s but the user requested {effective_duration_target}s.
+Adjust the number of blocks and per-block durations to hit {effective_duration_target}s (±20%). Return the corrected JSON array only."""
                     _oai2 = get_openrouter_service()
                     response2 = await _oai2.generate_text(
                         prompt=correction,
@@ -1030,19 +1034,27 @@ Adjust the number of blocks and per-block durations to hit {duration_target_seco
                             if _rotated2:
                                 logger.info("[framing-rotation] cast=%s rotated=%d blocks", cast_id, _rotated2)
                             total_est2 = sum(s.get("estimated_duration_seconds", 10) for s in scenes2)
-                            _log("info", f"Re-prompted outline: {total_est2}s (was {total_est}s, target {duration_target_seconds}s)",
+                            _log("info", f"Re-prompted outline: {total_est2}s (was {total_est}s, target {effective_duration_target}s)",
                                  cast_id=cast_id)
-                            return _clamp_outline_duration_strict(
-                                _enforce_outline_duration(scenes2, duration_target_seconds, cast_id=cast_id),
-                                duration_target_seconds, cast_id=cast_id,
+                            block_cap2 = _production_level_block_cap(template, production_level)
+                            scenes2 = _enforce_block_count_cap(scenes2, block_cap2, cast_id=cast_id)
+                            scenes2 = _clamp_outline_duration_strict(
+                                _enforce_outline_duration(scenes2, effective_duration_target, cast_id=cast_id),
+                                effective_duration_target, cast_id=cast_id,
+                            )
+                            return _enforce_template_broll_ratio(
+                                scenes2, template, production_level, cast_id=cast_id,
                             )
                     except (json.JSONDecodeError, TypeError):
                         _log("warning", "Re-prompt correction parse failed, using original", cast_id=cast_id)
 
-            return _clamp_outline_duration_strict(
-                _enforce_outline_duration(scenes, duration_target_seconds, cast_id=cast_id),
-                duration_target_seconds, cast_id=cast_id,
+            block_cap = _production_level_block_cap(template, production_level)
+            scenes = _enforce_block_count_cap(scenes, block_cap, cast_id=cast_id)
+            scenes = _clamp_outline_duration_strict(
+                _enforce_outline_duration(scenes, effective_duration_target, cast_id=cast_id),
+                effective_duration_target, cast_id=cast_id,
             )
+            return _enforce_template_broll_ratio(scenes, template, production_level, cast_id=cast_id)
     except (json.JSONDecodeError, TypeError) as e:
         _log("error", "Failed to parse outline JSON", cast_id=cast_id, error=str(e), response_preview=cleaned[:500])
         import sentry_sdk
@@ -1882,6 +1894,16 @@ _LIVE_RATIO_DEFAULTS = (0.35, 0.45, 0.20)  # avatar, broll, uploaded
 _AVATAR_RATIO_CATEGORIES = {"avatar_speaking", "avatar_action"}
 _BROLL_RATIO_CATEGORIES = {"avatar_voiceover", "stock_video", "stock_photo"}
 
+# Production-level b-roll adjustment, applied on top of a *template's own*
+# bias["broll"] (services.cast_templates.TEMPLATES) rather than the global
+# env-tunable ratios above — see _production_level_avatar_ratio/
+# _enforce_template_broll_ratio below. Quick pulls b-roll down toward a pure
+# talking-head cut; Premium pushes it up toward a fuller-production cut.
+_QUICK_BROLL_ADJUST = 0.15
+_PREMIUM_BROLL_ADJUST = 0.15
+_BROLL_RATIO_FLOOR = 0.0
+_BROLL_RATIO_CEILING = 0.85
+
 
 def _live_ratio_short_form_max_seconds() -> int:
     import os
@@ -1927,35 +1949,31 @@ def get_live_category_ratios() -> tuple[float, float, float]:
     return (avatar / total, broll / total, uploaded / total)
 
 
-def _enforce_live_ratios(
+def _demote_surplus_avatar_blocks(
     scenes: list[dict],
-    duration_target_seconds: int | None,
+    avatar_ratio: float,
     cast_id: str | None = None,
+    log_label: str = "Live-ratio bias",
 ) -> list[dict]:
-    """Bias a short-form live/standard cast toward VO + b-roll, away from
-    full avatar-speaking blocks.
+    """Shared core: cap talking-head blocks at ``avatar_ratio`` of the plan.
 
-    Only the AVATAR target is enforced as a CAP: if more than ``avatar_ratio``
-    of the blocks are talking-head, the surplus avatar_speaking blocks (never
-    the first — the hook — nor the last — the CTA) are re-categorised to
-    avatar_voiceover so the same script now narrates over b-roll instead of a
-    talking head. Block count, order, durations and product refs are untouched;
-    only the visual treatment changes. The uploaded-video target is satisfied
-    separately by :func:`inject_product_asset_video` when assets exist.
-
-    No-op for long-form casts (> ``LIVE_RATIO_MAX_SECONDS``) and for plans with
-    fewer than 3 blocks (nothing to rebalance without touching the bookends).
-    Wrapped so a rebalance bug can never abort outline generation.
+    If more than ``avatar_ratio`` of the blocks are talking-head, the surplus
+    avatar_speaking blocks (never the first — the hook — nor the last — the
+    CTA) are re-categorised to avatar_voiceover so the same script now
+    narrates over b-roll instead of a talking head. Block count, order,
+    durations and product refs are untouched; only the visual treatment
+    changes. No-op for plans with fewer than 3 blocks (nothing to rebalance
+    without touching the bookends). Used by both :func:`_enforce_live_ratios`
+    (global env-tunable ratio, Auto/no-template mode) and
+    :func:`_enforce_template_broll_ratio` (per-template + production-level
+    ratio) — same mechanism, different source for the target ratio.
     """
     import sentry_sdk
 
     try:
         if not isinstance(scenes, list) or len(scenes) < 3:
             return scenes
-        if duration_target_seconds and duration_target_seconds > _live_ratio_short_form_max_seconds():
-            return scenes
 
-        avatar_ratio, _broll_ratio, _uploaded_ratio = get_live_category_ratios()
         n = len(scenes)
         max_avatar = max(1, int(round(avatar_ratio * n)))
 
@@ -1992,7 +2010,7 @@ def _enforce_live_ratios(
         if demoted:
             _log(
                 "info",
-                "Live-ratio bias: demoted surplus avatar blocks to voiceover",
+                f"{log_label}: demoted surplus avatar blocks to voiceover",
                 cast_id=cast_id,
                 demoted=demoted,
                 block_count=n,
@@ -2003,6 +2021,191 @@ def _enforce_live_ratios(
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
         return scenes
+
+
+def _enforce_live_ratios(
+    scenes: list[dict],
+    duration_target_seconds: int | None,
+    cast_id: str | None = None,
+) -> list[dict]:
+    """Bias a short-form live/standard cast toward VO + b-roll, away from
+    full avatar-speaking blocks, using the global env-tunable ratios.
+
+    No-op for long-form casts (> ``LIVE_RATIO_MAX_SECONDS``) — this global
+    ratio is a short-form-only default, unlike the per-template ratio in
+    :func:`_enforce_template_broll_ratio`, which applies at any duration.
+    Used only when no template is selected (Auto mode); see the call sites
+    in generate_outline/generate_smart_outline. Wrapped so a rebalance bug
+    can never abort outline generation.
+    """
+    import sentry_sdk
+
+    try:
+        if not isinstance(scenes, list) or len(scenes) < 3:
+            return scenes
+        if duration_target_seconds and duration_target_seconds > _live_ratio_short_form_max_seconds():
+            return scenes
+
+        avatar_ratio, _broll_ratio, _uploaded_ratio = get_live_category_ratios()
+        return _demote_surplus_avatar_blocks(scenes, avatar_ratio, cast_id=cast_id, log_label="Live-ratio bias")
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        return scenes
+
+
+def _production_level_avatar_ratio(template: Optional[dict], production_level: str) -> Optional[float]:
+    """Avatar-side ratio target for :func:`_enforce_template_broll_ratio`.
+
+    Derived from the *template's own* bias["broll"] (services.cast_templates)
+    rather than the global env-tunable ratios above — Standard uses the
+    template's bias as-is (now numerically enforced, not just soft-prompted
+    via _build_template_constraint); Quick pulls b-roll down toward a purer
+    talking-head cut; Premium pushes it up toward a fuller-production cut.
+    Returns None when there's no template to derive a ratio from.
+    """
+    if not template:
+        return None
+    base_broll = float((template.get("bias") or {}).get("broll", 0.0))
+    if production_level == "quick":
+        broll = max(_BROLL_RATIO_FLOOR, base_broll - _QUICK_BROLL_ADJUST)
+    elif production_level == "premium":
+        broll = min(_BROLL_RATIO_CEILING, base_broll + _PREMIUM_BROLL_ADJUST)
+    else:
+        broll = base_broll
+    return max(0.0, min(1.0, 1.0 - broll))
+
+
+def _enforce_template_broll_ratio(
+    scenes: list[dict],
+    template: Optional[dict],
+    production_level: str,
+    cast_id: str | None = None,
+) -> list[dict]:
+    """Template + production-level-aware sibling of :func:`_enforce_live_ratios`.
+
+    Used (instead of the global env-ratio version) whenever a template is
+    selected, for BOTH generate_outline and generate_smart_outline — unlike
+    _enforce_live_ratios, this has no short-form gate, since a template's
+    intended shot mix should hold regardless of the cast's duration.
+    """
+    avatar_ratio = _production_level_avatar_ratio(template, production_level)
+    if avatar_ratio is None:
+        return scenes
+    return _demote_surplus_avatar_blocks(
+        scenes, avatar_ratio, cast_id=cast_id, log_label="Template b-roll ratio",
+    )
+
+
+def _normalize_production_level_for_generation(value: Optional[str]) -> str:
+    """Normalize production_level for GENERATION purposes only.
+
+    Deliberately separate from services.billing_config.normalize_production_level,
+    which collapses the legacy "quick" value to "standard" for BILLING rate
+    purposes — reusing that here would silently erase the quick tier this
+    module needs to keep distinct. Anything unrecognized (None, "", or a
+    legacy quality value like "simple"/"hd"/"hd_plus") defaults to "standard".
+    """
+    level = (value or "").strip().lower()
+    return level if level in ("quick", "standard", "premium") else "standard"
+
+
+def _production_level_block_cap(template: Optional[dict], production_level: str) -> Optional[int]:
+    """Total block-count cap for the chosen production level.
+
+    Quick collapses the template's block_sequence down to its unique block
+    types (repeats removed) — the leanest structurally-valid cut of the
+    format. Premium allows one extra beat beyond the template's normal
+    length. Standard is unchanged (the template's natural length — same as
+    today). None when no template is selected (Auto mode stays a no-op,
+    matching _build_template_constraint's own behavior).
+    """
+    if not template:
+        return None
+    seq = template.get("block_sequence") or []
+    if not seq:
+        return None
+    if production_level == "quick":
+        return max(2, len(set(seq)))
+    if production_level == "premium":
+        return len(seq) + 1
+    return len(seq)
+
+
+def _enforce_block_count_cap(
+    scenes: list[dict],
+    cap: Optional[int],
+    cast_id: str | None = None,
+) -> list[dict]:
+    """Trim ``scenes`` down to ``cap`` blocks, mirroring the middle-drop
+    pattern already used by _enforce_outline_duration for duration caps.
+
+    Protects index 0 (hook), index -1 (CTA), and any scene already marked
+    ``injected`` (product/broll/video beats added by
+    _ensure_product_and_broll_beats / inject_product_asset_video) — this is
+    a soft structural ceiling, never a hard guarantee, so if every remaining
+    scene is protected it stops early rather than violating one of them.
+    """
+    import sentry_sdk
+
+    try:
+        if cap is None or not isinstance(scenes, list) or len(scenes) <= cap:
+            return scenes
+        scenes = list(scenes)
+        removed = 0
+        while len(scenes) > cap:
+            n = len(scenes)
+            protected = {0, n - 1}
+            candidates = [
+                i for i in range(n)
+                if i not in protected and not (isinstance(scenes[i], dict) and scenes[i].get("injected"))
+            ]
+            if not candidates:
+                break
+            # Drop from the middle, same spot _enforce_outline_duration pops from.
+            drop_idx = candidates[len(candidates) // 2]
+            scenes.pop(drop_idx)
+            removed += 1
+        if removed:
+            _log(
+                "info",
+                "Production-level block cap: trimmed outline",
+                cast_id=cast_id,
+                removed=removed,
+                cap=cap,
+                remaining=len(scenes),
+            )
+        return scenes
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        return scenes
+
+
+def _effective_duration_target_seconds(
+    duration_target_seconds: Optional[int],
+    template: Optional[dict],
+    production_level: str,
+) -> Optional[int]:
+    """Combine the user's manual duration slider with the template's
+    production-level duration ceiling — tightening-only, never expanding
+    what the user explicitly set.
+
+    Standard, or no template: returns duration_target_seconds unchanged.
+    Quick/Premium with a template: derives a ceiling from the template's own
+    est_duration_range ([lo, hi] seconds) — Quick clamps to lo, Premium
+    allows up to hi. If the user set a manual target, returns
+    min(user_value, ceiling); if they didn't, returns the ceiling itself
+    (a concrete number instead of no target at all).
+    """
+    if not template or production_level == "standard":
+        return duration_target_seconds
+    dur_range = template.get("est_duration_range") or []
+    if len(dur_range) != 2:
+        return duration_target_seconds
+    lo, hi = dur_range
+    ceiling = lo if production_level == "quick" else hi
+    if duration_target_seconds:
+        return min(int(duration_target_seconds), int(ceiling))
+    return int(ceiling)
 
 
 # ── PR E: prefer the product's own uploaded video footage ────────────────────
@@ -2112,6 +2315,7 @@ async def generate_smart_outline(
     live_assessment: Optional[dict] = None,
     live_reference_id: Optional[str] = None,
     live_mode_defaults: Optional[dict] = None,
+    production_level: str = "standard",
 ) -> tuple[list[dict], dict | None]:
     """Smart Cast outline: LLM designs the whole video.
 
@@ -2169,6 +2373,10 @@ async def generate_smart_outline(
 
     style_dna_section = _build_style_dna_section(persona)
     template_constraint = _build_template_constraint(template)
+    production_level = _normalize_production_level_for_generation(production_level)
+    effective_duration_target = _effective_duration_target_seconds(
+        duration_target_seconds, template, production_level,
+    )
     live_defaults_section = _build_live_defaults_section(live_mode_defaults)
     if live_defaults_section:
         logger.info("[live-defaults] cast=%s applying live_mode_defaults=%s", cast_id, live_mode_defaults)
@@ -2184,7 +2392,7 @@ async def generate_smart_outline(
 PLATFORM: {platform_target}
 ASPECT RATIO: {aspect_ratio}
 QUALITY TIER: {quality_tier}
-DURATION TARGET: {duration_target_seconds} seconds (±10%).
+DURATION TARGET: {effective_duration_target} seconds (±10%).
 {template_constraint}
 {live_defaults_section}
 Design the complete video. Match the user's intent EXACTLY — do not default to selling
@@ -2356,11 +2564,11 @@ Return ONLY a valid JSON array of blocks following the schema in the system prom
         sanitized.append(b)
 
     sanitized = _enforce_outline_duration(
-        sanitized, duration_target_seconds, cast_id=cast_id,
+        sanitized, effective_duration_target, cast_id=cast_id,
     )
     # PR #66 Fix 3: tight ±10% clamp on top of the existing ±30% trim.
     sanitized = _clamp_outline_duration_strict(
-        sanitized, duration_target_seconds, cast_id=cast_id,
+        sanitized, effective_duration_target, cast_id=cast_id,
     )
 
     # regression-6: product/review casts MUST show the product and cut to at
@@ -2370,17 +2578,31 @@ Return ONLY a valid JSON array of blocks following the schema in the system prom
         sanitized, content_type, products, cast_id=cast_id,
     )
 
+    # Production-level block-count cap — runs right after mandatory beat
+    # injection so those beats exist (and are protected via their "injected"
+    # marker) before any structural trim. No-op in Auto mode (no template).
+    block_cap = _production_level_block_cap(template, production_level)
+    sanitized = _enforce_block_count_cap(sanitized, block_cap, cast_id=cast_id)
+
     # PR E — collapse any duplicate-position siblings the LLM emitted (the
     # cst_db7b2b7ef5ac bug) to exactly one block per position. Runs before the
     # ratio bias / product-asset injection so those operate on the clean plan.
     sanitized = _dedupe_outline_by_position(sanitized, cast_id=cast_id)
     sanitized = dedupe_outline_scenes(sanitized, cast_id=cast_id)
 
-    # PR E — bias short-form live/standard casts toward voiceover + b-roll and
-    # away from full avatar-speaking blocks (env-tunable ratios).
-    sanitized = _enforce_live_ratios(
-        sanitized, duration_target_seconds, cast_id=cast_id,
-    )
+    # Bias screen time toward voiceover + b-roll and away from full
+    # avatar-speaking blocks. When a template is selected, use ITS bias
+    # (adjusted for production_level) instead of the global env-tunable
+    # short-form-only ratio, so the enforced mix matches what the user
+    # actually picked rather than a template-agnostic default.
+    if template:
+        sanitized = _enforce_template_broll_ratio(
+            sanitized, template, production_level, cast_id=cast_id,
+        )
+    else:
+        sanitized = _enforce_live_ratios(
+            sanitized, effective_duration_target, cast_id=cast_id,
+        )
 
     # PR E — when the bound product has its own uploaded video footage, insert
     # a block that puts that real footage on screen instead of generic stock.

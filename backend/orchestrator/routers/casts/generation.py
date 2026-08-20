@@ -284,6 +284,7 @@ async def generate_outline(
         template=get_template(getattr(cast, 'template_id', None)),
         live_assessment=live_assessment,
         live_mode_defaults=getattr(cast, 'live_mode_defaults', None),
+        production_level=getattr(cast, 'production_level', None) or 'standard',
     )
 
     # Replace any existing blocks before re-persisting. Without this a second
@@ -636,6 +637,7 @@ async def generate_smart_outline_endpoint(
         product_video_assets=product_video_assets,
         live_assessment=live_assessment,
         live_mode_defaults=getattr(cast, "live_mode_defaults", None),
+        production_level=getattr(cast, "production_level", None) or "standard",
     )
     if not outline:
         raise HTTPException(502, "Smart outline generation failed — try again.")
