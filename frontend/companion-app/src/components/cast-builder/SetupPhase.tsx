@@ -448,6 +448,35 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
   const durationMaxSeconds = isLive ? LIVE_MAX_SECONDS : RECORDED_MAX_SECONDS;
   const secondMarks = isLive ? DURATION_MARKS_SECONDS_LIVE : DURATION_MARKS_SECONDS;
 
+  // A real three-tier progression instead of "Quick is capped, the other two
+  // are identical": Quick caps at the template's low end (cost savings from
+  // a shorter render); Standard caps at the template's high end (stays
+  // within what this format normally calls for); Premium is the one tier
+  // with no cap — it's the only one allowed to run longer than the
+  // template's own range. All three numbers match what the backend already
+  // uses in _effective_duration_target_seconds, so the slider can never
+  // show something looser than what generation will actually enforce.
+  const selectedTemplateData = castTemplates?.find((t) => t.id === selectedTemplate);
+  const tierDurationCapSeconds = selectedTemplateData?.est_duration_range
+    ? productionLevel === "quick"
+      ? selectedTemplateData.est_duration_range[0]
+      : productionLevel === "standard"
+        ? selectedTemplateData.est_duration_range[1]
+        : undefined // premium: uncapped
+    : undefined;
+  const effectiveDurationMaxSeconds = tierDurationCapSeconds
+    ? Math.min(durationMaxSeconds, tierDurationCapSeconds)
+    : durationMaxSeconds;
+
+  // Snap an existing manual value down the moment it's capped (switching
+  // tier or template while a manual duration is already set) — the cap is
+  // enforced immediately, not just on the next slider drag.
+  useEffect(() => {
+    if (tierDurationCapSeconds && durationTarget > tierDurationCapSeconds) {
+      setDurationTarget(tierDurationCapSeconds);
+    }
+  }, [tierDurationCapSeconds]);
+
   return (
     <div className="max-w-5xl mx-auto px-6 pt-5 pb-10 space-y-5">
       {/* HERO CHOICE — the first decision of Stage 1. Two big cards make the
@@ -883,10 +912,10 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
                   <input
                     type="range"
                     min={durationUnit === "seconds" ? (isLive ? 60 : 5) : 60}
-                    max={durationUnit === "seconds" ? durationMaxSeconds : LIVE_MAX_SECONDS}
+                    max={effectiveDurationMaxSeconds}
                     step={durationUnit === "seconds" ? 1 : 60}
                     value={durationTarget}
-                    onChange={(e) => setDurationTarget(Number(e.target.value))}
+                    onChange={(e) => setDurationTarget(Math.min(Number(e.target.value), effectiveDurationMaxSeconds))}
                     className="flex-1 accent-accent"
                   />
                   <span className="text-sm font-semibold text-white tabular-nums w-12 text-right">
@@ -898,7 +927,7 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
                 <div className="flex items-center justify-between">
                   <div className="flex gap-1">
                     <button
-                      onClick={() => { setDurationUnit("seconds"); if (durationTarget > durationMaxSeconds) setDurationTarget(durationMaxSeconds); }}
+                      onClick={() => { setDurationUnit("seconds"); if (durationTarget > effectiveDurationMaxSeconds) setDurationTarget(effectiveDurationMaxSeconds); }}
                       className={cn(
                         "px-2 py-0.5 rounded text-[10px] font-medium transition",
                         durationUnit === "seconds" ? "bg-white/15 text-white" : "text-white/40"
@@ -906,15 +935,23 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
                     >
                       sec
                     </button>
+                    {/* Minutes granularity can't represent a Quick/Standard cap
+                        — every template's low AND high end is well under 60s,
+                        so "1m" would already exceed it. Disabled rather than
+                        shown-and-broken. */}
                     <button
+                      disabled={!!tierDurationCapSeconds}
                       onClick={() => {
                         setDurationUnit("minutes");
-                        setDurationTarget(Math.max(60, Math.round(durationTarget / 60) * 60));
+                        setDurationTarget(Math.min(effectiveDurationMaxSeconds, Math.max(60, Math.round(durationTarget / 60) * 60)));
                       }}
                       className={cn(
                         "px-2 py-0.5 rounded text-[10px] font-medium transition",
-                        durationUnit === "minutes" ? "bg-white/15 text-white" : "text-white/40"
+                        tierDurationCapSeconds
+                          ? "text-white/15 cursor-not-allowed"
+                          : durationUnit === "minutes" ? "bg-white/15 text-white" : "text-white/40"
                       )}
+                      title={tierDurationCapSeconds ? "Not available while this production level's duration cap is active" : undefined}
                     >
                       min
                     </button>
@@ -925,7 +962,7 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
                       : isLive
                         ? secondMarks.map((s) => s / 60)
                         : DURATION_MARKS_MINUTES
-                    ).map((m) => {
+                    ).filter((m) => (durationUnit === "minutes" ? m * 60 : m) <= effectiveDurationMaxSeconds).map((m) => {
                       const val = durationUnit === "minutes" ? m * 60 : m;
                       return (
                         <button
@@ -942,6 +979,13 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
                     })}
                   </div>
                 </div>
+                {tierDurationCapSeconds && (
+                  <p className="text-[10px] text-amber-400/70">
+                    Capped at {tierDurationCapSeconds}s — {productionLevel === "quick"
+                      ? "Quick's cost savings come from a shorter render."
+                      : "Standard stays within this format's normal length — pick Premium for a longer cut."}
+                  </p>
+                )}
                 {costEstimate && (
                   <div className="flex items-center justify-between pt-1 border-t border-white/5">
                     <span className="text-[10px] text-white/40">Estimated render</span>

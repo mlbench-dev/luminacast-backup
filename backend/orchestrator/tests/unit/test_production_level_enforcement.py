@@ -161,22 +161,22 @@ def test_effective_duration_unchanged_for_standard():
     assert _effective_duration_target_seconds(None, DEMO_HEAVY, "standard") is None
 
 
-def test_effective_duration_quick_uses_range_low_as_ceiling():
-    # Demo Heavy range [25, 50]. User asked for 40s -> quick tightens to 25.
-    assert _effective_duration_target_seconds(40, DEMO_HEAVY, "quick") == 25
+def test_effective_duration_explicit_user_value_always_wins_quick():
+    # Demo Heavy range [25, 50]. An explicit user value ALWAYS wins outright,
+    # even though 40s exceeds quick's [25] default ceiling — no more silent
+    # clamping a number the user deliberately typed in.
+    assert _effective_duration_target_seconds(40, DEMO_HEAVY, "quick") == 40
 
 
-def test_effective_duration_never_expands_user_value():
-    # User asked for LESS than the ceiling -> their (tighter) value wins.
-    assert _effective_duration_target_seconds(15, DEMO_HEAVY, "quick") == 15
+def test_effective_duration_explicit_user_value_always_wins_premium():
+    # 200s is way outside Demo Heavy's [25, 50] range entirely, but an
+    # explicit user choice is never overridden by the tier ceiling.
+    assert _effective_duration_target_seconds(30, DEMO_HEAVY, "premium") == 30
+    assert _effective_duration_target_seconds(200, DEMO_HEAVY, "premium") == 200
 
 
-def test_effective_duration_premium_uses_range_high_as_ceiling():
-    assert _effective_duration_target_seconds(30, DEMO_HEAVY, "premium") == 30  # under ceiling, user wins
-    assert _effective_duration_target_seconds(200, DEMO_HEAVY, "premium") == 50  # over ceiling, tier wins
-
-
-def test_effective_duration_becomes_the_ceiling_when_user_set_nothing():
+def test_effective_duration_becomes_the_ceiling_only_when_user_set_nothing():
+    # The tier ceiling is purely a DEFAULT for when nothing was set manually.
     assert _effective_duration_target_seconds(None, DEMO_HEAVY, "quick") == 25
     assert _effective_duration_target_seconds(None, DEMO_HEAVY, "premium") == 50
 

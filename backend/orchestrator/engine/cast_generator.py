@@ -2186,16 +2186,26 @@ def _effective_duration_target_seconds(
     production_level: str,
 ) -> Optional[int]:
     """Combine the user's manual duration slider with the template's
-    production-level duration ceiling — tightening-only, never expanding
-    what the user explicitly set.
+    production-level duration ceiling.
 
-    Standard, or no template: returns duration_target_seconds unchanged.
-    Quick/Premium with a template: derives a ceiling from the template's own
-    est_duration_range ([lo, hi] seconds) — Quick clamps to lo, Premium
-    allows up to hi. If the user set a manual target, returns
-    min(user_value, ceiling); if they didn't, returns the ceiling itself
-    (a concrete number instead of no target at all).
+    An EXPLICITLY user-set duration_target_seconds always wins outright —
+    never clamped by the tier ceiling, even if it falls outside the
+    template's normal range. The manual duration slider is the only length
+    control that exists in Auto mode (no template) and the only way to hit
+    a hard external constraint (e.g. an exact ad-slot length); silently
+    clamping a number the user deliberately typed in — with no indication
+    anywhere that it happened — produced a slider showing one value while
+    a shorter video actually got generated. Same "never silently override
+    what the user explicitly chose" principle applied elsewhere in this
+    module (e.g. _enforce_block_count_cap protecting injected beats).
+
+    The tier ceiling is used ONLY as the DEFAULT when the user hasn't set a
+    duration at all — derived from the template's own est_duration_range
+    ([lo, hi] seconds): Quick defaults to lo, Premium to hi. Standard, or no
+    template, or no est_duration_range: no default to compute, returns None.
     """
+    if duration_target_seconds:
+        return duration_target_seconds
     if not template or production_level == "standard":
         return duration_target_seconds
     dur_range = template.get("est_duration_range") or []
@@ -2203,8 +2213,6 @@ def _effective_duration_target_seconds(
         return duration_target_seconds
     lo, hi = dur_range
     ceiling = lo if production_level == "quick" else hi
-    if duration_target_seconds:
-        return min(int(duration_target_seconds), int(ceiling))
     return int(ceiling)
 
 
