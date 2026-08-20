@@ -1,6 +1,6 @@
 """add quality/quality_multiplier to render_usage_records
 
-Revision ID: qual01_add_quality_to_render_usage
+Revision ID: qual01_quality_render_usage
 Revises: imp01_add_avatar_imperfections
 Create Date: 2026-08-20
 
@@ -17,7 +17,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "qual01_add_quality_to_render_usage"
+revision: str = "qual01_quality_render_usage"
 down_revision: Union[str, None] = "imp01_add_avatar_imperfections"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
