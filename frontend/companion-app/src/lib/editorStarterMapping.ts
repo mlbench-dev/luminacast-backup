@@ -580,6 +580,12 @@ export function castToEditorStarterTimeline(
             ...(isPipFromMeta
               ? { feather: 12, drop_shadow: { blur: 10, alpha: 0.5 } }
               : {}),
+            // This block's real avatar video hasn't been generated yet (that
+            // only happens at Finalize & Render) — we're standing in with a
+            // static face photo so captions/overlays/timing can still be
+            // arranged against something. ImageLayer reads this to badge the
+            // frame so it isn't mistaken for the actual final footage.
+            is_motion_placeholder: true,
           },
         };
         items[snapshotItemId] = imageItem;

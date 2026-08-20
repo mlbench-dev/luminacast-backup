@@ -38,6 +38,12 @@ export type ItemMetadata = {
    * the legacy 5-literal union was stale and rejected valid canonical ids.
    */
   caption_preset?: string;
+  /**
+   * True when this image is standing in for avatar video that hasn't been
+   * generated yet (that only happens at Finalize & Render) — ImageLayer
+   * badges the frame so a static photo isn't mistaken for real footage.
+   */
+  is_motion_placeholder?: boolean;
   [key: string]: any;
 };
 

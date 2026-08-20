@@ -64,6 +64,25 @@ const ImageItemUnmemoized: React.FC<{
 					src={src}
 				/>
 			</RequireCachedAsset>
+			{item.metadata?.is_motion_placeholder ? (
+				<div
+					style={{
+						position: 'absolute',
+						left: 8,
+						bottom: 8,
+						padding: '3px 8px',
+						borderRadius: 4,
+						background: 'rgba(0,0,0,0.65)',
+						color: '#fff',
+						fontSize: 11,
+						lineHeight: 1.3,
+						fontFamily: 'sans-serif',
+						pointerEvents: 'none',
+					}}
+				>
+					Preview only — motion appears after render
+				</div>
+			) : null}
 		</div>
 	);
 };

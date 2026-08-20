@@ -104,6 +104,24 @@ function ProviderChip({ provider }: { provider: string | null }) {
   );
 }
 
+// Backend errors are raw exception dumps (provider names, stack traces,
+// tier fallback chains) — useful for us, meaningless and alarming for a
+// user. Map the common cases to a short, plain-language line; the raw text
+// is still available via the row's title tooltip for support/debugging.
+function friendlyBlockError(raw: string | null | undefined): string {
+  if (!raw) return "Something went wrong — try again.";
+  if (raw.includes("ClipValidationError")) {
+    return "The generated clip didn't pass quality checks — try again.";
+  }
+  if (raw.includes("SpeakingBlockOutOfTolerance")) {
+    return "The voiceover doesn't match this clip's length — try again.";
+  }
+  if (raw.includes("AllProvidersFailedError") || raw.includes("TimeoutError") || raw.includes("RuntimeError")) {
+    return "The video service didn't respond in time — try again.";
+  }
+  return "Something went wrong — try again.";
+}
+
 function BlockRow({ block, isNext }: { block: RenderBlockStatus; isNext?: boolean }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -159,8 +177,11 @@ function BlockRow({ block, isNext }: { block: RenderBlockStatus; isNext?: boolea
         </span>
       </div>
       {block.state === "failed" && block.error && (
-        <div className="px-3 pb-1.5 -mt-0.5 pl-9 text-[10px] text-red-400/80 leading-snug">
-          {block.error}
+        <div
+          className="px-3 pb-1.5 -mt-0.5 pl-9 text-[10px] text-red-400/80 leading-snug"
+          title={block.error}
+        >
+          {friendlyBlockError(block.error)}
         </div>
       )}
     </div>
