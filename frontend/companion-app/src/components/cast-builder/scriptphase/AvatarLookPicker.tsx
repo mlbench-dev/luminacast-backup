@@ -205,6 +205,33 @@ function LookChip({
   size: "sm" | "md";
 }) {
   const dim = size === "md" ? "h-52 w-52" : "h-36 w-36";
+
+  // No thumbnail (the "use default / no override" option) shouldn't claim a
+  // full square photo-frame's worth of space just to show one small icon
+  // floating in an otherwise-empty box — that reads as broken, especially
+  // when it's the only chip in the row (no looks generated yet for this
+  // avatar). Render it as a compact labeled pill instead; real thumbnails
+  // keep the square treatment below.
+  if (!thumbUrl) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={label}
+        className={cn(
+          "shrink-0 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+          active
+            ? "border-accent/60 bg-accent/15 text-white"
+            : "border-white/10 bg-white/[0.03] text-white/55 hover:border-white/25 hover:bg-white/[0.06] hover:text-white/80",
+          size === "md" && "px-3 py-2 text-xs",
+        )}
+      >
+        <ChevronDown className="w-3 h-3 rotate-90 shrink-0" />
+        <span className="truncate max-w-[140px]">{label}</span>
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -218,13 +245,7 @@ function LookChip({
         dim,
       )}
     >
-      {thumbUrl ? (
-        <img src={thumbUrl} alt="" className="w-full h-full object-cover" />
-      ) : (
-        <div className="w-full h-full bg-gradient-to-br from-white/5 to-white/10 flex items-center justify-center text-white/25">
-          <ChevronDown className="w-3 h-3 rotate-90" />
-        </div>
-      )}
+      <img src={thumbUrl} alt="" className="w-full h-full object-cover" />
       {/* Hover label tooltip */}
       <span
         className={cn(
