@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,6 +14,9 @@ import {
   ShoppingBag,
   Send,
   Trash2,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -73,6 +77,32 @@ export function MyCastsPage() {
   });
 
   const casts = (data as any)?.casts || [];
+
+  // Inline rename — lets a cast be renamed directly from the list instead
+  // of only inside the builder's Setup step.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  const renameMutation = useMutation({
+    mutationFn: ({ castId, name }: { castId: string; name: string }) =>
+      castsApi.patch(castId, { name: name || undefined }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["casts"] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Could not rename cast",
+        description: err?.response?.data?.detail || err?.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const commitRename = (castId: string) => {
+    const trimmed = renameValue.trim();
+    setRenamingId(null);
+    renameMutation.mutate({ castId, name: trimmed });
+  };
 
   const retryMutation = useMutation({
     mutationFn: (castId: string) => castsApi.retry(castId),
@@ -215,7 +245,60 @@ export function MyCastsPage() {
                   {/* Cast info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="font-medium text-text truncate">{cast.name || "Untitled Cast"}</p>
+                      {renamingId === cast.id ? (
+                        <div
+                          className="flex items-center gap-1 flex-1 min-w-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            autoFocus
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitRename(cast.id);
+                              if (e.key === "Escape") setRenamingId(null);
+                            }}
+                            onBlur={() => commitRename(cast.id)}
+                            placeholder="Untitled Cast"
+                            className="flex-1 min-w-0 bg-white/5 border border-accent/40 rounded px-1.5 py-0.5 text-sm font-medium text-text focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => commitRename(cast.id)}
+                            className="p-1 text-green-400 hover:text-green-300 shrink-0"
+                            aria-label="Save name"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => setRenamingId(null)}
+                            className="p-1 text-white/40 hover:text-white/70 shrink-0"
+                            aria-label="Cancel rename"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="font-medium text-text truncate">{cast.name || "Untitled Cast"}</p>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRenameValue(cast.name || "");
+                              setRenamingId(cast.id);
+                            }}
+                            className="p-0.5 text-white/25 opacity-0 group-hover:opacity-100 hover:text-white/60 transition-opacity shrink-0"
+                            aria-label="Rename cast"
+                            title="Rename cast"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        </>
+                      )}
                       {cast.version != null && cast.version > 1 && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 shrink-0">
                           v{cast.version}

@@ -86,15 +86,17 @@ interface SetupPhaseProps {
   onCreated: (cast: Cast, wasExisting?: boolean) => void;
 }
 
-function generateAutoName(): string {
-  const now = new Date();
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return `Cast ${months[now.getMonth()]}${now.getDate()}-1`;
-}
-
 export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
   const qc = useQueryClient();
-  const [castName, setCastName] = useState(generateAutoName);
+  // Left blank by default — name is optional. The backend's
+  // _generate_cast_name (routers/casts/crud.py) already generates a
+  // correctly unique "Cast {Mon}{Day}-{N}" per-user daily sequence when
+  // `name` comes through empty; pre-filling this field client-side with a
+  // fixed "-1" suffix (the old generateAutoName()) is what caused every
+  // cast created the same day to collide on an identical default name —
+  // req.name was never actually empty, so the backend's real counter-based
+  // generator never got a chance to run.
+  const [castName, setCastName] = useState("");
   const [nameEditing, setNameEditing] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [castType, setCastType] = useState<"recorded" | "live">("recorded");
@@ -457,6 +459,9 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
           can lead with the prompt below. */}
       <div className="flex items-center gap-3">
         <div className="relative group flex-1 min-w-0">
+          <label className="text-[11px] text-white/40 mb-1 block">
+            Cast name <span className="text-white/25">(optional — auto-named if left blank)</span>
+          </label>
           <Input
             ref={nameInputRef}
             placeholder="Untitled cast"
@@ -474,7 +479,7 @@ export function SetupPhase({ cast, onCreated }: SetupPhaseProps) {
                 nameInputRef.current?.focus();
                 nameInputRef.current?.select();
               }}
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 opacity-0 group-hover:opacity-100 transition-opacity"
+              className="absolute right-1 bottom-1.5 text-white/30 hover:text-white/60 transition-opacity"
               title="Edit cast name"
             >
               <Pencil className="w-3.5 h-3.5" />
