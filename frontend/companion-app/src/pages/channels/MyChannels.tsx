@@ -370,14 +370,6 @@ function ConnectChannelModal({
   channels: SocialChannel[];
   onClose: () => void;
 }) {
-  // Zernio only supports one account per platform per connect flow — a
-  // second "Connect TikTok" would either fail or silently replace the
-  // first. Only an active channel blocks reconnecting; a disconnected
-  // one frees the platform up again.
-  const connectedPlatforms = new Set(
-    channels.filter((c) => c.status === "active").map((c) => c.platform),
-  );
-
   const startOAuth = async (platformId: string) => {
     try {
       // Without an explicit redirect_uri the backend falls back to a
@@ -431,25 +423,26 @@ function ConnectChannelModal({
         </p>
         <div className="grid grid-cols-2 gap-2">
           {PLATFORMS.map((p) => {
-            const connected = connectedPlatforms.has(p.id);
+            // Multiple accounts per platform are allowed (e.g. two TikTok
+            // accounts) — this just informs, it never blocks connecting
+            // another one.
+            const connectedCount = channels.filter(
+              (c) => c.platform === p.id && c.status === "active",
+            ).length;
             return (
               <button
                 key={p.id}
-                disabled={connected}
                 onClick={() => startOAuth(p.id)}
-                title={connected ? `A ${p.name} account is already connected — disconnect it first to connect a different one.` : undefined}
-                className={cn(
-                  "flex items-center gap-3 p-3 border rounded-xl text-left transition",
-                  connected
-                    ? "bg-white/[0.02] border-white/5 opacity-50 cursor-not-allowed"
-                    : "bg-white/[0.04] border-white/10 hover:bg-white/[0.07] hover:border-white/20",
-                )}
+                title={connectedCount > 0 ? `Connect another ${p.name} account` : `Connect ${p.name}`}
+                className="flex items-center gap-3 p-3 border rounded-xl text-left transition bg-white/[0.04] border-white/10 hover:bg-white/[0.07] hover:border-white/20"
               >
                 <PlatformIcon platform={p.id} className="w-9 h-9" />
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-white truncate">{p.name}</div>
                   <div className="text-[11px] text-white/40 truncate">
-                    {connected ? "Already connected" : p.description}
+                    {connectedCount > 0
+                      ? `${connectedCount} connected — add another`
+                      : p.description}
                   </div>
                 </div>
               </button>

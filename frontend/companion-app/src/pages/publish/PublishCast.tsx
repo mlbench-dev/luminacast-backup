@@ -239,13 +239,35 @@ export default function PublishCast() {
     }
   }, [existingPost]);
 
-  const accountByPlatform = useMemo(() => {
-    const map: Record<string, string | undefined> = {};
+  // A platform can now have more than one connected account (e.g. two
+  // TikTok accounts) — group all of them per platform rather than
+  // collapsing to just the first.
+  const accountsByPlatform = useMemo(() => {
+    const map: Partial<Record<Platform, typeof profiles>> = {};
     (profiles || []).forEach((p) => {
-      if (p.platform && !map[p.platform]) map[p.platform] = p._id;
+      const platform = p.platform as Platform;
+      if (!platform) return;
+      (map[platform] ??= []).push(p);
     });
     return map;
   }, [profiles]);
+
+  // Which specific account to publish to, per platform — only meaningful
+  // (and shown) when a platform has more than one connected account.
+  // Defaults to the first account until the user picks one explicitly.
+  const [selectedAccountByPlatform, setSelectedAccountByPlatform] = useState<Record<string, string>>({});
+
+  const accountByPlatform = useMemo(() => {
+    const map: Record<string, string | undefined> = {};
+    (Object.keys(accountsByPlatform) as Platform[]).forEach((platform) => {
+      const accounts = accountsByPlatform[platform] || [];
+      const chosen = selectedAccountByPlatform[platform];
+      map[platform] = (chosen && accounts.some((a) => a._id === chosen))
+        ? chosen
+        : accounts[0]?._id;
+    });
+    return map;
+  }, [accountsByPlatform, selectedAccountByPlatform]);
 
   // A platform preselected via the ?platforms= query param (from the
   // Schedule tab handoff) can be one the user never actually connected —
@@ -428,6 +450,35 @@ export default function PublishCast() {
             );
           })}
         </div>
+
+        {/* A platform can have more than one connected account (e.g. two
+            TikTok accounts) — once selected, let the user pick which one
+            to actually publish to instead of silently always using the
+            first one connected. */}
+        {selectedPlatforms
+          .filter((p) => (accountsByPlatform[p]?.length || 0) > 1)
+          .map((p) => {
+            const accounts = accountsByPlatform[p] || [];
+            const label = PLATFORMS.find((pl) => pl.value === p)?.label || p;
+            return (
+              <div key={p} className="flex items-center gap-2 text-sm">
+                <span className="text-white/50 w-20 shrink-0">{label} as</span>
+                <select
+                  value={accountByPlatform[p] || ""}
+                  onChange={(e) =>
+                    setSelectedAccountByPlatform((prev) => ({ ...prev, [p]: e.target.value }))
+                  }
+                  className="flex-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1.5 text-white/85 focus:outline-none focus:border-accent/40"
+                >
+                  {accounts.map((a) => (
+                    <option key={a._id} value={a._id}>
+                      {a.username ? `@${a.username}` : a.displayName || a._id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            );
+          })}
       </section>
 
       <section className="rounded-xl border border-white/10 bg-white/[0.03] p-5 space-y-3">

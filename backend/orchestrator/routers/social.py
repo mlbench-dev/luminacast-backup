@@ -659,7 +659,11 @@ async def create_social_post(
         # update) silently created a second SocialPost row and a second
         # Zernio post, so the cast actually got published twice even
         # though only one row showed in the Scheduled list.
-        requested_platforms = {p.platform for p in req.platforms}
+        # (platform, accountId) pairs, not just platform — a user can now
+        # connect more than one account per platform, so scheduling the
+        # same cast to two different TikTok accounts at the same time is
+        # legitimate and shouldn't collide with each other here.
+        requested_targets = {(p.platform, p.accountId) for p in req.platforms}
         # Match the exact normalization used below when scheduled_for is
         # actually persisted (UTC, then tzinfo stripped) — SocialPost.
         # scheduled_for is a naive column, so comparing against anything
@@ -675,8 +679,10 @@ async def create_social_post(
             )
         ).scalars().all()
         for existing in existing_rows:
-            existing_platforms = {p.get("platform") for p in (existing.platforms or [])}
-            if requested_platforms & existing_platforms:
+            existing_targets = {
+                (p.get("platform"), p.get("accountId")) for p in (existing.platforms or [])
+            }
+            if requested_targets & existing_targets:
                 raise HTTPException(
                     400,
                     "This cast is already scheduled for this date and time. "
