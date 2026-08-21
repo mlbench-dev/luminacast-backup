@@ -59,9 +59,13 @@ async def my_usage_summary(
 
         total_price = round(sum(v["price"] for v in by_type.values()), 2)
 
-        # Render encompasses three event types — sum them so the /billing
+        # Render encompasses four event types — sum them so the /billing
         # "Renders" / "Video creation" rows show one combined figure.
-        render_types = ("avatar_render", "motion_render", "pip_render")
+        # action_render was missing here (block-render costs for
+        # action/b-roll blocks silently vanished from this row, though
+        # still counted in total_price below — the two numbers not
+        # matching was the reported symptom).
+        render_types = ("avatar_render", "motion_render", "pip_render", "action_render")
         render_count = sum(by_type.get(t, {}).get("count", 0) for t in render_types)
         render_price = round(
             sum(by_type.get(t, {}).get("price", 0) for t in render_types), 2

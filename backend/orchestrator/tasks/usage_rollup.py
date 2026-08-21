@@ -77,7 +77,10 @@ async def _rollup_daily_usage_async() -> dict:
                 )
             ).scalars().all()
 
-            render_types = ("avatar_render", "motion_render", "pip_render")
+            # Matches routers/usage.py's render_types — action_render is a
+            # real fourth block-render category (see pri01 migration note),
+            # not just avatar/motion/pip.
+            render_types = ("avatar_render", "motion_render", "pip_render", "action_render")
 
             totals = {
                 "total_provider_cost": sum(e.provider_cost_usd or 0 for e in events),
