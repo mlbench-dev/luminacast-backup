@@ -518,8 +518,13 @@ export interface CastCreate {
   platform_target?: string;
   /** Production level — quick | standard | premium */
   production_level?: string;
-  /** "off" | "auto" | "track_id:<id>" */
+  /** "off" | "auto" | "custom" | "track_id:<id>" (legacy) */
   music_track_choice?: string;
+  /** Set together with music_track_choice="custom" — a real library track
+   *  picked via MusicTrackPickerModal. */
+  background_music_url?: string;
+  background_music_mood?: string;
+  background_music_tags?: string[];
   products?: ProductCreate[];
   blocks?: BlockCreate[];
 }

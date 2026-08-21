@@ -896,6 +896,12 @@ async def generate_smart_outline_endpoint(
     music_choice = getattr(cast, "music_track_choice", music_library.CHOICE_AUTO) or music_library.CHOICE_AUTO
     if music_choice == music_library.CHOICE_OFF:
         logger.info("Music choice 'off' — skipping auto-music for cast %s", cast_id)
+    elif music_choice == "custom":
+        # User picked a real track from the full Mubert-backed library
+        # (Setup's track-picker modal) — background_music_url/mood/tags
+        # were already set directly via PATCH at pick time, nothing to
+        # resolve or generate here.
+        logger.info("Music choice 'custom' — using already-set background_music_url for cast %s", cast_id)
     elif music_choice.startswith(music_library.CHOICE_TRACK_PREFIX):
         try:
             cast.background_music_url = music_library.resolve_choice_url(music_choice)

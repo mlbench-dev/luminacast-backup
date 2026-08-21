@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { avatarApi, avatarLooksApi, castsApi, productsApi } from "@/lib/api";
 import { AvatarLookPicker } from "@/components/cast-builder/scriptphase/AvatarLookPicker";
+import { MusicTrackPickerModal } from "@/components/cast-builder/MusicTrackPickerModal";
 import { UserVideoPickerDialog } from "@/components/cast-builder/UserVideoPickerDialog";
 import { LiveReferenceCard } from "@/components/avatar/LiveReferenceCard";
 import { AvatarStatus, type Avatar, type AvatarLook, type ProductWithAssets, type Cast, type CastTemplate, type UserVideoAsset } from "@/lib/types";
@@ -146,14 +147,16 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   // ultimately constrains which block categories the outline generator
   // is allowed to produce.
   const [productionLevel, setProductionLevel] = useState<"quick" | "standard" | "premium">("standard");
-  // Background-music choice: "off" | "auto" | "track_id:<id>". Default "auto"
-  // (mood-driven AI generation). Persisted on create as `music_track_choice`.
+  // Background-music choice: "off" | "auto" | "custom" | "track_id:<id>"
+  // (the last is legacy — a handful of fixed placeholder tracks from before
+  // the real library was wired in; kept only so old casts still resolve).
+  // Default "auto" (mood-driven AI generation). Persisted as
+  // `music_track_choice`; "custom" means a real library track was picked
+  // via MusicTrackPickerModal, with its url/mood/tags already stored on
+  // background_music_url/background_music_mood/background_music_tags.
   const [musicChoice, setMusicChoice] = useState<string>("auto");
-  const { data: musicTracks } = useQuery({
-    queryKey: ["music-library"],
-    queryFn: () => castsApi.musicLibrary(),
-    staleTime: 5 * 60 * 1000,
-  });
+  const [musicTrackPickerOpen, setMusicTrackPickerOpen] = useState(false);
+  const [pickedTrack, setPickedTrack] = useState<{ url: string; mood: string; name: string } | null>(null);
   const { data: castTemplates } = useQuery({
     queryKey: ["cast-templates"],
     queryFn: () => castsApi.templates(),
@@ -194,6 +197,14 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
       if (cast.production_level !== "standard") setAutoCast(false);
     }
     if (cast.music_track_choice) setMusicChoice(cast.music_track_choice);
+    if (cast.music_track_choice === "custom" && (cast as any).background_music_url) {
+      const mood = (cast as any).background_music_mood || "";
+      setPickedTrack({
+        url: (cast as any).background_music_url,
+        mood,
+        name: mood ? `Custom track (${mood})` : "Custom track",
+      });
+    }
   }, [cast]);
 
   // When Auto Cast is ON we lock quality to HD and hide the slider — the
@@ -375,6 +386,9 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           platform_target: targetPlatforms[0] || "tiktok",
           default_avatar_look_id: selectedLookId || "",
           music_track_choice: musicChoice,
+          ...(musicChoice === "custom" && pickedTrack
+            ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || null }
+            : {}),
         });
         return patched;
       }
@@ -392,6 +406,9 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
         product_ids: selectedProducts.length > 0 ? selectedProducts : undefined,
         default_avatar_look_id: selectedLookId || undefined,
         production_level: productionLevel,
+        ...(musicChoice === "custom" && pickedTrack
+          ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || undefined }
+          : {}),
         music_track_choice: musicChoice,
         // Stage-1 template. Omitted when null (Auto / let AI choose).
         template_id: selectedTemplate || undefined,
@@ -1050,11 +1067,23 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
 
       {/* Background music picker — Off / Auto / Specific track. Auto (default)
           generates mood-driven AI music; the renderer places it under the
-          narration and ducks it when the voice plays. */}
+          narration and ducks it when the voice plays. "Specific track" opens
+          a picker over the real ~12K-track library (same one the Music page
+          browses) rather than the old 5-item hardcoded placeholder list. */}
       <MusicSelector
         value={musicChoice}
         onChange={setMusicChoice}
-        tracks={musicTracks || []}
+        pickedTrack={pickedTrack}
+        onOpenPicker={() => setMusicTrackPickerOpen(true)}
+      />
+      <MusicTrackPickerModal
+        open={musicTrackPickerOpen}
+        onClose={() => setMusicTrackPickerOpen(false)}
+        onSelect={(track) => {
+          setPickedTrack({ url: track.url, mood: track.mood, name: track.name });
+          setMusicChoice("custom");
+          setMusicTrackPickerOpen(false);
+        }}
       />
 
       {/* Sticky-feel Generate footer */}
@@ -1414,27 +1443,31 @@ function ProductionLevelSelector({
  * The choice is persisted on the cast as `music_track_choice`:
  *   - "off"            no background music (skips AI generation entirely)
  *   - "auto"           mood-driven AI music (default, recommended)
- *   - "track_id:<id>"  a fixed library track
+ *   - "custom"         a real library track, chosen via MusicTrackPickerModal
+ *   - "track_id:<id>"  legacy — one of the old 5 hardcoded placeholder
+ *                      tracks; no longer offered as a new choice, but old
+ *                      casts that already have one keep resolving correctly.
  * The renderer auto-places the chosen track on the timeline under the
  * narration and ducks it when the voice plays.
  */
 function MusicSelector({
   value,
   onChange,
-  tracks,
+  pickedTrack,
+  onOpenPicker,
 }: {
   value: string;
   onChange: (v: string) => void;
-  tracks: { id: string; name: string; mood: string }[];
+  pickedTrack: { url: string; mood: string; name: string } | null;
+  onOpenPicker: () => void;
 }) {
-  const isTrack = value.startsWith("track_id:");
-  const selectedTrackId = isTrack ? value.slice("track_id:".length) : "";
+  const isSpecificTrack = value === "custom" || value.startsWith("track_id:");
   const MODES = [
     { id: "off", name: "Off", desc: "No background music." },
     { id: "auto", name: "Auto", desc: "AI music tuned to your script.", recommended: true },
     { id: "track", name: "Specific track", desc: "Pick from the library." },
   ] as const;
-  const activeMode = value === "off" ? "off" : isTrack ? "track" : "auto";
+  const activeMode = value === "off" ? "off" : isSpecificTrack ? "track" : "auto";
 
   return (
     <div className="rounded-2xl border border-accent/15 bg-gradient-to-br from-accent/[0.06] to-transparent px-4 py-3 space-y-3">
@@ -1452,7 +1485,7 @@ function MusicSelector({
               onClick={() => {
                 if (mode.id === "off") onChange("off");
                 else if (mode.id === "auto") onChange("auto");
-                else onChange(tracks[0] ? `track_id:${tracks[0].id}` : "auto");
+                else onOpenPicker();
               }}
               className={cn(
                 "p-4 rounded-xl border text-left transition-all",
@@ -1473,19 +1506,23 @@ function MusicSelector({
         })}
       </div>
       {activeMode === "track" && (
-        <select
-          data-testid="music-track-select"
-          value={selectedTrackId}
-          onChange={(e) => onChange(`track_id:${e.target.value}`)}
-          className="w-full rounded-lg bg-white/[0.05] border border-white/10 text-sm text-white/90 px-3 py-2 focus:outline-none focus:border-accent/40"
-        >
-          {tracks.length === 0 && <option value="">No tracks available</option>}
-          {tracks.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name} — {t.mood}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.05] border border-white/10 px-3 py-2.5">
+          <div className="min-w-0">
+            <div className="text-sm text-white/90 truncate">
+              {pickedTrack?.name || (value.startsWith("track_id:") ? "Library track" : "No track picked yet")}
+            </div>
+            {pickedTrack?.mood && (
+              <div className="text-[10px] text-white/40 truncate">{pickedTrack.mood}</div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onOpenPicker}
+            className="shrink-0 rounded-md border border-white/15 bg-white/5 hover:bg-white/10 px-3 py-1.5 text-xs text-white/80 transition-colors"
+          >
+            {pickedTrack ? "Change" : "Browse library"}
+          </button>
+        </div>
       )}
     </div>
   );
