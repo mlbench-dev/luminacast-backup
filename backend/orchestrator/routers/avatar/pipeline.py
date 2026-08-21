@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status, UploadFile,
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import update as sa_update
 from pydantic import BaseModel
 from typing import Optional
@@ -789,6 +790,23 @@ async def delete_avatar(
         raise HTTPException(status_code=404, detail="Avatar not found")
     if avatar.id == "default":
         raise HTTPException(status_code=400, detail="Cannot delete default avatar")
+
+    # Any cast referencing this avatar — regardless of status — blocks the
+    # delete at the DB level anyway (Cast.avatar_id has no ondelete rule),
+    # so check for that directly instead of guessing which CastStatus
+    # values count as "in use". A hardcoded status whitelist here would be
+    # exactly the kind of check that goes stale as new statuses get added
+    # (which is what happened to the equivalent product-delete guard).
+    from models.cast import Cast
+    in_use = (
+        await db.execute(select(Cast.id).where(Cast.avatar_id == avatar_id).limit(1))
+    ).scalar_one_or_none()
+    if in_use:
+        raise HTTPException(
+            status_code=409,
+            detail="This avatar is used by one or more casts. Delete or reassign those casts first.",
+        )
+
     # Delete dependent rows to avoid FK violations
     try:
         from sqlalchemy import text as sa_text
@@ -806,7 +824,18 @@ async def delete_avatar(
     except Exception as e:
         sentry_sdk.capture_exception(e)
     await db.delete(avatar)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as e:
+        # Safety net in case the check above missed a referencing row (e.g.
+        # a table added later that also FKs to avatars) — never let a raw
+        # DB constraint error surface as an unhandled 500.
+        await db.rollback()
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(
+            status_code=409,
+            detail="This avatar is still referenced by other data and can't be deleted.",
+        )
 
 @router.put("/{avatar_id}")
 @router.patch("/{avatar_id}")

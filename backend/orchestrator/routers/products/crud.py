@@ -10,13 +10,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, File, Q
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 import sentry_sdk
 from database import get_db
 from models.user import User, TeamRole
 from models.product import Product
 from models.product_asset import ProductAsset
-from models.cast import Cast, CastStatus, CastProduct
+from models.cast import Cast, CastProduct
 from models.block import Block
 from routers.auth import get_current_user, WorkspaceContext, require_role
 from services import audit_log
@@ -868,35 +869,40 @@ async def delete_product(
     if not product or product.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Product not found")
 
-    # Block deletion if product is used in an active/generating cast
-    active_statuses = [CastStatus.GENERATING, CastStatus.LIVE, CastStatus.SCHEDULED]
-    active_cast = await db.execute(
+    # Block deletion if any cast references this product — regardless of
+    # status. The DB itself refuses this delete for as long as ANY cast
+    # (any status, forever) references the product (Block.product_id /
+    # CastProduct.product_id have no ondelete rule), so checking only a
+    # hand-picked subset of "active" statuses is exactly what let this
+    # guard go stale before: it missed GENERATING_TTS and GENERATING_VIDEOS
+    # entirely, letting a delete attempt during those phases fall through
+    # to an unhandled DB error instead of this clean message. Match what
+    # the DB actually enforces instead of guessing.
+    block_cast = await db.execute(
         select(Cast.id, Cast.name)
         .join(Block, Block.cast_id == Cast.id)
         .where(
             Block.product_id == product_id,
             Cast.user_id == ctx.workspace_owner_id,
-            Cast.status.in_(active_statuses),
         )
         .limit(1)
     )
-    row = active_cast.first()
+    row = block_cast.first()
     if not row:
-        active_cast_cp = await db.execute(
+        cp_cast = await db.execute(
             select(Cast.id, Cast.name)
             .join(CastProduct, CastProduct.cast_id == Cast.id)
             .where(
                 CastProduct.product_id == product_id,
                 Cast.user_id == ctx.workspace_owner_id,
-                Cast.status.in_(active_statuses),
             )
             .limit(1)
         )
-        row = active_cast_cp.first()
+        row = cp_cast.first()
     if row:
         raise HTTPException(
             409,
-            f"Cannot delete: product is used in active cast \"{row.name or 'Untitled'}\"",
+            f"Cannot delete: product is used in cast \"{row.name or 'Untitled'}\". Remove it from that cast first.",
         )
 
     try:
@@ -907,7 +913,17 @@ async def delete_product(
     except Exception as e:
         sentry_sdk.capture_exception(e)
     await db.delete(product)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as e:
+        # Safety net in case the check above missed a referencing row —
+        # never let a raw DB constraint error surface as an unhandled 500.
+        await db.rollback()
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(
+            409,
+            "This product is still referenced by other data and can't be deleted.",
+        )
 
 _MAX_RAW = os.environ.get("MAX_PRODUCT_ASSETS_PER_PRODUCT", "0")
 
