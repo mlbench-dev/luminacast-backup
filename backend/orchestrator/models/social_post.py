@@ -135,3 +135,30 @@ class SocialComment(Base):
     replied_at = Column(DateTime, nullable=True)
 
     post = relationship("SocialPost", back_populates="comments")
+
+
+class PendingSocialConnect(Base):
+    """Short-lived record bridging a Zernio OAuth connect attempt back to
+    the Luminacast user who initiated it.
+
+    Zernio's OAuth redirect only echoes back `platform` + `status` — never
+    which account was connected — and Zernio itself has no per-customer
+    concept at all (single shared platform-wide API key). So the only way
+    to correctly attribute a newly-connected account to the right user is:
+    snapshot the account list for this platform right before opening the
+    OAuth popup (this row), then diff against a fresh snapshot once the
+    popup reports success (see confirm_connect in routers/social.py) —
+    whichever account is new belongs to whoever's snapshot it's missing
+    from. Rows are deleted once consumed; a background sweep of anything
+    older than a few minutes isn't implemented since these are looked up
+    by (user_id, platform) with a recency cutoff at read time, so a stale
+    abandoned row is simply ignored, never acted on.
+    """
+
+    __tablename__ = "pending_social_connects"
+
+    id = Column(String(40), primary_key=True)  # psc_<hex12>
+    user_id = Column(String(40), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    platform = Column(String(20), nullable=False)
+    before_zernio_account_ids = Column(JSON, nullable=False)  # [str, ...]
+    created_at = Column(DateTime, server_default=func.now())

@@ -53,6 +53,14 @@ export const socialApi = {
     api.post<{ auth_url: string; platform: string }>(
       "/social/connect", { platform, redirect_uri: redirectUri },
     ).then((r) => r.data),
+  // Call right after the OAuth popup reports success — this is what
+  // actually attributes the newly-connected account to the current user
+  // (diffed against the snapshot connectPlatform took before the popup
+  // opened). Without this, the account is never claimed by anyone.
+  confirmConnect: (platform: string) =>
+    api.post<{ claimed: boolean; zernio_account_ids?: string[] }>(
+      "/social/connect/confirm", { platform },
+    ).then((r) => r.data),
   // The OAuth redirect only ever carries a generic error code
   // ("connection_failed") — this looks up Zernio's activity log for the
   // real reason (e.g. "no YouTube channel on this Google account").

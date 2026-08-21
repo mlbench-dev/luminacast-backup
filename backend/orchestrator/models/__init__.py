@@ -23,7 +23,7 @@ from models.avatar_look import AvatarLook, AvatarLookStatus
 from models.voice_corpus import VoiceCorpusEntry
 from models.live_reference import LiveReference, LiveReferenceExemplar
 from models.live_session import LiveSession, LiveSessionStatus, LiveSessionInvite, LiveSessionEvent
-from models.social_post import SocialPost, SocialComment
+from models.social_post import SocialPost, SocialComment, PendingSocialConnect
 from models.render_job import RenderJob, RenderJobState, RenderJobType, RenderProvider
 from models.clone_tiktok import CloneTikTokScan, CloneTikTokScanStatus, CloneTikTokVideo
 from models.generation_cost import GenerationCost

@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -24,7 +24,7 @@ from models.cast import Cast, CastApprovalStatus
 from models.cast_render import CastRender, CastRenderStatus
 from models.product import Product
 from models.avatar import Avatar
-from models.social_post import SocialPost, SocialComment, SocialChannel
+from models.social_post import SocialPost, SocialComment, SocialChannel, PendingSocialConnect
 from models.user import User, TeamRole
 from routers.auth import get_current_user, WorkspaceContext, require_role
 
@@ -84,6 +84,29 @@ def _require_zernio():
     return svc
 
 
+def _raise_zernio_error(exc: Exception | str, action: str) -> None:
+    """Surface a Zernio failure to the admin, show the user a generic message.
+
+    Zernio is a single, platform-wide API key (settings.ZERNIO_API_KEY) —
+    there's no per-user/per-workspace account, so any error it returns
+    (including its own plan/quota limits) is about Luminacast's shared
+    Zernio account, not this specific user's plan. Showing Zernio's raw
+    message ("Your Free plan allows 20 posts per month...") misleads the
+    user into thinking it's their account or something they did — they have
+    no way to fix it. Log the real detail to Sentry so someone on our side
+    actually sees and acts on it, and tell the user only that the feature is
+    temporarily unavailable.
+    """
+    sentry_sdk.capture_message(
+        f"Zernio {action} failed — platform-wide Zernio account likely needs attention: {exc}",
+        level="error",
+    )
+    raise HTTPException(
+        502,
+        "Publishing is temporarily unavailable. Please try again later.",
+    )
+
+
 # \u2500\u2500 Profiles \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 
@@ -140,13 +163,17 @@ async def list_channels(
 ):
     """List the user's connected social-media channels (with avatar info).
 
-    Reconciles against Zernio — the actual source of truth for what's
-    connected — on every read: creates a local row for any Zernio account
-    with no match here, refreshes handle/follower_count/status on existing
-    rows, and marks rows "disconnected" when Zernio no longer reports them.
-    Nothing previously wrote to this table on connect, so without this the
-    local copy just drifts from reality (surfaced when a DB reset wiped
-    rows for accounts that were still connected on Zernio's side).
+    Reconciles against Zernio for rows THIS workspace already owns —
+    refreshes handle/follower_count/status on existing rows, and marks rows
+    "disconnected" when Zernio no longer reports them. Does NOT create new
+    rows for Zernio accounts this workspace hasn't already claimed: Zernio
+    is a single platform-wide API key with no per-customer concept at all,
+    so auto-adopting "any account nobody's claimed yet" here used to mean
+    the first workspace to load this page after ANY Luminacast customer
+    connected a new account would silently annex it as their own — a real
+    cross-customer data leak. New ownership is only ever established
+    through the explicit connect-and-confirm flow (see connect_platform /
+    confirm_connect below), never opportunistically during a list refresh.
     """
     rows = await _fetch_channel_rows(db, ctx.workspace_owner_id)
 
@@ -178,37 +205,28 @@ async def list_channels(
         profile_image_url = (
             acc.get("profileImage") or acc.get("avatarUrl") or acc.get("profileImageUrl")
         )
-        platform_account_id = acc.get("platformAccountId") or acc.get("accountId")
-
         existing = by_zernio_id.get(zid)
         if existing is None:
-            new_ch = SocialChannel(
-                id=f"sch_{uuid.uuid4().hex[:12]}",
-                user_id=ctx.workspace_owner_id,
-                platform=platform,
-                platform_account_id=platform_account_id,
-                handle=handle,
-                display_name=display_name,
-                follower_count=follower_count or 0,
-                profile_image_url=profile_image_url,
-                zernio_account_id=zid,
-                status="active",
-            )
-            db.add(new_ch)
+            # Not one of this workspace's own channels — could belong to
+            # any other Luminacast customer on the shared Zernio account.
+            # Never adopt it here; see the docstring above.
+            continue
+
+        if existing.status != "active":
+            existing.status = "active"
             changed = True
-        else:
-            if existing.status != "active":
-                existing.status = "active"
-                changed = True
-            if follower_count and existing.follower_count != follower_count:
-                existing.follower_count = follower_count
-                changed = True
-            if handle and existing.handle != handle:
-                existing.handle = handle
-                changed = True
-            if display_name and existing.display_name != display_name:
-                existing.display_name = display_name
-                changed = True
+        if follower_count and existing.follower_count != follower_count:
+            existing.follower_count = follower_count
+            changed = True
+        if handle and existing.handle != handle:
+            existing.handle = handle
+            changed = True
+        if display_name and existing.display_name != display_name:
+            existing.display_name = display_name
+            changed = True
+        if profile_image_url and existing.profile_image_url != profile_image_url:
+            existing.profile_image_url = profile_image_url
+            changed = True
 
     # Rows Zernio no longer reports were disconnected outside the app.
     for ch in rows:
@@ -300,14 +318,31 @@ async def check_avatar_consistency(
 async def list_social_profiles(
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
+    db: AsyncSession = Depends(get_db),
 ):
-    """List the user's connected social-media profiles via Zernio."""
+    """List the user's connected social-media profiles via Zernio.
+
+    Zernio's own /accounts list is platform-wide (single shared API key,
+    no per-customer concept at all) — returning it unfiltered leaked every
+    other Luminacast customer's connected accounts to whoever called this.
+    Filter down to just the accounts this workspace has actually claimed
+    via our own SocialChannel table.
+    """
     svc = _require_zernio()
     try:
-        return await svc.list_profiles()
+        accounts = await svc.list_profiles()
     except Exception as exc:
         logger.exception("Zernio list_profiles failed")
-        raise HTTPException(502, f"Zernio error: {exc}")
+        _raise_zernio_error(exc, "list_profiles")
+    owned_zernio_ids = {
+        ch.zernio_account_id
+        for ch in await _fetch_channel_rows(db, ctx.workspace_owner_id)
+        if ch.zernio_account_id
+    }
+    return [
+        acc for acc in accounts
+        if (acc.get("_id") or acc.get("id")) in owned_zernio_ids
+    ]
 
 
 class ConnectPlatformRequest(BaseModel):
@@ -320,6 +355,7 @@ async def connect_platform(
     req: ConnectPlatformRequest,
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return an OAuth URL the frontend opens in a popup window.
 
@@ -327,6 +363,14 @@ async def connect_platform(
     `redirect_uri` once the social account is linked. The frontend listens
     for a postMessage from the popup to know when to refresh the profile
     list.
+
+    Also snapshots which accounts of this platform Zernio already knows
+    about, BEFORE the user completes the OAuth flow — Zernio's redirect
+    only ever carries platform+status, never which account was connected,
+    so this is how confirm_connect (below) later figures out which new
+    account belongs to this user rather than opportunistically adopting
+    whatever's unclaimed (the actual cause of the cross-user leak this is
+    fixing).
     """
     svc = _require_zernio()
     redirect_uri = (
@@ -334,14 +378,136 @@ async def connect_platform(
         or "https://www.luminacast.com/integrations/zernio/callback"
     )
     try:
+        before_accounts = await svc.list_profiles()
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        before_accounts = []
+    before_ids = [
+        zid for acc in before_accounts
+        if acc.get("platform") == req.platform and (zid := acc.get("_id") or acc.get("id"))
+    ]
+    # Replace any stale pending row for this (user, platform) rather than
+    # accumulate — only the most recent connect attempt's snapshot matters.
+    await db.execute(
+        sa_delete(PendingSocialConnect).where(
+            PendingSocialConnect.user_id == ctx.workspace_owner_id,
+            PendingSocialConnect.platform == req.platform,
+        )
+    )
+    db.add(PendingSocialConnect(
+        id=f"psc_{uuid.uuid4().hex[:12]}",
+        user_id=ctx.workspace_owner_id,
+        platform=req.platform,
+        before_zernio_account_ids=before_ids,
+    ))
+    await db.commit()
+
+    try:
         result = await svc.get_oauth_url(req.platform, redirect_uri)
     except Exception as exc:
         logger.exception("Zernio.get_oauth_url failed")
-        raise HTTPException(502, f"Zernio error: {exc}")
+        _raise_zernio_error(exc, "get_oauth_url")
     auth_url = result.get("authUrl") or result.get("url") or result.get("authorize_url")
     if not auth_url:
         raise HTTPException(502, "Zernio did not return an authUrl.")
     return {"auth_url": auth_url, "platform": req.platform}
+
+
+class ConfirmConnectRequest(BaseModel):
+    platform: str
+
+
+@router.post("/connect/confirm")
+async def confirm_connect(
+    req: ConfirmConnectRequest,
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.PUBLISHER.value)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Attribute a just-completed OAuth connection to the correct user.
+
+    Called by the frontend right after the OAuth popup reports success.
+    Diffs the current Zernio account list for this platform against the
+    before-snapshot connect_platform took, and claims whichever account is
+    new — this is the ONLY place a SocialChannel row is ever created for a
+    previously-unseen Zernio account; list_channels no longer does this
+    opportunistically (see its docstring for why that was the leak).
+    """
+    pending = (
+        await db.execute(
+            select(PendingSocialConnect)
+            .where(
+                PendingSocialConnect.user_id == ctx.workspace_owner_id,
+                PendingSocialConnect.platform == req.platform,
+            )
+            .order_by(PendingSocialConnect.created_at.desc())
+        )
+    ).scalars().first()
+
+    # No pending snapshot (expired sweep window, direct API call, or the
+    # popup reporting success without a prior /connect call) — nothing safe
+    # to attribute. Silently no-op rather than guess.
+    if pending is None:
+        return {"claimed": False}
+
+    # A stale abandoned attempt (user opened Connect, never finished, tried
+    # again minutes later some other way) shouldn't be diffed against — 10
+    # minutes comfortably covers a real OAuth round-trip.
+    if pending.created_at and (datetime.utcnow() - pending.created_at) > timedelta(minutes=10):
+        await db.delete(pending)
+        await db.commit()
+        return {"claimed": False}
+
+    svc = _require_zernio()
+    try:
+        after_accounts = await svc.list_profiles()
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        return {"claimed": False}
+
+    before_ids = set(pending.before_zernio_account_ids or [])
+    already_claimed_ids = {
+        ch.zernio_account_id
+        for ch in (
+            await db.execute(select(SocialChannel).where(SocialChannel.zernio_account_id.isnot(None)))
+        ).scalars().all()
+    }
+    new_accounts = [
+        acc for acc in after_accounts
+        if acc.get("platform") == req.platform
+        and (zid := acc.get("_id") or acc.get("id"))
+        and zid not in before_ids
+        # Extra safety net: never re-claim an account some OTHER user's row
+        # already owns, even if it's somehow also "new" against this
+        # snapshot (e.g. two users connecting the same platform at once).
+        and zid not in already_claimed_ids
+    ]
+
+    claimed = []
+    for acc in new_accounts:
+        zid = acc.get("_id") or acc.get("id")
+        handle = acc.get("username") or acc.get("handle") or acc.get("screenName")
+        display_name = acc.get("displayName") or acc.get("name") or handle
+        new_ch = SocialChannel(
+            id=f"sch_{uuid.uuid4().hex[:12]}",
+            user_id=ctx.workspace_owner_id,
+            platform=req.platform,
+            platform_account_id=acc.get("platformAccountId") or acc.get("accountId"),
+            handle=handle,
+            display_name=display_name,
+            follower_count=acc.get("followerCount") or acc.get("followers") or 0,
+            profile_image_url=(
+                acc.get("profileImage") or acc.get("avatarUrl") or acc.get("profileImageUrl")
+            ),
+            zernio_account_id=zid,
+            status="active",
+        )
+        db.add(new_ch)
+        claimed.append(zid)
+
+    await db.delete(pending)
+    await db.commit()
+    return {"claimed": bool(claimed), "zernio_account_ids": claimed}
 
 
 @router.get("/connect-error")
@@ -530,6 +696,27 @@ async def create_social_post(
             "Connect it first or remove it from this post.",
         )
 
+    # Zernio is a single, platform-wide API key — it has no concept of
+    # "which Luminacast customer" an accountId belongs to, so without this
+    # check any authenticated user could submit ANY accountId (e.g. one
+    # they saw via the unscoped /profiles list) and publish through another
+    # company's connected social account. Confirm every accountId in this
+    # request is actually one of THIS workspace's own active channels.
+    owned_zernio_ids = {
+        ch.zernio_account_id
+        for ch in await _fetch_channel_rows(db, ctx.workspace_owner_id)
+        if ch.zernio_account_id and ch.status == "active"
+    }
+    unauthorized = [
+        p.platform for p in req.platforms if p.accountId not in owned_zernio_ids
+    ]
+    if unauthorized:
+        raise HTTPException(
+            403,
+            f"No connected account you own for: {', '.join(unauthorized)}. "
+            "Connect it from My Channels first.",
+        )
+
     platform_payload = [
         {"platform": p.platform, "accountId": p.accountId} for p in req.platforms
     ]
@@ -575,7 +762,7 @@ async def create_social_post(
         )
         db.add(post)
         await db.commit()
-        raise HTTPException(502, f"Zernio error: {detail}")
+        _raise_zernio_error(detail, "create_post")
 
     # Zernio's create-post response nests everything under "post" (see
     # PostCreateResponse in their OpenAPI spec) — reading "id" / "platformPostIds"
@@ -1061,7 +1248,7 @@ async def reply_to_comment(
         await svc.reply_to_comment(p.zernio_post_id, account_id, text, comment_id=c.platform_comment_id)
     except Exception as exc:
         logger.exception("Zernio reply failed")
-        raise HTTPException(502, f"Zernio error: {exc}")
+        _raise_zernio_error(exc, "reply_to_comment")
 
     c.actual_reply = text
     c.reply_status = "sent"

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 import { useNavigate, useSearchParams, useParams } from "react-router-dom";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Sparkles, Loader2, CheckCircle, ArrowLeft, ArrowRight,
   Wand2, Shuffle, Play, Pause, Lock, RefreshCw, Mic, Volume2, UserCircle,
@@ -35,7 +35,7 @@ const PHASE_STEPS = [
 
 type Phase = "setup" | "face" | "voice" | "body_shots" | "preview";
 
-const AVATAR_NAME_MAX_LENGTH = 60;
+const AVATAR_NAME_MAX_LENGTH = 40;
 
 /* ═══ Icon mapping for style presets ═══ */
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -1614,6 +1614,7 @@ function BodyShotsPhase({
   onContinue: () => void;
   onBack: () => void;
 }) {
+  const queryClient = useQueryClient();
   const [angles, setAngles] = useState<Record<string, string>>({});
   const [setId, setSetId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1678,6 +1679,11 @@ function BodyShotsPhase({
           if (data.validation) setValidation(data.validation);
           if (data.description_used) setDescriptionUsed(data.description_used);
           setIsGenerating(false);
+          // Body shots just got billed — the Billing page's Cost Breakdown
+          // query has its own staleTime and nothing else tells it new
+          // billable activity happened, so force it to refetch next time
+          // it's visited instead of serving stale cached numbers.
+          queryClient.invalidateQueries({ queryKey: ["my-usage"] });
           return;
         }
         if (data.status === "failed") {
@@ -1747,6 +1753,7 @@ function BodyShotsPhase({
             if (data.validation) setValidation(data.validation);
             if (data.description_used) setDescriptionUsed(data.description_used);
             setIsGenerating(false);
+            queryClient.invalidateQueries({ queryKey: ["my-usage"] });
             return;
           }
           if (data.status === "failed") {
@@ -1847,6 +1854,7 @@ function BodyShotsPhase({
         });
       }
       toast({ title: `${ANGLE_LABELS[angle]} regenerated` });
+      queryClient.invalidateQueries({ queryKey: ["my-usage"] });
     } catch {
       toast({ title: `Failed to regenerate ${ANGLE_LABELS[angle]}`, variant: "destructive" });
     } finally {

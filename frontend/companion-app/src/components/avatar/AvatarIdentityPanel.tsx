@@ -108,7 +108,7 @@ export function AvatarIdentityPanel({
 
       {/* Name */}
       {displayName && (
-        <h2 className="text-lg font-semibold text-foreground text-center leading-tight">
+        <h2 className="text-lg font-semibold text-foreground text-center leading-tight break-words max-w-full">
           {displayName}
         </h2>
       )}

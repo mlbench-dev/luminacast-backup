@@ -14,7 +14,7 @@ from typing import Optional
 import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -116,7 +116,7 @@ async def invite_member(
         await db.execute(
             select(TeamMember).where(
                 TeamMember.owner_id == ctx.workspace_owner_id,
-                TeamMember.invited_email == req.email,
+                func.lower(TeamMember.invited_email) == req.email.lower(),
                 TeamMember.status != TeamMemberStatus.REVOKED.value,
             )
         )
@@ -125,6 +125,14 @@ async def invite_member(
     existing_user = (
         await db.execute(select(User).where(User.email == req.email))
     ).scalar_one_or_none()
+
+    if existing and existing.status == TeamMemberStatus.ACTIVE.value:
+        # Already accepted — don't silently resend an invite email (and a
+        # confusing "reissue" of an invite) to someone who's already a
+        # member. Bug: this branch used to be missing entirely, so an
+        # accepted member's row fell into the same "idempotent resend" path
+        # as a still-pending one below, quietly emailing them again.
+        raise HTTPException(409, "This email is already an active team member.")
 
     if existing:
         # Idempotent resend — update role/timestamp, reissue the invite

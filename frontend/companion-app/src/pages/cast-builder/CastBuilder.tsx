@@ -203,6 +203,11 @@ export function CastBuilderPage() {
   const [cancellingRender, setCancellingRender] = useState(false);
   // Track local edits — any change after a render invalidates "ready" status
   const editsSinceRenderRef = useRef(0);
+  // Which render id we've already told the Billing page's usage query to
+  // refetch for — the poll below re-evaluates "is the latest render ready"
+  // every 5s, so without this we'd invalidate on every tick forever instead
+  // of once per completed render.
+  const billingInvalidatedForRenderRef = useRef<string | null>(null);
 
   // Track render status for inline button display
   const [renderStatus, setRenderStatus] = useState<{
@@ -288,6 +293,15 @@ export function CastBuilderPage() {
             const castUpdated = new Date((cast as any).updated_at || 0).getTime();
             const STALE_BUFFER_MS = 5000;
             isStale = castUpdated > renderTime + STALE_BUFFER_MS;
+          }
+          if (!isStale && billingInvalidatedForRenderRef.current !== latest.id) {
+            billingInvalidatedForRenderRef.current = latest.id;
+            // Render just completed and actually billed real usage — the
+            // Billing page's Cost Breakdown query has its own staleTime and
+            // nothing else tells it a new billable action happened, so a
+            // quick nav back to Billing right after a render used to show
+            // stale numbers. Force it to refetch next time it's mounted.
+            queryClient.invalidateQueries({ queryKey: ["my-usage"] });
           }
           setRenderStatus({
             status: isStale ? "idle" : "ready",

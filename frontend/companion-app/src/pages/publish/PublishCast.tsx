@@ -68,7 +68,7 @@ export default function PublishCast() {
   // when Zernio finishes the OAuth dance. We refresh the profiles list so
   // the newly-connected platform tile flips from “not connected” → active.
   useEffect(() => {
-    function onMessage(ev: MessageEvent) {
+    async function onMessage(ev: MessageEvent) {
       if (typeof ev.data !== "object" || ev.data === null) return;
       if ((ev.data as any).type !== "zernio-connected") return;
       // "zernio-connected" is just the message channel's name — it fires
@@ -91,12 +91,32 @@ export default function PublishCast() {
         });
         return;
       }
+      // Attribute the newly-connected account to this user BEFORE
+      // refreshing /profiles — that endpoint now only returns accounts
+      // this user actually owns (fixing a leak where it used to return
+      // every Luminacast customer's connected accounts), so without this
+      // call the just-connected account would never appear here.
+      let claimed = false;
+      try {
+        const res = await socialApi.confirmConnect(platform);
+        claimed = res.claimed;
+      } catch (err) {
+        console.error("confirmConnect failed:", err);
+      }
       queryClient.invalidateQueries({ queryKey: ["social-profiles"] });
-      toast({
-        title: "Account connected",
-        description: `Connected ${platform || "platform"}.`,
-        variant: "success",
-      });
+      if (claimed) {
+        toast({
+          title: "Account connected",
+          description: `Connected ${platform || "platform"}.`,
+          variant: "success",
+        });
+      } else {
+        toast({
+          title: "Connected, but couldn't confirm the account",
+          description: "Refresh this page — if it's still missing, try connecting again.",
+          variant: "destructive",
+        });
+      }
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

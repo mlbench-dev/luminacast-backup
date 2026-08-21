@@ -585,6 +585,36 @@ async def system_status(
         "public_url": settings.R2_PUBLIC_URL,
     }
 
+    # Zernio — a single, platform-wide API key (settings.ZERNIO_API_KEY),
+    # not per-user, so a failure (e.g. the shared account hitting its own
+    # plan's post-limit) affects every user until someone on our side
+    # notices and upgrades/fixes it. Sentry gets an event on every failure
+    # (see _raise_zernio_error in routers/social.py), but this surfaces the
+    # same signal here too so an admin checking this page doesn't have to
+    # go dig through Sentry to see it's an ongoing problem, not a one-off.
+    zernio_failures_24h = 0
+    zernio_last_error = None
+    try:
+        from models.social_post import SocialPost
+        cutoff = datetime.utcnow() - timedelta(hours=24)  # naive UTC to match DB column
+        result = await db.execute(
+            select(SocialPost)
+            .where(SocialPost.status == "failed", SocialPost.created_at >= cutoff)
+            .order_by(SocialPost.created_at.desc())
+        )
+        failed_posts = result.scalars().all()
+        zernio_failures_24h = len(failed_posts)
+        if failed_posts:
+            zernio_last_error = failed_posts[0].error_message
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+
+    zernio_status = {
+        "configured": bool(settings.ZERNIO_API_KEY),
+        "failures_24h": zernio_failures_24h,
+        "last_error": zernio_last_error,
+    }
+
     return {
         "server": server,
         "gpu_server": gpu_status,
@@ -592,6 +622,7 @@ async def system_status(
         "r2_storage": r2_status,
         "database": table_counts,
         "sentry_configured": bool(settings.SENTRY_DSN_BACKEND),
+        "zernio": zernio_status,
     }
 
 

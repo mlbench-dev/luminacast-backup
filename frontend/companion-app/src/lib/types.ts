@@ -853,6 +853,11 @@ export interface AdminSystemStatus {
   };
   database: Record<string, number>;
   sentry_configured: boolean;
+  zernio: {
+    configured: boolean;
+    failures_24h: number;
+    last_error: string | null;
+  };
 }
 
 // ── WebSocket Events ──

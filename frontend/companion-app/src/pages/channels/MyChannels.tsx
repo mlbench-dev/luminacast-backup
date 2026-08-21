@@ -64,7 +64,7 @@ export default function SocialChannelsPage() {
   // Listen for the OAuth-callback popup posting a message back. Same
   // postMessage protocol the Publish page uses.
   useEffect(() => {
-    function onMessage(ev: MessageEvent) {
+    async function onMessage(ev: MessageEvent) {
       if (typeof ev.data !== "object" || ev.data === null) return;
       if ((ev.data as any).type !== "zernio-connected") return;
       // "zernio-connected" is just the message channel's name — it fires
@@ -86,12 +86,31 @@ export default function SocialChannelsPage() {
         });
         return;
       }
+      // Attribute the newly-connected account to this user BEFORE
+      // refreshing the list — list_channels no longer auto-claims unclaimed
+      // accounts (that was the cross-user leak), so without this call the
+      // account would never show up for anyone.
+      let claimed = false;
+      try {
+        const res = await socialApi.confirmConnect(platform);
+        claimed = res.claimed;
+      } catch (err) {
+        console.error("confirmConnect failed:", err);
+      }
       queryClient.invalidateQueries({ queryKey: ["social-channels"] });
-      toast({
-        title: "Channel connected",
-        description: `${platformLabel(platform)} ready to publish.`,
-        variant: "success",
-      });
+      if (claimed) {
+        toast({
+          title: "Channel connected",
+          description: `${platformLabel(platform)} ready to publish.`,
+          variant: "success",
+        });
+      } else {
+        toast({
+          title: "Connected, but couldn't confirm the account",
+          description: "Refresh this page — if it's still missing, try connecting again.",
+          variant: "destructive",
+        });
+      }
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

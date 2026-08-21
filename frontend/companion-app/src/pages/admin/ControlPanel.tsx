@@ -583,6 +583,38 @@ function StatusTab() {
         </div>
       </StatusCard>
 
+      {/* Zernio — single platform-wide account, so a failure (e.g. its
+          shared plan hitting a post-limit) affects every user until we
+          notice. Shown here so admins see it's an ongoing problem without
+          having to go dig through Sentry. */}
+      <StatusCard
+        title="Zernio (Social Publishing)"
+        icon={Wifi}
+        status={
+          !data.zernio?.configured
+            ? "disabled"
+            : data.zernio.failures_24h > 0
+              ? "unhealthy"
+              : "healthy"
+        }
+      >
+        <div className="flex justify-between text-xs">
+          <span className="text-text-muted">Configured</span>
+          <StatusBadge status={data.zernio?.configured ? "healthy" : "disabled"} />
+        </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-text-muted">Failures (24h)</span>
+          <span className={cn(data.zernio?.failures_24h > 0 ? "text-red-500 font-medium" : "text-text")}>
+            {data.zernio?.failures_24h ?? 0}
+          </span>
+        </div>
+        {data.zernio?.last_error && (
+          <div className="text-[10px] text-text-dim truncate" title={data.zernio.last_error}>
+            Last error: {data.zernio.last_error}
+          </div>
+        )}
+      </StatusCard>
+
       {/* Database */}
       <StatusCard title="Database" icon={Database} className="md:col-span-2">
         <div className="grid grid-cols-3 gap-3">
