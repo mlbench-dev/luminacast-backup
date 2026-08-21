@@ -1038,11 +1038,15 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
       {/* Production Level selector — replaces the legacy AI-Plan chip
           preview. Three cards: Quick / Standard / Premium. The picked
           level is persisted on the cast and constrains the outline
-          generator's block-category mix. Visible only in Auto Cast — in
-          manual mode the LQ↔HQ slider already drives the spend dial. */}
-      {autoCast && (
-        <ProductionLevelSelector value={productionLevel} onChange={setProductionLevel} hasTemplate={!!selectedTemplate} />
-      )}
+          generator's block-category mix (duration caps, block count,
+          avatar-vs-b-roll ratio). Always shown, regardless of Auto Cast —
+          it used to be Auto-Cast-only on the theory that the manual LQ↔HQ
+          quality slider already covered "spend dial" duty, but Quality
+          and Production Level actually control different things (render
+          resolution vs. content structure), so hiding this in manual mode
+          just meant duration caps/structure kept applying with zero
+          visibility or control. */}
+      <ProductionLevelSelector value={productionLevel} onChange={setProductionLevel} hasTemplate={!!selectedTemplate} />
 
       {/* Background music picker — Off / Auto / Specific track. Auto (default)
           generates mood-driven AI music; the renderer places it under the
