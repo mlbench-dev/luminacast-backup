@@ -427,11 +427,16 @@ async def confirm_connect(
     """Attribute a just-completed OAuth connection to the correct user.
 
     Called by the frontend right after the OAuth popup reports success.
-    Diffs the current Zernio account list for this platform against the
-    before-snapshot connect_platform took, and claims whichever account is
-    new — this is the ONLY place a SocialChannel row is ever created for a
-    previously-unseen Zernio account; list_channels no longer does this
-    opportunistically (see its docstring for why that was the leak).
+    Looks at every Zernio account for this platform and claims whichever
+    ones aren't already owned by someone else — this is the ONLY place a
+    SocialChannel row is ever created for a previously-unclaimed Zernio
+    account; list_channels no longer does this opportunistically (see its
+    docstring for why that was the leak). The before-snapshot
+    connect_platform took is no longer used to gate this: ownership (is
+    someone else's row already pointing at this account?) is the only
+    thing that needs to be true for it to be safe, not timing (was it new
+    since this specific attempt started?) — see the comment above
+    other_users_claimed_ids for why the timing check was actively harmful.
     """
     pending = (
         await db.execute(
@@ -465,8 +470,6 @@ async def confirm_connect(
         sentry_sdk.capture_exception(exc)
         return {"claimed": False}
 
-    before_ids = set(pending.before_zernio_account_ids or [])
-
     # Rows THIS user already has for this zernio_account_id, any status —
     # covers reconnecting a channel they previously disconnected. Zernio
     # keeps the same account _id across a disconnect/reconnect cycle, so
@@ -484,9 +487,16 @@ async def confirm_connect(
             )
         ).scalars().all()
     }
-    # Extra safety net: never re-claim an account some OTHER user's row
-    # already owns, even if it's somehow also "new" against this snapshot
-    # (e.g. two users connecting the same platform at once).
+    # The only thing that actually needs to be true to safely claim an
+    # account: nobody else already owns it. We used to also require it be
+    # absent from the before-snapshot ("new since this attempt started"),
+    # but that's strictly weaker AND actively harmful: if an earlier attempt
+    # created the Zernio account but failed to save it locally (a slow/
+    # erroring Zernio call, a lost race, anything), that account is real,
+    # unclaimed, and permanently "not new" from then on — no future
+    # reconnect could ever pick it up again, since every subsequent
+    # before-snapshot would already contain it. Ownership, not timing, is
+    # the only thing that matters for safety here.
     other_users_claimed_ids = {
         ch.zernio_account_id
         for ch in (
@@ -521,7 +531,7 @@ async def confirm_connect(
             claimed.append(zid)
             continue
 
-        if zid in before_ids or zid in other_users_claimed_ids:
+        if zid in other_users_claimed_ids:
             continue
 
         new_ch = SocialChannel(
