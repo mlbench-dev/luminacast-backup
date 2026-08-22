@@ -15,7 +15,6 @@ After removing `<TwickStudio>` from ArrangePhase, re-verify all E1-E11 editor fi
 | E9 | Single player control in top bar | HeaderPlaybackControls.tsx | OK | Independent of Twick |
 | E10 | Transitions between blocks | BlockMarkers.tsx | OK | Rendered on top of timeline, not inside TwickStudio |
 | E11 | Dropdown text readable | RightPropertiesPanel.tsx | OK | Uses our dropdowns, not Twick's |
-
 ## Summary
 
 - TwickStudio JSX removed from ArrangePhase line 412
