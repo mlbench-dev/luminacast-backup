@@ -453,12 +453,20 @@ async def confirm_connect(
     # popup reporting success without a prior /connect call) — nothing safe
     # to attribute. Silently no-op rather than guess.
     if pending is None:
+        logger.info(
+            "confirm_connect: no pending row for user=%s platform=%s",
+            ctx.workspace_owner_id, req.platform,
+        )
         return {"claimed": False}
 
     # A stale abandoned attempt (user opened Connect, never finished, tried
     # again minutes later some other way) shouldn't be diffed against — 10
     # minutes comfortably covers a real OAuth round-trip.
     if pending.created_at and (datetime.utcnow() - pending.created_at) > timedelta(minutes=10):
+        logger.info(
+            "confirm_connect: pending row %s expired (created_at=%s) for user=%s platform=%s",
+            pending.id, pending.created_at, ctx.workspace_owner_id, req.platform,
+        )
         await db.delete(pending)
         await db.commit()
         return {"claimed": False}
