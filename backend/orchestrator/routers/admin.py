@@ -11,6 +11,7 @@ from models.api_usage_log import ApiUsageLog
 from models.ai_prompt_version import AiPromptVersion
 from models.avatar import Avatar
 from models.product import Product
+from models.social_post import SocialChannel
 from routers.auth import require_admin
 from services import audit_log
 import sentry_sdk
@@ -108,8 +109,26 @@ async def admin_creators(
         cast_count = (await db.execute(select(func.count(Cast.id)).where(Cast.user_id == c.id))).scalar() or 0
         stream_count = (await db.execute(select(func.count(StreamSession.id)).where(StreamSession.user_id == c.id))).scalar() or 0
         total_revenue = (await db.execute(select(func.coalesce(func.sum(BillingEvent.amount_cents), 0)).where(BillingEvent.user_id == c.id))).scalar() or 0
+        # Real, OAuth-verified TikTok connections (via Zernio) rather than
+        # the free-text handle collected at signup (User.tiktok_handle) —
+        # that field is optional, never validated, and unrelated to whether
+        # the user actually connected an account. A user can have more than
+        # one TikTok account connected, so this is a list, not a single value.
+        tiktok_rows = (
+            await db.execute(
+                select(SocialChannel.handle, SocialChannel.follower_count)
+                .where(
+                    SocialChannel.user_id == c.id,
+                    SocialChannel.platform == "tiktok",
+                    SocialChannel.status == "active",
+                )
+            )
+        ).all()
+        tiktok_accounts = [
+            {"handle": r.handle, "follower_count": r.follower_count or 0} for r in tiktok_rows
+        ]
         creator_list.append({
-            "id": c.id, "email": c.email, "tiktok_handle": c.tiktok_handle,
+            "id": c.id, "email": c.email, "tiktok_accounts": tiktok_accounts,
             "total_casts": cast_count, "total_streams": stream_count,
             "total_revenue_cents": total_revenue,
             "created_at": c.created_at.isoformat() if c.created_at else None,

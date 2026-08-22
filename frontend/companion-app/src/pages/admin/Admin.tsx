@@ -194,7 +194,22 @@ export function AdminPage() {
                   {creators.map((c) => (
                     <tr key={c.id} className="border-b border-border/50" data-testid={`creator-row-${c.id}`}>
                       <td className="py-2 text-text">{c.email}</td>
-                      <td className="py-2 text-text-dim">{c.tiktok_handle || "—"}</td>
+                      <td className="py-2 text-text-dim">
+                        {c.tiktok_accounts.length === 0 ? (
+                          "—"
+                        ) : (
+                          <span
+                            title={c.tiktok_accounts
+                              .map((a) => `${a.handle ? `@${a.handle}` : "unknown"} — ${a.follower_count.toLocaleString()} followers`)
+                              .join("\n")}
+                          >
+                            {c.tiktok_accounts.map((a) => (a.handle ? `@${a.handle}` : "unknown")).join(", ")}
+                            {c.tiktok_accounts.length > 1 && (
+                              <span className="text-text-muted"> ({c.tiktok_accounts.length})</span>
+                            )}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2 text-text-dim">{c.total_casts}</td>
                       <td className="py-2 text-text-dim">{c.total_streams}</td>
                       <td className="py-2 text-success">{formatCents(c.total_revenue_cents)}</td>

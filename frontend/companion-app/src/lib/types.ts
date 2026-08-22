@@ -738,7 +738,10 @@ export interface AdminStream {
 export interface AdminCreator {
   id: string;
   email: string;
-  tiktok_handle?: string;
+  /** Real, OAuth-verified TikTok connections (via Zernio) — a user can have
+   *  more than one connected. Not the same as the optional free-text handle
+   *  collected at signup. */
+  tiktok_accounts: { handle: string | null; follower_count: number }[];
   total_casts: number;
   total_streams: number;
   total_revenue_cents: number;
