@@ -509,6 +509,15 @@ async def confirm_connect(
         ).scalars().all()
     }
 
+    matching = [acc for acc in after_accounts if acc.get("platform") == req.platform]
+    logger.info(
+        "confirm_connect: user=%s platform=%s total_accounts=%d matching_platform=%s "
+        "own_zids=%s other_users_zids=%s",
+        ctx.workspace_owner_id, req.platform, len(after_accounts),
+        [(a.get("_id") or a.get("id")) for a in matching],
+        list(own_rows_by_zid.keys()), list(other_users_claimed_ids),
+    )
+
     claimed = []
     for acc in after_accounts:
         if acc.get("platform") != req.platform:
@@ -549,7 +558,17 @@ async def confirm_connect(
         db.add(new_ch)
         claimed.append(zid)
 
-    await db.delete(pending)
+    # Only consume the pending snapshot once it's actually done its job.
+    # Deleting it unconditionally here meant a retried call (ours or the
+    # frontend's) would always find nothing: the very first attempt already
+    # deleted it regardless of whether it found anything to claim, so every
+    # retry after that was a guaranteed no-op "no pending snapshot" bail-out
+    # rather than a real second look at Zernio. Leaving it in place when
+    # nothing was claimed lets a genuine retry — or the user manually
+    # clicking connect again within the 10-minute window — actually mean
+    # something.
+    if claimed:
+        await db.delete(pending)
     await db.commit()
     return {"claimed": bool(claimed), "zernio_account_ids": claimed}
 
