@@ -6,7 +6,6 @@ from database import get_db
 from models.user import User, UserRole
 from models.stream_session import StreamSession
 from models.cast import Cast, CastStatus
-from models.billing_event import BillingEvent
 from models.api_usage_log import ApiUsageLog
 from models.ai_prompt_version import AiPromptVersion
 from models.avatar import Avatar
@@ -19,6 +18,47 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+async def _sum_real_revenue_cents(
+    db: AsyncSession, *, user_id: str | None = None, since: datetime | None = None,
+) -> int:
+    """Real, confirmed money collected — credit-pack purchases, overage
+    charges that actually succeeded via Stripe, and subscription payments.
+
+    Deliberately does NOT use `BillingEvent`: its `cast_creation` type comes
+    from `pay_for_cast`, a dead endpoint with zero frontend call sites, and
+    its `streaming_usage` type was never actually charged via Stripe at all
+    (no `stripe_payment_intent_id`, explicitly commented "legacy" at its
+    only creation site). Also excludes internal ledger movement that isn't
+    new cash in: `CreditTransaction` types `deduction`/`expiration`, and
+    `OverageCharge` rows with `billing_method` `credits` (already counted
+    under the credit purchase that funded it), `pending`, or `failed`
+    (never actually collected).
+    """
+    from models.billing import CreditTransaction, OverageCharge, SubscriptionPayment
+
+    credit_stmt = select(func.coalesce(func.sum(CreditTransaction.amount_cents), 0)).where(
+        CreditTransaction.type.in_(["purchase", "auto_topup"])
+    )
+    overage_stmt = select(func.coalesce(func.sum(OverageCharge.amount_cents), 0)).where(
+        OverageCharge.billing_method == "stripe_charge"
+    )
+    subscription_stmt = select(func.coalesce(func.sum(SubscriptionPayment.amount_cents), 0))
+
+    if user_id is not None:
+        credit_stmt = credit_stmt.where(CreditTransaction.user_id == user_id)
+        overage_stmt = overage_stmt.where(OverageCharge.user_id == user_id)
+        subscription_stmt = subscription_stmt.where(SubscriptionPayment.user_id == user_id)
+    if since is not None:
+        credit_stmt = credit_stmt.where(CreditTransaction.created_at >= since)
+        overage_stmt = overage_stmt.where(OverageCharge.created_at >= since)
+        subscription_stmt = subscription_stmt.where(SubscriptionPayment.created_at >= since)
+
+    credit_total = (await db.execute(credit_stmt)).scalar() or 0
+    overage_total = (await db.execute(overage_stmt)).scalar() or 0
+    subscription_total = (await db.execute(subscription_stmt)).scalar() or 0
+    return credit_total + overage_total + subscription_total
 
 
 # ── Existing endpoints ──
@@ -37,10 +77,7 @@ async def admin_dashboard(
     )
     today_start_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     today_start_naive = today_start_utc.replace(tzinfo=None)
-    revenue_today = await db.execute(
-        select(func.coalesce(func.sum(BillingEvent.amount_cents), 0))
-        .where(BillingEvent.created_at >= today_start_naive)
-    )
+    revenue_today_cents = await _sum_real_revenue_cents(db, since=today_start_naive)
     import psutil
     try:
         cpu = psutil.cpu_percent(interval=0.1)
@@ -60,7 +97,7 @@ async def admin_dashboard(
     return {
         "active_streams": active_streams.scalar() or 0,
         "total_creators": total_creators.scalar() or 0,
-        "revenue_today_cents": revenue_today.scalar() or 0,
+        "revenue_today_cents": revenue_today_cents,
         "server_health": health,
     }
 
@@ -108,7 +145,7 @@ async def admin_creators(
     for c in creators:
         cast_count = (await db.execute(select(func.count(Cast.id)).where(Cast.user_id == c.id))).scalar() or 0
         stream_count = (await db.execute(select(func.count(StreamSession.id)).where(StreamSession.user_id == c.id))).scalar() or 0
-        total_revenue = (await db.execute(select(func.coalesce(func.sum(BillingEvent.amount_cents), 0)).where(BillingEvent.user_id == c.id))).scalar() or 0
+        total_revenue = await _sum_real_revenue_cents(db, user_id=c.id)
         # Real, OAuth-verified TikTok connections (via Zernio) rather than
         # the free-text handle collected at signup (User.tiktok_handle) —
         # that field is optional, never validated, and unrelated to whether

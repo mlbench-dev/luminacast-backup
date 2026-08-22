@@ -379,3 +379,41 @@ class ProcessedStripeEvent(Base):
     id = Column(String, primary_key=True)  # the Stripe event id, e.g. evt_...
     event_type = Column(String(64), nullable=False)
     processed_at = Column(DateTime, server_default=func.now())
+
+
+class SubscriptionPayment(Base):
+    """Append-only ledger of confirmed Stripe invoice payments.
+
+    `Subscription` only tracks current plan/period state, and
+    `SubscriptionEvent` only logs that a change happened — neither stores
+    the dollar amount actually collected each billing cycle. Without this
+    table, real subscription revenue (the platform's largest revenue
+    category) was not computable from our own database at all, not even
+    the very first payment. Written by the `invoice.paid` Stripe webhook
+    handler (routers/webhooks.py) once Stripe confirms the invoice is
+    paid — `amount_cents` is Stripe's `amount_paid`, not `amount_due`, so
+    it reflects discounts/proration actually applied.
+    """
+
+    __tablename__ = "subscription_payments"
+    id = Column(String, primary_key=True)  # prefix: subp_
+    user_id = Column(String, ForeignKey("users.id"), index=True, nullable=False)
+    subscription_id = Column(String, ForeignKey("subscriptions.id"), nullable=True, index=True)
+
+    stripe_invoice_id = Column(String, nullable=False, unique=True, index=True)
+    stripe_customer_id = Column(String, nullable=True, index=True)
+    stripe_subscription_id = Column(String, nullable=True, index=True)
+
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(String(10), nullable=True)
+    # Stripe's own field: subscription_create / subscription_cycle /
+    # subscription_update / ... — lets us tell a first payment from a
+    # renewal from a mid-cycle proration later without re-deriving it.
+    billing_reason = Column(String(40), nullable=True)
+
+    period_start = Column(DateTime, nullable=True)
+    period_end = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now())
+
+    user = relationship("User", foreign_keys=[user_id])

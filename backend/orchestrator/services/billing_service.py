@@ -45,6 +45,7 @@ from models.billing import (
     Subscription,
     SubscriptionEvent,
     SubscriptionEventType,
+    SubscriptionPayment,
     SubscriptionStatus,
     UsagePeriod,
 )
@@ -795,6 +796,82 @@ async def purchase_credits(
     db.add(tx)
     await db.commit()
     return tx
+
+
+async def record_subscription_payment(db: AsyncSession, invoice_obj: dict) -> Optional[SubscriptionPayment]:
+    """Write a `SubscriptionPayment` ledger row from a Stripe `invoice.paid`
+    event's data object.
+
+    This is the only place subscription revenue actually gets recorded —
+    `Subscription` only tracks current plan/period state and never stored a
+    dollar amount. Best-effort: logs and returns None rather than raising,
+    since the caller (the webhook handler) must still 200 the delivery even
+    if this can't be resolved — Stripe has already been paid either way.
+    """
+    stripe_invoice_id = invoice_obj.get("id")
+    if not stripe_invoice_id:
+        return None
+
+    amount_paid = invoice_obj.get("amount_paid") or 0
+    if amount_paid <= 0:
+        # Fully covered by a discount/credit note — no real cash collected.
+        return None
+
+    stripe_subscription_id = invoice_obj.get("subscription")
+    stripe_customer_id = invoice_obj.get("customer")
+
+    subscription = None
+    if stripe_subscription_id:
+        subscription = (
+            await db.execute(
+                select(Subscription).where(Subscription.stripe_subscription_id == stripe_subscription_id)
+            )
+        ).scalar_one_or_none()
+    if subscription is None and stripe_customer_id:
+        # Rare race: the very first invoice.paid for a brand-new
+        # subscription can arrive before customer.subscription.created has
+        # synced our Subscription row yet. Fall back to matching on the
+        # Stripe customer id.
+        subscription = (
+            await db.execute(
+                select(Subscription).where(Subscription.stripe_customer_id == stripe_customer_id)
+            )
+        ).scalar_one_or_none()
+
+    if subscription is None:
+        logger.warning(
+            "invoice.paid %s: could not resolve a Subscription for stripe_subscription_id=%s customer=%s — skipping",
+            stripe_invoice_id, stripe_subscription_id, stripe_customer_id,
+        )
+        return None
+
+    lines = (invoice_obj.get("lines") or {}).get("data") or []
+    period = (lines[0].get("period") if lines else None) or {}
+
+    payment = SubscriptionPayment(
+        id=_id("subp"),
+        user_id=subscription.user_id,
+        subscription_id=subscription.id,
+        stripe_invoice_id=stripe_invoice_id,
+        stripe_customer_id=stripe_customer_id,
+        stripe_subscription_id=stripe_subscription_id,
+        amount_cents=amount_paid,
+        currency=invoice_obj.get("currency"),
+        billing_reason=invoice_obj.get("billing_reason"),
+        period_start=stripe_timestamp_to_naive_utc(period.get("start")),
+        period_end=stripe_timestamp_to_naive_utc(period.get("end")),
+    )
+    db.add(payment)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # stripe_invoice_id unique constraint — this invoice was already
+        # recorded (e.g. a redelivery under a different Stripe event id
+        # than the one ProcessedStripeEvent already deduped). Not an error.
+        await db.rollback()
+        logger.info("invoice.paid %s already recorded — skipping duplicate", stripe_invoice_id)
+        return None
+    return payment
 
 
 async def expire_credits(db: AsyncSession, *, now: Optional[datetime] = None) -> dict:

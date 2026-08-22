@@ -35,7 +35,7 @@ from models.user_action_event import UserActionEvent
 from models.billing import (
     Subscription, SubscriptionStatus, UsagePeriod, RenderUsageRecord,
     LiveStreamUsageRecord, AvatarSlotPurchase, CreditWallet, CreditTransaction,
-    OverageCharge, SubscriptionEvent, ProcessedStripeEvent,
+    OverageCharge, SubscriptionEvent, ProcessedStripeEvent, SubscriptionPayment,
 )
 
 __all__ = [
@@ -75,5 +75,5 @@ __all__ = [
     "UserActionEvent",
     "Subscription", "SubscriptionStatus", "UsagePeriod", "RenderUsageRecord",
     "LiveStreamUsageRecord", "AvatarSlotPurchase", "CreditWallet", "CreditTransaction",
-    "OverageCharge", "SubscriptionEvent", "ProcessedStripeEvent",
+    "OverageCharge", "SubscriptionEvent", "ProcessedStripeEvent", "SubscriptionPayment",
 ]

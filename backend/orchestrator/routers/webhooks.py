@@ -1008,6 +1008,12 @@ async def _handle_stripe_event(db, event_type: str, obj: dict) -> None:
             if owner_id:
                 await billing_service.mark_subscription_past_due(db, owner_id)
 
+    elif event_type == "invoice.paid":
+        # The only place a real subscription payment amount ever gets
+        # recorded — Subscription/SubscriptionEvent never stored one. See
+        # SubscriptionPayment's docstring (models/billing.py).
+        await billing_service.record_subscription_payment(db, obj)
+
     else:
         logger.info("Unhandled Stripe event type: %s", event_type)
 
