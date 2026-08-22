@@ -287,6 +287,23 @@ async def generate_outline(
         production_level=getattr(cast, 'production_level', None) or 'standard',
     )
 
+    # PR #162 b-roll fix: this manual (non-Smart-Cast) path never resolved
+    # user_video_ids into actual b-roll before — only generate-smart-outline
+    # did. Since picking LIVE mode auto-disables Smart Cast, that meant a
+    # LIVE cast's uploaded clips (the whole point of the "Upload your clips"
+    # card in Setup) were silently never used unless the user manually
+    # re-enabled Smart Cast afterward. Mirror the smart-outline endpoint's
+    # handling here so uploaded clips work regardless of Auto Cast state.
+    from engine.cast_generator import auto_populate_stock_media
+    preferred_broll_urls = await _resolve_user_video_urls(
+        db, getattr(cast, "user_video_ids", None), ctx.workspace_owner_id,
+    )
+    if preferred_broll_urls:
+        scenes = await auto_populate_stock_media(
+            scenes, cast_id=cast_id, products=products,
+            preferred_broll_urls=preferred_broll_urls,
+        )
+
     # Replace any existing blocks before re-persisting. Without this a second
     # call to generate-outline (client retry / double-submit) appended a whole
     # new block set on top of the old one — every (position, type, category)

@@ -417,14 +417,18 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           castType === "live" && selectedUserVideos.length > 0
             ? selectedUserVideos.map((v) => v.id)
             : undefined,
-        // LIVE-only advisory hints for the backend outline/generator. Backend
-        // may ignore unknown keys today; documented in the PR for follow-up.
+        // LIVE-only hints for the backend outline generator. Keys must match
+        // what _build_live_defaults_section (engine/cast_generator.py)
+        // actually reads (voiceover / broll / max_duration_seconds) — the
+        // previous keys here (primary_track/request_user_videos/b_roll_enabled)
+        // didn't match anything the backend looked for, so this whole object
+        // was silently ignored for every LIVE cast.
         live_mode_defaults:
           castType === "live"
             ? {
-                primary_track: "avatar_voiceover",
-                request_user_videos: true,
-                b_roll_enabled: true,
+                voiceover: true,
+                broll: true,
+                max_duration_seconds: durationManual ? durationTarget : undefined,
               }
             : undefined,
       } as any);
