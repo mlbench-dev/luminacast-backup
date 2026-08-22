@@ -16,7 +16,7 @@ interface AuthState {
   error: string | null;
 
   login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
-  register: (email: string, password: string, tiktokHandle?: string) => Promise<void>;
+  register: (email: string, password: string) => Promise<void>;
   reactivateAccount: (token: string, password: string) => Promise<void>;
   logout: () => void;
   fetchUser: () => Promise<void>;
@@ -54,10 +54,10 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      register: async (email, password, tiktokHandle) => {
+      register: async (email, password) => {
         set({ isLoading: true, error: null });
         try {
-          const res = await authApi.register({ email, password, tiktok_handle: tiktokHandle });
+          const res = await authApi.register({ email, password });
           setAuthToken(res.access_token);
           set({ token: res.access_token });
           const user = await authApi.me();

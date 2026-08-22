@@ -105,7 +105,6 @@ export interface User {
   id: string;
   email: string;
   role: UserRole;
-  tiktok_handle?: string;
   stripe_customer_id?: string;
   created_at: string;
   is_active: boolean;
@@ -144,7 +143,6 @@ export interface LoginRequest {
 export interface RegisterRequest {
   email: string;
   password: string;
-  tiktok_handle?: string;
 }
 
 export interface ForgotPasswordRequest {

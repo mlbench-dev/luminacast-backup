@@ -26,7 +26,6 @@ def _validate_password_strength(password: str) -> str:
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
-    tiktok_handle: Optional[str] = None
 
     @field_validator("password")
     @classmethod
@@ -104,7 +103,6 @@ class UserResponse(BaseModel):
     id: str
     email: str
     role: str
-    tiktok_handle: Optional[str] = None
     stripe_customer_id: Optional[str] = None
     created_at: datetime
     is_active: bool

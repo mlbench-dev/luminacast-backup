@@ -18,7 +18,12 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     role = Column(Enum(UserRole), default=UserRole.CREATOR)
     stripe_customer_id = Column(String, unique=True, nullable=True)
-    tiktok_handle = Column(String, nullable=True)
+    # tiktok_handle column intentionally dropped from the ORM (2026-08-22) —
+    # a free-text handle collected at signup that nothing ever read back
+    # (not the profile page, not the clone-scout feature, which takes its
+    # own handle input at scan time). The physical DB column is left in
+    # place rather than dropped via migration, so any already-collected
+    # data isn't destroyed; it's just no longer mapped or written to.
     display_name = Column(String, nullable=True)
     avatar_r2_key = Column(String(500), nullable=True)
     last_login_at = Column(DateTime, nullable=True)

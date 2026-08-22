@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Mail, Lock, User } from "lucide-react";
+import { Mail, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -13,7 +13,6 @@ export function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [tiktokHandle, setTiktokHandle] = useState("");
   const navigate = useNavigate();
   const { register, isLoading } = useAuthStore();
 
@@ -24,7 +23,7 @@ export function SignupPage() {
       return;
     }
     try {
-      await register(email, password, tiktokHandle || undefined);
+      await register(email, password);
       toast({ title: "Account created", description: "Welcome to Luminacast!", variant: "success" });
       navigate("/dashboard");
     } catch (err: unknown) {
@@ -89,17 +88,6 @@ export function SignupPage() {
                   />
                 </div>
                 <p className="text-xs text-text-muted">{PASSWORD_REQUIREMENTS_TEXT}</p>
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
-                  <Input
-                    type="text"
-                    placeholder="TikTok handle (optional)"
-                    value={tiktokHandle}
-                    onChange={(e) => setTiktokHandle(e.target.value)}
-                    data-testid="signup-tiktok"
-                    className="pl-10"
-                  />
-                </div>
               </div>
 
               <Button

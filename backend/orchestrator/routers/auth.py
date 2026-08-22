@@ -213,7 +213,6 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
         email=req.email,
         password_hash=pwd_context.hash(req.password),
         role=UserRole.CREATOR,
-        tiktok_handle=req.tiktok_handle,
     )
     db.add(user)
     await db.commit()
