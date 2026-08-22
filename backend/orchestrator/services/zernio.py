@@ -151,13 +151,40 @@ class ZernioService:
     # \u2500\u2500 Profiles / connected accounts \u2500\u2500
 
     async def list_profiles(self) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
-            resp = await client.get(f"{ZERNIO_BASE}/accounts", headers=self.headers)
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, dict) and "accounts" in data:
-                return data["accounts"]
-            return data if isinstance(data, list) else []
+        """GET /v1/accounts — every social account connected under this
+        platform-wide Zernio key.
+
+        Retries transient failures a few times before raising. This is one
+        shared key for every Luminacast customer, so a burst of concurrent
+        activity elsewhere on the platform can produce a transient error
+        (timeout, momentary 5xx/429) at exactly the moment a single user's
+        connect_platform/confirm_connect call needs a clean answer — a bare
+        unretried call here was confirmed to silently sink confirm_connect
+        into "couldn't confirm the account" for a perfectly good connection.
+        Mirrors the same retry shape already used by
+        get_recent_connection_error for the same underlying reason.
+        """
+        import asyncio
+
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
+                    resp = await client.get(f"{ZERNIO_BASE}/accounts", headers=self.headers)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if isinstance(data, dict) and "accounts" in data:
+                        return data["accounts"]
+                    return data if isinstance(data, list) else []
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Zernio list_profiles failed (attempt %d/3): %s", attempt + 1, exc,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(0.8)
+        assert last_exc is not None
+        raise last_exc
 
     async def disconnect_account(self, account_id: str) -> None:
         """Revoke a connected account on Zernio's side.
