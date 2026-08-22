@@ -154,17 +154,21 @@ class ZernioService:
         """GET /v1/accounts — every social account connected under this
         platform-wide Zernio key.
 
-        Retries transient failures a few times before raising. This is one
-        shared key for every Luminacast customer, so a burst of concurrent
-        activity elsewhere on the platform can produce a transient error
-        (timeout, momentary 5xx/429) at exactly the moment a single user's
-        connect_platform/confirm_connect call needs a clean answer — a bare
-        unretried call here was confirmed to silently sink confirm_connect
-        into "couldn't confirm the account" for a perfectly good connection.
-        Mirrors the same retry shape already used by
-        get_recent_connection_error for the same underlying reason.
+        Confirmed live: Zernio enforces a hard 60-requests/minute limit on
+        this key, shared across every Luminacast customer combined (page
+        loads, connects, comment syncs, posts — all one pool). A short fixed
+        backoff isn't enough to survive that: if the budget is genuinely
+        exhausted, it doesn't recover until the minute actually rolls over,
+        so a couple of quick retries can easily land entirely inside the
+        same dead window. On a 429 specifically, wait for the real reset
+        time Zernio reports (Retry-After, falling back to
+        X-RateLimit-Reset) instead of guessing — bounded to 65s so a single
+        call can't hang indefinitely. Non-429 failures (timeouts, momentary
+        5xx) still use a short fixed backoff, mirroring the retry shape
+        already used by get_recent_connection_error.
         """
         import asyncio
+        import time
 
         last_exc: Exception | None = None
         for attempt in range(3):
@@ -176,6 +180,34 @@ class ZernioService:
                     if isinstance(data, dict) and "accounts" in data:
                         return data["accounts"]
                     return data if isinstance(data, list) else []
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                if exc.response.status_code == 429 and attempt < 2:
+                    wait = 5.0
+                    retry_after = exc.response.headers.get("retry-after")
+                    reset_at = exc.response.headers.get("x-ratelimit-reset")
+                    if retry_after:
+                        try:
+                            wait = float(retry_after)
+                        except ValueError:
+                            pass
+                    elif reset_at:
+                        try:
+                            wait = float(reset_at) - time.time()
+                        except ValueError:
+                            pass
+                    wait = max(1.0, min(wait, 65.0))
+                    logger.warning(
+                        "Zernio list_profiles rate-limited (attempt %d/3), "
+                        "waiting %.1fs for reset", attempt + 1, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                logger.warning(
+                    "Zernio list_profiles failed (attempt %d/3): %s", attempt + 1, exc,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(0.8)
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
