@@ -54,12 +54,14 @@ export const socialApi = {
       "/social/connect", { platform, redirect_uri: redirectUri },
     ).then((r) => r.data),
   // Call right after the OAuth popup reports success — this is what
-  // actually attributes the newly-connected account to the current user
-  // (diffed against the snapshot connectPlatform took before the popup
-  // opened). Without this, the account is never claimed by anyone.
-  confirmConnect: (platform: string) =>
+  // actually attributes the newly-connected account to the current user.
+  // accountId comes straight from Zernio's own callback redirect (it tells
+  // us exactly which account was just connected), so pass it through
+  // whenever we have it — the backend claims that exact account directly
+  // instead of falling back to diffing account lists against a snapshot.
+  confirmConnect: (platform: string, accountId?: string | null) =>
     api.post<{ claimed: boolean; zernio_account_ids?: string[] }>(
-      "/social/connect/confirm", { platform },
+      "/social/connect/confirm", { platform, account_id: accountId || undefined },
     ).then((r) => r.data),
   // The OAuth redirect only ever carries a generic error code
   // ("connection_failed") — this looks up Zernio's activity log for the
@@ -121,13 +123,14 @@ export const socialApi = {
 // re-checking is safe even if the first attempt actually did land.
 export async function confirmConnectWithRetry(
   platform: string,
+  accountId?: string | null,
   attempts = 3,
   delayMs = 2500,
 ): Promise<{ claimed: boolean; zernio_account_ids?: string[] }> {
   let last: { claimed: boolean; zernio_account_ids?: string[] } = { claimed: false };
   for (let i = 0; i < attempts; i++) {
     try {
-      last = await socialApi.confirmConnect(platform);
+      last = await socialApi.confirmConnect(platform, accountId);
     } catch (err) {
       console.error("confirmConnect failed:", err);
       last = { claimed: false };

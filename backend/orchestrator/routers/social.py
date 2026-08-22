@@ -415,6 +415,109 @@ async def connect_platform(
 
 class ConfirmConnectRequest(BaseModel):
     platform: str
+    # Zernio's own success redirect carries this directly (as "accountId")
+    # — confirmed against a real callback URL: ?connected=tiktok&
+    # accountId=...&username=...&profileId=...&connect_token=... — never a
+    # "platform"/"status" pair, which is what this whole endpoint was
+    # written against originally. Reading the wrong query-param names on
+    # the callback page meant every confirm_connect call was silently sent
+    # an empty platform and could never find its own pending row, no matter
+    # what was actually connected. With the real account id in hand there's
+    # no need to diff account lists at all — see _claim_account_by_id.
+    account_id: str | None = None
+
+
+async def _claim_account_by_id(
+    db: AsyncSession,
+    svc,
+    ctx: WorkspaceContext,
+    platform: str,
+    account_id: str,
+) -> dict:
+    """Directly claim the exact account Zernio's callback told us about.
+
+    Strictly simpler and more reliable than the before/after diff below:
+    no snapshot, no timing window, no guessing which account is "new" —
+    just look the id up and claim it if nobody else already owns it.
+    """
+    try:
+        accounts = await svc.list_profiles()
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        return {"claimed": False}
+
+    match = next(
+        (a for a in accounts if (a.get("_id") or a.get("id")) == account_id), None,
+    )
+    if match is None:
+        logger.info(
+            "confirm_connect: accountId=%s not in Zernio's account list "
+            "(user=%s platform=%s)", account_id, ctx.workspace_owner_id, platform,
+        )
+        return {"claimed": False}
+
+    other_owner = (
+        await db.execute(
+            select(SocialChannel).where(
+                SocialChannel.user_id != ctx.workspace_owner_id,
+                SocialChannel.zernio_account_id == account_id,
+            )
+        )
+    ).scalars().first()
+    if other_owner is not None:
+        logger.warning(
+            "confirm_connect: accountId=%s already owned by a different "
+            "user (requester=%s, owner=%s)",
+            account_id, ctx.workspace_owner_id, other_owner.user_id,
+        )
+        return {"claimed": False}
+
+    handle = match.get("username") or match.get("handle") or match.get("screenName")
+    display_name = match.get("displayName") or match.get("name") or handle
+    follower_count = match.get("followerCount") or match.get("followers") or 0
+    profile_image_url = match.get("profileImage") or match.get("avatarUrl") or match.get("profileImageUrl")
+
+    own_row = (
+        await db.execute(
+            select(SocialChannel).where(
+                SocialChannel.user_id == ctx.workspace_owner_id,
+                SocialChannel.zernio_account_id == account_id,
+            )
+        )
+    ).scalars().first()
+    if own_row is not None:
+        own_row.status = "active"
+        own_row.handle = handle
+        own_row.display_name = display_name
+        own_row.follower_count = follower_count
+        own_row.profile_image_url = profile_image_url
+    else:
+        db.add(SocialChannel(
+            id=f"sch_{uuid.uuid4().hex[:12]}",
+            user_id=ctx.workspace_owner_id,
+            platform=platform,
+            platform_account_id=match.get("platformAccountId") or match.get("accountId"),
+            handle=handle,
+            display_name=display_name,
+            follower_count=follower_count,
+            profile_image_url=profile_image_url,
+            zernio_account_id=account_id,
+            status="active",
+        ))
+
+    # A leftover pending snapshot for this (user, platform) is now obsolete.
+    await db.execute(
+        sa_delete(PendingSocialConnect).where(
+            PendingSocialConnect.user_id == ctx.workspace_owner_id,
+            PendingSocialConnect.platform == platform,
+        )
+    )
+    await db.commit()
+    logger.info(
+        "confirm_connect: claimed accountId=%s directly (user=%s platform=%s)",
+        account_id, ctx.workspace_owner_id, platform,
+    )
+    return {"claimed": True, "zernio_account_ids": [account_id]}
 
 
 @router.post("/connect/confirm")
@@ -427,17 +530,18 @@ async def confirm_connect(
     """Attribute a just-completed OAuth connection to the correct user.
 
     Called by the frontend right after the OAuth popup reports success.
-    Looks at every Zernio account for this platform and claims whichever
-    ones aren't already owned by someone else — this is the ONLY place a
-    SocialChannel row is ever created for a previously-unclaimed Zernio
-    account; list_channels no longer does this opportunistically (see its
-    docstring for why that was the leak). The before-snapshot
-    connect_platform took is no longer used to gate this: ownership (is
-    someone else's row already pointing at this account?) is the only
-    thing that needs to be true for it to be safe, not timing (was it new
-    since this specific attempt started?) — see the comment above
-    other_users_claimed_ids for why the timing check was actively harmful.
+    When the callback gave us an account_id directly (the normal case now),
+    claim exactly that account — see _claim_account_by_id. The
+    snapshot-diff logic below only runs as a fallback for a stale cached
+    frontend build that doesn't send account_id yet; it looks at every
+    Zernio account for this platform and claims whichever ones aren't
+    already owned by someone else. list_channels no longer does this
+    opportunistically (see its docstring for why that was the leak).
     """
+    svc = _require_zernio()
+    if req.account_id:
+        return await _claim_account_by_id(db, svc, ctx, req.platform, req.account_id)
+
     pending = (
         await db.execute(
             select(PendingSocialConnect)
@@ -471,7 +575,6 @@ async def confirm_connect(
         await db.commit()
         return {"claimed": False}
 
-    svc = _require_zernio()
     try:
         after_accounts = await svc.list_profiles()
     except Exception as exc:

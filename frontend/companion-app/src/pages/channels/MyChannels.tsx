@@ -71,7 +71,7 @@ export default function SocialChannelsPage() {
       // for a failed/declined OAuth too, with the real outcome carried in
       // status/error. Ignoring those meant every attempt (including a
       // declined authorization) showed a false "Channel connected" toast.
-      const { platform, status, error } = ev.data as any;
+      const { platform, status, error, accountId } = ev.data as any;
       if (error || status !== "ok") {
         // Zernio's real explanation (from the connect-error lookup) can
         // read like a support article — fine on the callback popup, which
@@ -92,7 +92,7 @@ export default function SocialChannelsPage() {
       // account would never show up for anyone. Retries internally since a
       // slow Zernio call can make the first attempt look unclaimed when the
       // account just isn't visible yet.
-      const res = await confirmConnectWithRetry(platform);
+      const res = await confirmConnectWithRetry(platform, accountId);
       const claimed = res.claimed;
       queryClient.invalidateQueries({ queryKey: ["social-channels"] });
       if (claimed) {

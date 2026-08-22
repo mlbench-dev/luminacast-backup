@@ -76,9 +76,20 @@ export default function ZernioCallback() {
 
     (async () => {
       const params = new URLSearchParams(window.location.search);
-      const platform = params.get("platform") || "";
-      const status = params.get("status") || "ok";
+      // Confirmed against a real redirect: Zernio's success callback carries
+      // "connected" (the platform), "accountId", "username", "profileId",
+      // and "connect_token" — never "platform" or "status" at all. Reading
+      // the wrong key names here silently sent an empty platform on every
+      // single connection, which is why confirm_connect could never find
+      // the matching pending row and every connect looked like it failed to
+      // save — the accounts were connecting fine the whole time, we were
+      // just reading the wrong query params. accountId is the definitive
+      // answer to "which account is this" — no diffing needed at all.
+      const platform = params.get("connected") || params.get("platform") || "";
+      const accountId = params.get("accountId") || null;
+      const username = params.get("username") || null;
       let error = params.get("error") || null;
+      const status = error ? "error" : "ok";
 
       // The redirect only ever carries a generic code — look up Zernio's
       // activity log for the real reason (e.g. "no YouTube channel on
@@ -107,7 +118,7 @@ export default function ZernioCallback() {
           // guaranteed correct here. "*" is safe: the payload is just a
           // platform name + status, nothing sensitive.
           window.opener.postMessage(
-            { type: "zernio-connected", platform, status, error },
+            { type: "zernio-connected", platform, status, error, accountId, username },
             "*",
           );
         }
