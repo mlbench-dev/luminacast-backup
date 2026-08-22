@@ -3,7 +3,7 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Send, Sparkles, Calendar, Loader2, Check, AlertTriangle, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { castsApi, socialApi } from "@/lib/api";
+import { castsApi, socialApi, confirmConnectWithRetry } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
 import { oneLineSummary } from "@/lib/oneLineSummary";
 
@@ -95,14 +95,11 @@ export default function PublishCast() {
       // refreshing /profiles — that endpoint now only returns accounts
       // this user actually owns (fixing a leak where it used to return
       // every Luminacast customer's connected accounts), so without this
-      // call the just-connected account would never appear here.
-      let claimed = false;
-      try {
-        const res = await socialApi.confirmConnect(platform);
-        claimed = res.claimed;
-      } catch (err) {
-        console.error("confirmConnect failed:", err);
-      }
+      // call the just-connected account would never appear here. Retries
+      // internally since a slow Zernio call can make the first attempt
+      // look unclaimed when the account just isn't visible yet.
+      const res = await confirmConnectWithRetry(platform);
+      const claimed = res.claimed;
       queryClient.invalidateQueries({ queryKey: ["social-profiles"] });
       if (claimed) {
         toast({

@@ -466,28 +466,64 @@ async def confirm_connect(
         return {"claimed": False}
 
     before_ids = set(pending.before_zernio_account_ids or [])
-    already_claimed_ids = {
-        ch.zernio_account_id
+
+    # Rows THIS user already has for this zernio_account_id, any status —
+    # covers reconnecting a channel they previously disconnected. Zernio
+    # keeps the same account _id across a disconnect/reconnect cycle, so
+    # this account may not even look "new" against the before-snapshot (or
+    # would be wrongly excluded by the other-user safety net below); either
+    # way, seeing it again for the same user means "reactivate", not "new".
+    own_rows_by_zid = {
+        ch.zernio_account_id: ch
         for ch in (
-            await db.execute(select(SocialChannel).where(SocialChannel.zernio_account_id.isnot(None)))
+            await db.execute(
+                select(SocialChannel).where(
+                    SocialChannel.user_id == ctx.workspace_owner_id,
+                    SocialChannel.zernio_account_id.isnot(None),
+                )
+            )
         ).scalars().all()
     }
-    new_accounts = [
-        acc for acc in after_accounts
-        if acc.get("platform") == req.platform
-        and (zid := acc.get("_id") or acc.get("id"))
-        and zid not in before_ids
-        # Extra safety net: never re-claim an account some OTHER user's row
-        # already owns, even if it's somehow also "new" against this
-        # snapshot (e.g. two users connecting the same platform at once).
-        and zid not in already_claimed_ids
-    ]
+    # Extra safety net: never re-claim an account some OTHER user's row
+    # already owns, even if it's somehow also "new" against this snapshot
+    # (e.g. two users connecting the same platform at once).
+    other_users_claimed_ids = {
+        ch.zernio_account_id
+        for ch in (
+            await db.execute(
+                select(SocialChannel).where(
+                    SocialChannel.user_id != ctx.workspace_owner_id,
+                    SocialChannel.zernio_account_id.isnot(None),
+                )
+            )
+        ).scalars().all()
+    }
 
     claimed = []
-    for acc in new_accounts:
+    for acc in after_accounts:
+        if acc.get("platform") != req.platform:
+            continue
         zid = acc.get("_id") or acc.get("id")
+        if not zid:
+            continue
         handle = acc.get("username") or acc.get("handle") or acc.get("screenName")
         display_name = acc.get("displayName") or acc.get("name") or handle
+        follower_count = acc.get("followerCount") or acc.get("followers") or 0
+        profile_image_url = acc.get("profileImage") or acc.get("avatarUrl") or acc.get("profileImageUrl")
+
+        existing = own_rows_by_zid.get(zid)
+        if existing is not None:
+            existing.status = "active"
+            existing.handle = handle
+            existing.display_name = display_name
+            existing.follower_count = follower_count
+            existing.profile_image_url = profile_image_url
+            claimed.append(zid)
+            continue
+
+        if zid in before_ids or zid in other_users_claimed_ids:
+            continue
+
         new_ch = SocialChannel(
             id=f"sch_{uuid.uuid4().hex[:12]}",
             user_id=ctx.workspace_owner_id,
@@ -495,10 +531,8 @@ async def confirm_connect(
             platform_account_id=acc.get("platformAccountId") or acc.get("accountId"),
             handle=handle,
             display_name=display_name,
-            follower_count=acc.get("followerCount") or acc.get("followers") or 0,
-            profile_image_url=(
-                acc.get("profileImage") or acc.get("avatarUrl") or acc.get("profileImageUrl")
-            ),
+            follower_count=follower_count,
+            profile_image_url=profile_image_url,
             zernio_account_id=zid,
             status="active",
         )

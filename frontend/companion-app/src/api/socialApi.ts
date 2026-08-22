@@ -110,3 +110,30 @@ export const socialApi = {
       `/social/channels/${channelId}/avatar-check`, { params: { avatar_id: avatarId } },
     ).then((r) => r.data),
 };
+
+// confirmConnect depends on a live call to Zernio's own accounts API, which
+// has been observed to be slow enough that a request can outlast whatever
+// proxy/gateway sits in front of the backend — the browser sees an error (or
+// a clean claimed:false) while the backend keeps running and commits the new
+// channel row moments later. A single attempt can't tell "genuinely
+// unclaimable" apart from "not there yet", so retry a few times with a short
+// delay before giving up; each retry re-runs the same idempotent diff, so
+// re-checking is safe even if the first attempt actually did land.
+export async function confirmConnectWithRetry(
+  platform: string,
+  attempts = 3,
+  delayMs = 2500,
+): Promise<{ claimed: boolean; zernio_account_ids?: string[] }> {
+  let last: { claimed: boolean; zernio_account_ids?: string[] } = { claimed: false };
+  for (let i = 0; i < attempts; i++) {
+    try {
+      last = await socialApi.confirmConnect(platform);
+    } catch (err) {
+      console.error("confirmConnect failed:", err);
+      last = { claimed: false };
+    }
+    if (last.claimed) return last;
+    if (i < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return last;
+}

@@ -18,7 +18,7 @@ import {
 // here and the badge picks them up automatically.
 const SELLER_PLATFORMS = new Set(["tiktok_shop", "amazon", "shopify"]);
 import { Button } from "@/components/ui/button";
-import { socialApi, type SocialChannel } from "@/lib/api";
+import { socialApi, confirmConnectWithRetry, type SocialChannel } from "@/lib/api";
 import { cdnUrl } from "@/lib/cdn";
 import { cn } from "@/lib/cn";
 import { toast } from "@/hooks/useToast";
@@ -89,14 +89,11 @@ export default function SocialChannelsPage() {
       // Attribute the newly-connected account to this user BEFORE
       // refreshing the list — list_channels no longer auto-claims unclaimed
       // accounts (that was the cross-user leak), so without this call the
-      // account would never show up for anyone.
-      let claimed = false;
-      try {
-        const res = await socialApi.confirmConnect(platform);
-        claimed = res.claimed;
-      } catch (err) {
-        console.error("confirmConnect failed:", err);
-      }
+      // account would never show up for anyone. Retries internally since a
+      // slow Zernio call can make the first attempt look unclaimed when the
+      // account just isn't visible yet.
+      const res = await confirmConnectWithRetry(platform);
+      const claimed = res.claimed;
       queryClient.invalidateQueries({ queryKey: ["social-channels"] });
       if (claimed) {
         toast({
