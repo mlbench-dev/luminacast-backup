@@ -2511,7 +2511,13 @@ class FalWhisperProvider:
         word_timestamps: bool = True,
         **_kwargs,
     ) -> dict:
-        if os.environ.get("FAL_KEY") is None:
+        if not os.environ.get("FAL_KEY"):
+            # docker-compose always injects a FAL_KEY env var (empty string
+            # when unset, via ${FAL_KEY:-}) since only FAL_API_KEY is ever
+            # set in .env — an `is None` check here never sees that as
+            # missing, so this fallback silently never ran and fal_client
+            # authenticated with an empty key. `not x` catches empty string
+            # too, matching every other FAL_KEY bridge in this codebase.
             from config import settings as _settings
             if os.environ.get("FAL_API_KEY"):
                 os.environ["FAL_KEY"] = os.environ["FAL_API_KEY"]
