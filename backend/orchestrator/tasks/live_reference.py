@@ -296,10 +296,12 @@ matching exactly this schema (no markdown, no commentary):
   "provenance": {"source": "own_live", "duration_min": 0}
 }
 
-Set "usable" to false — and leave every other field empty/default — when the transcript has
-no real selling speech to learn from: silence, music/a ringtone, noise, a language you can't
-read, or only generic filler with nothing distinctive to distil. Do NOT invent patterns or
-exemplars to fill the schema when this happens."""
+Set "usable" to false — and leave every other field empty/default — ONLY when there is NO
+actual spoken selling content at all: silence, music/a ringtone, pure background noise, or a
+language you can't read. If there is real speech, even if plain, short, mundane, or
+unremarkable in style, set "usable" to true and describe it as best you can — an ordinary or
+generic-sounding delivery is still a real style to distil, not a reason to fail. Do NOT invent
+patterns or exemplars to fill the schema when usable is false."""
 
 
 def _parse_json_strict(raw: str) -> dict | None:
