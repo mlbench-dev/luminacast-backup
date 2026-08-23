@@ -107,6 +107,7 @@ async def _purge_cast_dependents(db: AsyncSession, cast_id: str) -> None:
     from models.api_usage_log import ApiUsageLog
     from models.generation_cost import GenerationCost
     from models.stream_session import StreamSession
+    from models.live_reference import LiveReference
 
     block_ids = (
         await db.execute(select(Block.id).where(Block.cast_id == cast_id))
@@ -122,6 +123,10 @@ async def _purge_cast_dependents(db: AsyncSession, cast_id: str) -> None:
     await db.execute(sa_delete(GenerationCost).where(GenerationCost.cast_id == cast_id))
     await db.execute(sa_delete(ApiUsageLog).where(ApiUsageLog.cast_id == cast_id))
     await db.execute(sa_delete(CastVersion).where(CastVersion.cast_id == cast_id))
+    # live_references.cast_id has no ON DELETE rule (see lref01 migration) —
+    # a cast-scoped "Match a past live" upload blocks the cast's own delete
+    # at the DB level otherwise. Exemplars cascade at the DB level off this.
+    await db.execute(sa_delete(LiveReference).where(LiveReference.cast_id == cast_id))
 
 @router.post("", response_model=CastResponse, status_code=201)
 async def create_cast(
@@ -1084,6 +1089,7 @@ async def delete_cast(
         raise
     except Exception as e:
         sentry_sdk.capture_exception(e)
+        logger.exception("delete_cast: failed to delete %s: %s", cast_id, e)
         await db.rollback()
         raise HTTPException(500, "Failed to delete cast")
 
@@ -1120,6 +1126,7 @@ async def batch_delete_casts(
             deleted.append(cast_id)
         except Exception as e:
             sentry_sdk.capture_exception(e)
+            logger.exception("batch_delete_casts: failed to delete %s: %s", cast_id, e)
             await db.rollback()
             failed[cast_id] = "failed to delete"
     return {"deleted": deleted, "failed": failed}
