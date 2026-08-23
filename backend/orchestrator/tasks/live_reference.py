@@ -285,6 +285,8 @@ verbatim slices; exemplars must be SHORT (a phrase or one sentence). Output STRI
 matching exactly this schema (no markdown, no commentary):
 
 {
+  "usable": true|false,
+  "unusable_reason": "1 short sentence — ONLY set when usable is false, otherwise omit or null",
   "register": "energy/pace/formality summary (1-2 lines)",
   "disfluency_profile": {"fillers": ["..."], "self_correction": "low|med|high", "repetition": "..."},
   "openers": ["..."], "transitions": ["..."], "urgency_scarcity": ["..."],
@@ -292,7 +294,12 @@ matching exactly this schema (no markdown, no commentary):
   "cta": {"cadence_min": [5,8], "phrasings": ["..."]},
   "exemplar_bank": [{"beat": "hook|demo|objection|cta", "text": "short snippet"}],
   "provenance": {"source": "own_live", "duration_min": 0}
-}"""
+}
+
+Set "usable" to false — and leave every other field empty/default — when the transcript has
+no real selling speech to learn from: silence, music/a ringtone, noise, a language you can't
+read, or only generic filler with nothing distinctive to distil. Do NOT invent patterns or
+exemplars to fill the schema when this happens."""
 
 
 def _parse_json_strict(raw: str) -> dict | None:
@@ -362,6 +369,23 @@ async def _assess_async(live_reference_id: str):
                 assessment = _parse_json_strict(raw2)
             if assessment is None:
                 raise ValueError("assessment did not return valid JSON")
+
+            # The model itself is the only reliable judge of "is there any
+            # real selling speech here at all" — a ringtone, silence, or
+            # pure filler still produces syntactically valid JSON (the
+            # schema always parses), so this can't be caught by the JSON
+            # check above. Confirmed live: uploading a ringtone got quietly
+            # marked "assessed" with a useless, self-describing-as-useless
+            # register field ("insufficient data...") instead of failing
+            # visibly — nothing downstream ever checked for this signal.
+            if assessment.get("usable") is False:
+                ref.status = "failed"
+                ref.error_message = (
+                    assessment.get("unusable_reason")
+                    or "No usable speech found in this recording."
+                )[:500]
+                await session.commit()
+                return
 
             assessment.setdefault("provenance", {})
             assessment["provenance"]["source"] = "own_live"
