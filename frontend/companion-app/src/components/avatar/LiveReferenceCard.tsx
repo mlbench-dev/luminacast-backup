@@ -103,6 +103,15 @@ export function LiveReferenceCard({
     onError: () => toast({ title: "Delete failed", variant: "destructive" }),
   });
 
+  const activateMutation = useMutation({
+    mutationFn: (id: string) => liveReferenceApi.activateLiveReference(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey });
+      toast({ title: "Now using this recording's style" });
+    },
+    onError: () => toast({ title: "Couldn't switch", variant: "destructive" }),
+  });
+
   const handleFiles = useCallback(
     (files: FileList | null) => {
       if (!files) return;
@@ -194,6 +203,12 @@ export function LiveReferenceCard({
                       {STAGE_LABEL[ref.status]}
                     </Badge>
 
+                    {ref.status === "assessed" && ref.is_active && (
+                      <Badge className="text-[10px] border bg-accent/10 text-accent border-accent/30">
+                        Active
+                      </Badge>
+                    )}
+
                     {ref.duration_seconds ? (
                       <span className="text-xs text-text-muted flex items-center gap-1">
                         <Clock className="h-3 w-3" />
@@ -213,6 +228,17 @@ export function LiveReferenceCard({
                         ? summary
                         : STAGE_LABEL[ref.status]}
                     </span>
+
+                    {ref.status === "assessed" && !ref.is_active && (
+                      <button
+                        onClick={() => activateMutation.mutate(ref.id)}
+                        disabled={activateMutation.isPending}
+                        className="text-[11px] text-accent hover:underline shrink-0 disabled:opacity-50"
+                        data-testid={`live-reference-activate-${ref.id}`}
+                      >
+                        Use this one
+                      </button>
+                    )}
 
                     <button
                       onClick={async () => {

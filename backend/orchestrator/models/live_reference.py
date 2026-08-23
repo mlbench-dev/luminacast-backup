@@ -12,7 +12,7 @@ transcript is kept so we can re-assess if the schema changes.
 """
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
@@ -38,6 +38,13 @@ class LiveReference(Base):
     # uploaded | transcribing | transcribed | assessed | failed
     status = Column(String(20), nullable=False, default="uploaded", index=True)
     error_message = Column(Text, nullable=True)
+
+    # The one assessment actually used for future scripts in this scope
+    # (avatar_id or cast_id — whichever is set). Only ever true on an
+    # "assessed" row; at most one per scope, enforced by a partial unique
+    # index in the migration. Newly-assessed uploads auto-activate, but the
+    # user can switch back to an earlier one instead of re-uploading it.
+    is_active = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # Per-record portion of this user's rolling 30-day transcription spend.
     # Summed across the user's recent records to enforce LIVE_REF_MONTHLY_CAP_CENTS.

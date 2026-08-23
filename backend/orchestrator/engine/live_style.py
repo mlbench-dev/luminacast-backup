@@ -34,10 +34,16 @@ async def resolve_active_assessment(
 ) -> Optional[dict]:
     """Return the active assessment dict, or None.
 
-    Cast-level reference (most-recent assessed LiveReference for this cast)
-    wins; otherwise the avatar's most-recent assessed reference. When both
-    exist they are merged — cast-level takes precedence on exemplar_bank,
-    register, and cta; the avatar's fills any missing fields.
+    Cast-level reference wins; otherwise the avatar's. Within each scope,
+    the user-chosen active reference is used (is_active=True — see
+    POST /live-references/{id}/activate) rather than always the most
+    recent upload, so switching back to an earlier style doesn't require
+    re-uploading and re-paying for transcription. Falls back to most-recent
+    assessed if nothing in that scope is marked active (covers a scope
+    whose only references predate the is_active column). When both cast
+    and avatar have an active reference they are merged — cast-level takes
+    precedence on exemplar_bank, register, and cta; the avatar's fills any
+    missing fields.
     """
     from models.live_reference import LiveReference
     from sqlalchemy import select
@@ -50,7 +56,7 @@ async def resolve_active_assessment(
                 select(LiveReference)
                 .where(field == value)
                 .where(LiveReference.status == "assessed")
-                .order_by(LiveReference.created_at.desc())
+                .order_by(LiveReference.is_active.desc(), LiveReference.created_at.desc())
                 .limit(1)
             )
             row = (await session.execute(stmt)).scalars().first()

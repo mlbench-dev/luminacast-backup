@@ -22,6 +22,7 @@ export interface LiveReference {
   assessment: Record<string, unknown> | null;
   status: LiveReferenceStatus;
   error_message: string | null;
+  is_active: boolean;
   created_at: string | null;
 }
 
@@ -69,4 +70,7 @@ export const liveReferenceApi = {
 
   deleteLiveReference: (id: string) =>
     api.delete<{ ok: boolean }>(`/live-references/${id}`).then((r) => r.data),
+
+  activateLiveReference: (id: string) =>
+    api.post<{ ok: boolean }>(`/live-references/${id}/activate`).then((r) => r.data),
 };

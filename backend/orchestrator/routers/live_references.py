@@ -13,7 +13,7 @@ from typing import Optional
 
 import sentry_sdk
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -56,6 +56,7 @@ def _to_dict(ref: LiveReference) -> dict:
         "assessment": ref.assessment,
         "status": ref.status,
         "error_message": ref.error_message,
+        "is_active": ref.is_active,
         "created_at": ref.created_at.isoformat() if ref.created_at else None,
     }
 
@@ -170,6 +171,38 @@ async def delete_live_reference(
         await r2.delete_object(ref.source_r2_key)
 
     await db.delete(ref)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/{live_reference_id}/activate")
+async def activate_live_reference(
+    live_reference_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Switch which past-live style is used for future scripts in this
+    scope, without re-uploading and re-paying for transcription/assessment.
+
+    Only an already-assessed row can be activated. Deactivates any other
+    active row in the same scope (avatar_id or cast_id) first — the two
+    partial unique indexes from the migration also enforce this at the DB
+    level as a safety net.
+    """
+    ref = await db.get(LiveReference, live_reference_id)
+    if not ref or ref.user_id != user.id:
+        raise HTTPException(404, "Live reference not found")
+    if ref.status != "assessed":
+        raise HTTPException(400, "Only a fully-processed recording can be activated")
+
+    scope_col = LiveReference.avatar_id if ref.avatar_id else LiveReference.cast_id
+    scope_val = ref.avatar_id or ref.cast_id
+    await db.execute(
+        update(LiveReference)
+        .where(scope_col == scope_val, LiveReference.id != ref.id)
+        .values(is_active=False)
+    )
+    ref.is_active = True
     await db.commit()
     return {"ok": True}
 

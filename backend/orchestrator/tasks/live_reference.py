@@ -318,6 +318,7 @@ def assess(self, live_reference_id: str):
 
 
 async def _assess_async(live_reference_id: str):
+    from sqlalchemy import update
     from models.live_reference import LiveReference, LiveReferenceExemplar
     from services.openrouter import get_openrouter_service
     from services.creative_models import CAST_GENERATOR_MODEL, log_creative_model_use
@@ -382,6 +383,19 @@ async def _assess_async(live_reference_id: str):
                     embedding=None,
                 ))
 
+            # Auto-activate: a freshly-assessed upload becomes the one used
+            # for future scripts by default, matching the old "most recent
+            # wins" behavior — the user can switch back to an earlier one
+            # afterward via POST /live-references/{id}/activate instead of
+            # this always winning by upload time alone.
+            scope_field = LiveReference.avatar_id if ref.avatar_id else LiveReference.cast_id
+            scope_value = ref.avatar_id or ref.cast_id
+            await session.execute(
+                update(LiveReference)
+                .where(scope_field == scope_value, LiveReference.id != ref.id)
+                .values(is_active=False)
+            )
+            ref.is_active = True
             ref.status = "assessed"
             await session.commit()
 
