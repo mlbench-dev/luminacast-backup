@@ -71,7 +71,7 @@ export function MyCastsPage() {
   const canCreate = useAuthStore((s) => s.hasTeamRole(TeamRole.CREATOR));
   const qc = useQueryClient();
 
-  const PER_PAGE = 20;
+  const PER_PAGE = 10;
   const [page, setPage] = useState(1);
 
   const { data, isLoading } = useQuery({
