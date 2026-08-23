@@ -154,6 +154,9 @@ class CastListItem(CastResponse):
 class CastListResponse(BaseModel):
     casts: List[CastResponse]
     total: int
+    # Both null when the caller omitted `page` (legacy/unpaged callers).
+    page: Optional[int] = None
+    per_page: Optional[int] = None
 
 
 class OutlineScene(BaseModel):

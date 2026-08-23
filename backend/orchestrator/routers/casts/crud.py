@@ -423,6 +423,11 @@ async def list_casts(
         False,
         description="If true, surface suggested_clips, approved_clips, and clip_parent_cast_id on each row.",
     ),
+    page: Optional[int] = Query(
+        None, ge=1,
+        description="1-indexed page number. Omit to return every matching cast (legacy behavior — existing callers like the Publish hub rely on getting the full set back).",
+    ),
+    per_page: int = Query(20, ge=1, le=100, description="Casts per page; only applied when page is given."),
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.VIEWER.value)),
     db: AsyncSession = Depends(get_db),
@@ -430,9 +435,9 @@ async def list_casts(
     """List casts owned by the current user.
 
     The Publish hub queries with `status=ready&has_render=true` to find
-    rendered casts that are ready to schedule. `has_render=true` means
-    `final_video_url IS NOT NULL` — soft proxy for "the cast has been
-    rendered at least once."
+    rendered casts that are ready to schedule — that call (and any other
+    caller that omits `page`) still gets every matching cast back, unpaged.
+    My Casts is the only page that opts into pagination by passing `page`.
 
     Each row carries enough avatar metadata to render the cast card
     thumbnail without a per-cast follow-up call: `avatar_thumbnail_url`,
@@ -456,13 +461,19 @@ async def list_casts(
         except StopIteration:
             # Unknown status — return empty rather than 400 so the FE
             # doesn't crash on a typo'd query string.
-            return CastListResponse(casts=[], total=0)
+            return CastListResponse(casts=[], total=0, page=page, per_page=per_page)
     if has_render is True:
         stmt = stmt.where(Cast.final_video_url.is_not(None))
     elif has_render is False:
         stmt = stmt.where(Cast.final_video_url.is_(None))
 
-    result = await db.execute(stmt.order_by(Cast.created_at.desc()))
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
+
+    stmt = stmt.order_by(Cast.created_at.desc())
+    if page is not None:
+        stmt = stmt.offset((page - 1) * per_page).limit(per_page)
+
+    result = await db.execute(stmt)
     casts = result.scalars().all()
 
     # Single-shot lookups so the list call stays O(1) queries regardless
@@ -517,7 +528,7 @@ async def list_casts(
             d["clip_parent_cast_id"] = cast.clip_parent_cast_id
             d["clip_block_ids"] = cast.clip_block_ids or []
         out.append(d)
-    return {"casts": out, "total": len(out)}
+    return {"casts": out, "total": total, "page": page, "per_page": per_page}
 
 @router.get("/{cast_id}")
 async def get_cast(
@@ -992,6 +1003,66 @@ async def patch_cast(
         sentry_sdk.capture_exception(e)
     return cast
 
+async def _delete_cast_core(db: AsyncSession, user: User, cast: Cast) -> None:
+    """Shared deletion logic — used by both the single and batch delete
+    endpoints. Does not commit or catch exceptions; the caller controls the
+    transaction boundary so a batch can isolate one cast's failure from the
+    rest.
+
+    Cascade: child auto-clip casts, blocks/variants, cast_renders, render_jobs,
+    cast_products, generation_cost, api_usage_log, stream_sessions, cast_versions.
+    Social posts referencing the cast have cast_id nulled (kept as a record).
+    """
+    cast_id = cast.id
+    from sqlalchemy import delete as sa_delete, update as sa_update
+    from models.cast_render import CastRender
+    from models.render_job import RenderJob
+    from models.api_usage_log import ApiUsageLog
+    from models.generation_cost import GenerationCost
+    from models.stream_session import StreamSession
+    from models.social_post import SocialPost
+
+    # 1. Recurse into child auto-clip casts (clip_parent_cast_id) so their
+    #    own non-cascade FKs (renders, render_jobs, etc.) are cleaned up
+    #    too. Without this, the DB-level CASCADE on clip_parent_cast_id
+    #    would drop the row but leave orphaned render rows behind.
+    child_ids = (
+        await db.execute(
+            select(Cast.id).where(Cast.clip_parent_cast_id == cast_id)
+        )
+    ).scalars().all()
+    for child_id in child_ids:
+        await _purge_cast_dependents(db, child_id)
+        await db.execute(sa_delete(Cast).where(Cast.id == child_id))
+
+    # 2. Null out cross-format parent links pointing to us (SET NULL is
+    #    declared on the column, but only fires when the DB-level FK
+    #    rule is in place — be explicit so this works even on legacy
+    #    schemas where the constraint is missing).
+    await db.execute(
+        sa_update(Cast).where(Cast.parent_cast_id == cast_id).values(parent_cast_id=None)
+    )
+
+    # 3. Null cast_id on social posts (publish records are kept for history).
+    await db.execute(
+        sa_update(SocialPost).where(SocialPost.cast_id == cast_id).values(cast_id=None)
+    )
+
+    # 4. Purge this cast's own dependents.
+    await _purge_cast_dependents(db, cast_id)
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="cast.delete", entity_type="cast",
+            entity_id=cast_id, cast_id=cast_id,
+            before={"name": cast.name, "status": str(cast.status)},
+        )
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    await db.delete(cast)
+
+
 @router.delete("/{cast_id}", status_code=204)
 async def delete_cast(
     cast_id: str,
@@ -999,12 +1070,7 @@ async def delete_cast(
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Permanently delete a cast and all dependent rows.
-
-    Cascade: child auto-clip casts, blocks/variants, cast_renders, render_jobs,
-    cast_products, generation_cost, api_usage_log, stream_sessions, cast_versions.
-    Social posts referencing the cast have cast_id nulled (kept as a record).
-    """
+    """Permanently delete a cast and all dependent rows. See _delete_cast_core."""
     try:
         cast = await db.get(Cast, cast_id)
         if not cast or cast.user_id != ctx.workspace_owner_id:
@@ -1012,53 +1078,7 @@ async def delete_cast(
         if cast.status in (CastStatus.LIVE, CastStatus.GENERATING):
             raise HTTPException(400, "Cannot delete active cast")
 
-        from sqlalchemy import delete as sa_delete, update as sa_update
-        from models.cast_render import CastRender
-        from models.render_job import RenderJob
-        from models.api_usage_log import ApiUsageLog
-        from models.generation_cost import GenerationCost
-        from models.stream_session import StreamSession
-        from models.social_post import SocialPost
-
-        # 1. Recurse into child auto-clip casts (clip_parent_cast_id) so their
-        #    own non-cascade FKs (renders, render_jobs, etc.) are cleaned up
-        #    too. Without this, the DB-level CASCADE on clip_parent_cast_id
-        #    would drop the row but leave orphaned render rows behind.
-        child_ids = (
-            await db.execute(
-                select(Cast.id).where(Cast.clip_parent_cast_id == cast_id)
-            )
-        ).scalars().all()
-        for child_id in child_ids:
-            await _purge_cast_dependents(db, child_id)
-            await db.execute(sa_delete(Cast).where(Cast.id == child_id))
-
-        # 2. Null out cross-format parent links pointing to us (SET NULL is
-        #    declared on the column, but only fires when the DB-level FK
-        #    rule is in place — be explicit so this works even on legacy
-        #    schemas where the constraint is missing).
-        await db.execute(
-            sa_update(Cast).where(Cast.parent_cast_id == cast_id).values(parent_cast_id=None)
-        )
-
-        # 3. Null cast_id on social posts (publish records are kept for history).
-        await db.execute(
-            sa_update(SocialPost).where(SocialPost.cast_id == cast_id).values(cast_id=None)
-        )
-
-        # 4. Purge this cast's own dependents.
-        await _purge_cast_dependents(db, cast_id)
-
-        try:
-            await audit_log.record(
-                db, user_id=user.id, action="cast.delete", entity_type="cast",
-                entity_id=cast_id, cast_id=cast_id,
-                before={"name": cast.name, "status": str(cast.status)},
-            )
-        except Exception as e:
-            sentry_sdk.capture_exception(e)
-
-        await db.delete(cast)
+        await _delete_cast_core(db, user, cast)
         await db.commit()
     except HTTPException:
         raise
@@ -1066,3 +1086,40 @@ async def delete_cast(
         sentry_sdk.capture_exception(e)
         await db.rollback()
         raise HTTPException(500, "Failed to delete cast")
+
+
+class BatchDeleteCastsRequest(BaseModel):
+    cast_ids: List[str]
+
+
+@router.post("/batch-delete")
+async def batch_delete_casts(
+    req: BatchDeleteCastsRequest,
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete multiple casts in one call. Same rules as single delete
+    (ownership, can't delete an active cast) — best-effort per cast, so one
+    failure (e.g. a cast that started rendering mid-selection) doesn't block
+    the rest of the batch from being deleted.
+    """
+    deleted: list[str] = []
+    failed: dict[str, str] = {}
+    for cast_id in req.cast_ids:
+        try:
+            cast = await db.get(Cast, cast_id)
+            if not cast or cast.user_id != ctx.workspace_owner_id:
+                failed[cast_id] = "not found"
+                continue
+            if cast.status in (CastStatus.LIVE, CastStatus.GENERATING):
+                failed[cast_id] = "cannot delete an active cast"
+                continue
+            await _delete_cast_core(db, user, cast)
+            await db.commit()
+            deleted.append(cast_id)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            await db.rollback()
+            failed[cast_id] = "failed to delete"
+    return {"deleted": deleted, "failed": failed}

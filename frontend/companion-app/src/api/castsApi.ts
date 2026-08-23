@@ -22,9 +22,24 @@ export interface ReviewQueueCast {
 }
 
 export const castsApi = {
-  list: (params?: { status?: string; has_render?: boolean; include_clips?: boolean }) =>
+  list: (params?: {
+    status?: string;
+    has_render?: boolean;
+    include_clips?: boolean;
+    page?: number;
+    per_page?: number;
+  }) =>
     api
       .get<CastListResponse>("/casts", { params })
+      .then((r) => r.data),
+  /** Best-effort: returns {deleted, failed} rather than throwing, so a
+   * partial batch (e.g. one cast started rendering mid-selection) still
+   * removes everything else. */
+  batchDelete: (castIds: string[]) =>
+    api
+      .post<{ deleted: string[]; failed: Record<string, string> }>(
+        "/casts/batch-delete", { cast_ids: castIds },
+      )
       .then((r) => r.data),
   /** Approve one of the LLM-suggested clips. Backend creates a child Cast
    * (clip_parent_cast_id + clip_block_ids) which renders via FFmpeg trim

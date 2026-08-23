@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Play,
   ChevronLeft,
+  ChevronRight,
   User,
   ShoppingBag,
   Send,
@@ -70,13 +71,62 @@ export function MyCastsPage() {
   const canCreate = useAuthStore((s) => s.hasTeamRole(TeamRole.CREATOR));
   const qc = useQueryClient();
 
+  const PER_PAGE = 20;
+  const [page, setPage] = useState(1);
+
   const { data, isLoading } = useQuery({
-    queryKey: ["casts"],
-    queryFn: () => castsApi.list(),
+    queryKey: ["casts", page],
+    queryFn: () => castsApi.list({ page, per_page: PER_PAGE }),
     refetchInterval: 5000,
   });
 
   const casts = (data as any)?.casts || [];
+  const total: number = (data as any)?.total ?? casts.length;
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+
+  // Deleting the last item(s) on a page (e.g. the entire last page via
+  // batch delete) can leave `page` past the new end — step back rather
+  // than showing a blank "no casts" state while casts still exist earlier.
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  // Batch selection — persists across pages (selecting on page 1, then
+  // paging to 2 and selecting more, deletes both sets together).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const batchDeleteMutation = useMutation({
+    mutationFn: (ids: string[]) => castsApi.batchDelete(ids),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["casts"] });
+      setSelectedIds(new Set());
+      const failedCount = Object.keys(res.failed || {}).length;
+      if (failedCount > 0) {
+        toast({
+          title: `Deleted ${res.deleted.length}, ${failedCount} failed`,
+          description: Object.values(res.failed).join(", "),
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: `Deleted ${res.deleted.length} cast${res.deleted.length !== 1 ? "s" : ""}` });
+      }
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Batch delete failed",
+        description: err?.response?.data?.detail || err?.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   // Inline rename — lets a cast be renamed directly from the list instead
   // of only inside the builder's Setup step.
@@ -151,7 +201,7 @@ export function MyCastsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-text">My Casts</h1>
-          <p className="text-sm text-text-dim">{casts.length} cast{casts.length !== 1 ? "s" : ""}</p>
+          <p className="text-sm text-text-dim">{total} cast{total !== 1 ? "s" : ""}</p>
         </div>
         {canCreate && (
           <Button onClick={() => navigate("/cast-builder/new")} className="gap-2 cursor-pointer">
@@ -159,6 +209,35 @@ export function MyCastsPage() {
           </Button>
         )}
       </div>
+
+      {selectedIds.size > 0 && (
+        <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5">
+          <span className="text-sm text-text">{selectedIds.size} selected</span>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
+              Clear
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={batchDeleteMutation.isPending}
+              onClick={async () => {
+                const confirmed = await confirmAction({
+                  title: `Delete ${selectedIds.size} cast${selectedIds.size !== 1 ? "s" : ""}?`,
+                  text: "This will permanently remove the selected casts and all their blocks, renders, and publish records. This cannot be undone.",
+                  confirmButtonText: "Delete",
+                  cancelButtonText: "Cancel",
+                  icon: "warning",
+                });
+                if (!confirmed) return;
+                batchDeleteMutation.mutate([...selectedIds]);
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete selected
+            </Button>
+          </div>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="space-y-3">
@@ -202,6 +281,19 @@ export function MyCastsPage() {
                 className="group relative w-full rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-accent/30"
                 data-testid={`cast-card-${cast.id}`}
               >
+                {/* Selection checkbox — sits outside the navigate button
+                    (nesting an input inside a button is invalid HTML and
+                    behaves inconsistently), absolutely positioned to match
+                    the delete icon's pattern on the opposite corner. */}
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(cast.id)}
+                  onChange={() => toggleSelected(cast.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute top-4 left-4 z-10 h-4 w-4 rounded border-border accent-accent cursor-pointer"
+                  aria-label="Select cast"
+                  data-testid={`cast-card-${cast.id}-select`}
+                />
                 <button
                   onClick={() => {
                     // If rendering, go directly to editor (render progress shows inline)
@@ -213,11 +305,11 @@ export function MyCastsPage() {
                   }}
                   className="w-full text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 rounded-lg"
                 >
-                {/* pr-9 reserves clear space in the top-right corner for the
-                    absolutely-positioned delete button below, so it never
-                    overlaps the status badge that would otherwise flow all
-                    the way to the row's edge. */}
-                <div className="flex items-center gap-4 pr-9">
+                {/* pl-6/pr-9 reserve clear space in the top corners for the
+                    absolutely-positioned checkbox/delete button below, so
+                    neither overlaps the row content that would otherwise
+                    flow all the way to the row's edges. */}
+                <div className="flex items-center gap-4 pl-6 pr-9">
                   {/* Thumbnails: avatar face + product */}
                   <div className="flex items-center gap-2 shrink-0">
                     {/* Avatar face thumbnail (36px circle) — sourced from
@@ -430,6 +522,30 @@ export function MyCastsPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 pt-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+          </Button>
+          <span className="text-sm text-text-dim">
+            Page {page} of {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          >
+            Next <ChevronRight className="h-4 w-4 ml-1" />
+          </Button>
         </div>
       )}
     </div>

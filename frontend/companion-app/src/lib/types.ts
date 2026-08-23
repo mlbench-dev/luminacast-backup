@@ -547,6 +547,8 @@ export interface CastTemplate {
 export interface CastListResponse {
   casts: Cast[];
   total: number;
+  page?: number | null;
+  per_page?: number | null;
 }
 
 export interface OutlineScene {
