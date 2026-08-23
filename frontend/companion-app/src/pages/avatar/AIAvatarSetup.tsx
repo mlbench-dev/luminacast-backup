@@ -21,6 +21,7 @@ import { VoiceBrowser } from "@/components/avatar/VoiceBrowser";
 import { AvatarIdentityPanel } from "@/components/avatar/AvatarIdentityPanel";
 import { ClipMicToggle } from "@/components/avatar/ClipMicToggle";
 import { AvatarBackgrounds } from "@/components/avatar/AvatarBackgrounds";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { STYLE_PRESETS, MAKE_IT_REAL_CHIPS, type StylePresetId } from "@/lib/avatarStyles";
 import type { Avatar } from "@/lib/types";
 
@@ -1466,20 +1467,23 @@ function VoicePhase({
               />
             </div>
 
-            {showVoiceBrowser && (
-              <div className="mt-4 rounded-xl border border-border bg-bg p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-text">Voice Library</h3>
-                  <button onClick={() => setShowVoiceBrowser(false)} className="text-text-muted hover:text-text"><X className="h-4 w-4" /></button>
-                </div>
+            {/* A modal instead of an inline block appended below the fold —
+                previously "Browse voice library" opened this further down
+                the page with no scroll or visual cue, so clicking it looked
+                like nothing happened. */}
+            <Dialog open={showVoiceBrowser} onOpenChange={setShowVoiceBrowser}>
+              <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Voice Library</DialogTitle>
+                </DialogHeader>
                 <VoiceBrowser avatarId={avatarId} onSelectVoice={(voiceId: string) => {
                   avatarApi.aiSelectVoice(avatarId, { voice_id: voiceId }).then(() => {
                     onLockVoice(testSpeech.trim());
                     toast({ title: "Voice selected and locked!" });
                   }).catch(() => toast({ title: "Failed to select voice", variant: "destructive" }));
                 }} onClose={() => setShowVoiceBrowser(false)} />
-              </div>
-            )}
+              </DialogContent>
+            </Dialog>
           </div>
         )}
 
