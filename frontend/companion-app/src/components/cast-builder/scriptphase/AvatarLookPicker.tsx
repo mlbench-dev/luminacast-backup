@@ -1,11 +1,17 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { ChevronDown, Loader2, Sparkles, Plus, X } from "lucide-react";
+import { ChevronDown, Loader2, Sparkles, Plus, X, Mic, MicOff } from "lucide-react";
 import { avatarLooksApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
 import type { AvatarLook } from "@/lib/types";
+
+const ENVIRONMENTS: Array<{ value: "studio" | "room" | "outdoor"; label: string }> = [
+  { value: "studio", label: "Studio" },
+  { value: "room", label: "Room" },
+  { value: "outdoor", label: "Outdoor" },
+];
 
 /**
  * AvatarLookPicker \u2014 a single-select dropdown over the avatar's existing
@@ -52,6 +58,12 @@ export function AvatarLookPicker({
   const [genOpen, setGenOpen] = useState(false);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
+  // Decided when the scene is created, not left to a template default
+  // picked later — the previous flow never asked either, so every scene
+  // always ended up studio + mic-off regardless of what the avatar's
+  // layout template actually wanted.
+  const [environment, setEnvironment] = useState<"studio" | "room" | "outdoor">("studio");
+  const [micVisible, setMicVisible] = useState(false);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -59,6 +71,8 @@ export function AvatarLookPicker({
         name: name.trim() || prompt.trim().slice(0, 60) || "Custom scene",
         background_prompt: prompt.trim() || undefined,
         look_type: "background",
+        environment,
+        mic_visible: micVisible,
       }),
     onSuccess: (look: AvatarLook) => {
       toast({
@@ -72,6 +86,8 @@ export function AvatarLookPicker({
       if (look?.id) onChange(look.id);
       setName("");
       setPrompt("");
+      setEnvironment("studio");
+      setMicVisible(false);
       setGenOpen(false);
       onLookCreated?.();
     },
@@ -82,6 +98,23 @@ export function AvatarLookPicker({
           err?.response?.data?.detail ||
           err?.message ||
           "Try again in a moment.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Flips an EXISTING scene's mic-visible state in place — the client's
+  // request was to decide this "when the scene is created, not after," but
+  // people will still want to change their mind about an already-generated
+  // scene without regenerating it, so this is available on every look too.
+  const toggleMicMutation = useMutation({
+    mutationFn: ({ lookId, next }: { lookId: string; next: boolean }) =>
+      avatarLooksApi.update(avatarId, lookId, { mic_visible: next }),
+    onSuccess: () => onLookCreated?.(),
+    onError: (err: any) => {
+      toast({
+        title: "Couldn't update mic visibility",
+        description: err?.response?.data?.detail || err?.message,
         variant: "destructive",
       });
     },
@@ -115,6 +148,10 @@ export function AvatarLookPicker({
             active={value === look.id}
             onClick={() => onChange(look.id)}
             size={size}
+            micVisible={look.mic_visible}
+            onToggleMic={() =>
+              toggleMicMutation.mutate({ lookId: look.id, next: !look.mic_visible })
+            }
           />
         ))}
         <button
@@ -164,6 +201,41 @@ export function AvatarLookPicker({
             rows={2}
             className="w-full bg-black/20 border border-white/10 rounded px-2 py-1 text-[11px] text-white/85 placeholder:text-white/30 focus:outline-none focus:border-accent/40 resize-none"
           />
+          {/* Scene properties — decided here, at creation time, instead of
+              only being decidable later via a template default. */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1 rounded-md border border-white/10 bg-black/20 p-0.5">
+              {ENVIRONMENTS.map((env) => (
+                <button
+                  key={env.value}
+                  type="button"
+                  onClick={() => setEnvironment(env.value)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-[10px] font-medium transition-colors",
+                    environment === env.value
+                      ? "bg-accent/25 text-accent"
+                      : "text-white/45 hover:text-white/70",
+                  )}
+                >
+                  {env.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setMicVisible((v) => !v)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-medium transition-colors",
+                micVisible
+                  ? "border-accent/50 bg-accent/15 text-accent"
+                  : "border-white/10 bg-black/20 text-white/45 hover:text-white/70",
+              )}
+              title="Whether the avatar wears a visible clip-on mic in this scene"
+            >
+              {micVisible ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />}
+              Mic visible
+            </button>
+          </div>
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-white/30">
               The avatar's face stays the same; only the scene changes.
@@ -197,12 +269,17 @@ function LookChip({
   active,
   onClick,
   size,
+  micVisible,
+  onToggleMic,
 }: {
   label: string;
   thumbUrl: string | null;
   active: boolean;
   onClick: () => void;
   size: "sm" | "md";
+  /** Only meaningful for a real generated look (has a thumbnail). */
+  micVisible?: boolean;
+  onToggleMic?: () => void;
 }) {
   const dim = size === "md" ? "h-52 w-52" : "h-36 w-36";
 
@@ -233,30 +310,53 @@ function LookChip({
   }
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      className={cn(
-        "group relative shrink-0 rounded-md overflow-hidden border transition-all",
-        active
-          ? "border-accent ring-2 ring-accent/30"
-          : "border-white/10 hover:border-white/30",
-        dim,
-      )}
-    >
-      <img src={thumbUrl} alt="" className="w-full h-full object-cover" />
-      {/* Hover label tooltip */}
-      <span
+    <div className={cn("group relative shrink-0", dim)}>
+      <button
+        type="button"
+        onClick={onClick}
+        title={label}
         className={cn(
-          "pointer-events-none absolute -bottom-0.5 left-1/2 -translate-x-1/2 translate-y-full",
-          "rounded bg-black/85 ring-1 ring-white/10 px-1.5 py-0.5 text-[9px] text-white/80 whitespace-nowrap",
-          "opacity-0 group-hover:opacity-100 transition-opacity z-10",
-          "max-w-[140px] truncate",
+          "w-full h-full rounded-md overflow-hidden border transition-all",
+          active
+            ? "border-accent ring-2 ring-accent/30"
+            : "border-white/10 hover:border-white/30",
         )}
       >
-        {label}
-      </span>
-    </button>
+        <img src={thumbUrl} alt="" className="w-full h-full object-cover" />
+        {/* Hover label tooltip */}
+        <span
+          className={cn(
+            "pointer-events-none absolute -bottom-0.5 left-1/2 -translate-x-1/2 translate-y-full",
+            "rounded bg-black/85 ring-1 ring-white/10 px-1.5 py-0.5 text-[9px] text-white/80 whitespace-nowrap",
+            "opacity-0 group-hover:opacity-100 transition-opacity z-10",
+            "max-w-[140px] truncate",
+          )}
+        >
+          {label}
+        </span>
+      </button>
+      {/* Mic-visible toggle — sits outside the thumbnail's own button
+          (nesting an interactive control inside a button is invalid HTML)
+          so this scene's mic state can be flipped without re-selecting it
+          or leaving the picker. */}
+      {onToggleMic && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleMic();
+          }}
+          title={micVisible ? "Mic visible — click to hide" : "Mic hidden — click to show"}
+          className={cn(
+            "absolute top-1 right-1 z-10 rounded-full p-1 transition-colors",
+            micVisible
+              ? "bg-accent text-white"
+              : "bg-black/60 text-white/60 hover:text-white/90",
+          )}
+        >
+          {micVisible ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />}
+        </button>
+      )}
+    </div>
   );
 }

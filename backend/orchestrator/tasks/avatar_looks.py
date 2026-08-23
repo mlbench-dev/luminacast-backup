@@ -948,14 +948,24 @@ async def _generate_look_async(
                     # rendered still carries the requested shot distance / angle
                     # (CLOSE / MEDIUM / MEDIUM_WIDE / WIDE / ANGLE_*). Default
                     # MEDIUM when unset.
-                    from models.avatar_look import framing_prompt_fragment
+                    from models.avatar_look import framing_prompt_fragment, environment_prompt_fragment
                     framing_fragment = framing_prompt_fragment(
                         getattr(look, "framing", None)
+                    )
+                    # Scene-aware voice filters (services/mic_presets.py) key
+                    # off look.environment, but until now nothing fed it into
+                    # the actual FLUX prompt — the visual and the audio choice
+                    # could silently disagree (e.g. environment="outdoor" but
+                    # the still looks like a studio). environment_prompt_fragment
+                    # already existed for this exact purpose, just unused here.
+                    environment_fragment = environment_prompt_fragment(
+                        getattr(look, "environment", None)
                     )
                     if use_product_ref:
                         full_prompt = (
                             f"Same person, same face, same identity. "
                             f"{framing_fragment}. "
+                            f"{environment_fragment}. "
                             f"{background_prompt}. "
                             f"The product the person is interacting with must match the reference image "
                             f"exactly in shape, color, packaging, and label. "
@@ -965,6 +975,7 @@ async def _generate_look_async(
                         full_prompt = (
                             f"Same person, same face, same identity. "
                             f"{framing_fragment}. "
+                            f"{environment_fragment}. "
                             f"{background_prompt}. "
                             f"Photorealistic, professional studio quality, high detail."
                         )

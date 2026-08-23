@@ -117,23 +117,25 @@ def resolve_scene_voice_settings(
 
     This is the missing link between the scene-level choice (an AvatarLook's
     own ``environment``/``mic_visible`` columns, set when the scene is
-    created — see routers/avatar_looks.py) and the per-block override that
-    already existed (``blocks.mic_on``). Precedence:
+    created — see routers/avatar_looks.py) and ``blocks.mic_on``. Precedence:
 
-        per-block override > the scene's own mic default > avatar default
+        the scene's own mic setting > per-block template default > avatar default
 
-    Previously only the per-block override and avatar-wide default existed
-    in the audio path, so a look's mic_visible/environment (written by
-    create_base_scenes and, now, look creation) was never actually read back
-    when choosing the voice filter chain — SCENE_FILTER_LIBRARY existed but
-    nothing called this with real scene data. ``look_environment`` routes to
-    the environment-aware chain (studio/room/outdoor) instead of the flat
+    ``block_mic_on`` is never a deliberate per-block choice today — it's
+    stamped from whichever layout TEMPLATE was picked at generation time
+    (``config.voice.mic``), before any specific scene/look was necessarily
+    even attached to the block. A look's own ``mic_visible`` (chosen when
+    the user actually creates or picks that scene) is a more specific,
+    deliberate signal and should win once one exists — otherwise picking
+    "mic visible" on a scene could still be silently overridden by an
+    unrelated template default. ``look_environment`` routes to the
+    environment-aware chain (studio/room/outdoor) instead of the flat
     clip_mic/phone_mic choice.
     """
-    if block_mic_on is not None:
-        mic_visible = block_mic_on
-    elif look_mic_visible is not None:
+    if look_mic_visible is not None:
         mic_visible = look_mic_visible
+    elif block_mic_on is not None:
+        mic_visible = block_mic_on
     else:
         mic_visible = bool(avatar_clip_mic_enabled)
 

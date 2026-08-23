@@ -21,6 +21,12 @@ interface ClipMicToggleProps {
  * Default OFF = phone mic — natural TikTok/vlog feel.
  * ON = clip-on lavalier — warm proximity, podcast-intimate.
  *
+ * This is the avatar-wide FALLBACK only. Once a block has a specific scene
+ * (AvatarLook) attached, that scene's own mic-visible setting — chosen when
+ * the scene itself is created/edited, see AvatarLookPicker — takes
+ * precedence over this (services.mic_presets.resolve_scene_voice_settings).
+ * This toggle only applies when a block has no scene-specific look at all.
+ *
  * The toggle drives two layers in the backend:
  *   1. Voice description: a mic-style suffix is appended to the
  *      voice_description sent to the cloning engine.
@@ -58,8 +64,8 @@ export function ClipMicToggle({
   };
 
   const description = enabled
-    ? "Lavalier mic — close, warm, intimate. Podcast/interview feel."
-    : "Phone mic — natural, room tone, slightly distant. TikTok/vlog feel.";
+    ? "Lavalier mic — close, warm, intimate. Podcast/interview feel. Used when a scene doesn't set its own mic style."
+    : "Phone mic — natural, room tone, slightly distant. TikTok/vlog feel. Used when a scene doesn't set its own mic style.";
 
   return (
     <div
@@ -72,7 +78,7 @@ export function ClipMicToggle({
       <div className="flex items-center gap-3 min-w-0">
         <Mic className="w-4 h-4 text-white/40 shrink-0" />
         <div className="min-w-0">
-          <div className="text-sm font-medium">Clip mic</div>
+          <div className="text-sm font-medium">Default mic style</div>
           <p className="text-[10px] text-white/30 truncate">{description}</p>
         </div>
       </div>

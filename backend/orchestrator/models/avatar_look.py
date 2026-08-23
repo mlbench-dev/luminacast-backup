@@ -129,7 +129,16 @@ class AvatarLook(Base):
     # for one framing is NEVER reused for a different framing.
     framing = Column(String(20), default="MEDIUM", server_default="MEDIUM", nullable=False)
     environment = Column(String(20), default=DEFAULT_ENVIRONMENT, server_default=DEFAULT_ENVIRONMENT, nullable=False)
-    mic_visible = Column(Boolean, default=False, server_default="false", nullable=False)
+    # NULL = never deliberately set (inherit block.mic_on / avatar default —
+    # mirrors that column's own NULL-means-unset convention). Only a real
+    # True/False, written when a user actually sets this scene's mic
+    # visibility, should ever outrank block.mic_on — see
+    # services.mic_presets.resolve_scene_voice_settings. Was previously
+    # non-nullable defaulting to False, which made every look (including
+    # every pre-existing one) look "deliberately off" and would have
+    # silently overridden every template's mic_on the moment that
+    # precedence order shipped.
+    mic_visible = Column(Boolean, nullable=True)
     product_id = Column(String(40), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, server_default=func.now(), nullable=False)
 

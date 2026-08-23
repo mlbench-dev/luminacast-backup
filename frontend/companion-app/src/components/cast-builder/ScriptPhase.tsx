@@ -1086,17 +1086,20 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         </div>
       </div>
 
-      {/* PR #65: clip-on lavalier vs phone-mic toggle. Persisted per-avatar.
-          Toast nudges the user to regenerate TTS so the new mic profile
-          applies to the existing blocks. */}
+      {/* PR #65: clip-on lavalier vs phone-mic toggle. Persisted per-avatar
+          (NOT per-cast — the toast makes that explicit, since this control
+          sitting inside one cast's Script tab previously read like a
+          cast-specific override). It's also only the fallback now: any
+          block whose scene has its own mic-visible setting uses that
+          instead — see AvatarLookPicker / mic_presets.resolve_scene_voice_settings. */}
       {cast.avatar_id && (
         <ClipMicToggle
           avatarId={cast.avatar_id}
           initialEnabled={!!castAvatar?.clip_mic_enabled}
           onChange={(enabled) => {
             toast({
-              title: `Voice style: ${enabled ? "clip mic" : "phone mic"}`,
-              description: "Regenerate TTS to apply to existing blocks.",
+              title: `Default mic style: ${enabled ? "clip mic" : "phone mic"}`,
+              description: "Applies to every cast using this avatar (unless a scene sets its own). Regenerate TTS to apply to existing blocks here.",
             });
           }}
         />

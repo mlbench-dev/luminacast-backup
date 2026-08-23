@@ -167,7 +167,12 @@ async def create_avatar_look(
         pose_angle=payload.pose_angle if payload.look_type == "body_motion" else None,
         product_id=payload.product_id if payload.look_type == "tryon" else None,
         environment=environment,
-        mic_visible=bool(payload.mic_visible),
+        # Preserve None (caller didn't set it) rather than coercing to
+        # False — a real True/False here now outranks the block's template
+        # mic_on default (see mic_presets.resolve_scene_voice_settings), so
+        # coercing an omitted value to False would silently make every
+        # look-without-an-explicit-choice look deliberately mic-off.
+        mic_visible=payload.mic_visible,
     )
     db.add(look)
     await db.commit()
@@ -175,6 +180,56 @@ async def create_avatar_look(
     from tasks.avatar_looks import generate_avatar_look_task
     generate_avatar_look_task.delay(look_id)
 
+    return _look_to_dict(look)
+
+
+class UpdateLookRequest(BaseModel):
+    # Scene properties only — everything else about a look (background_prompt,
+    # look_type, etc.) is fixed at creation time. This lets a scene's
+    # mic-visible state be flipped in place (e.g. from the picker's per-scene
+    # toggle) without regenerating the image or losing the existing
+    # mic_visible=True variant already produced by generate_mic_on_variant.
+    environment: Optional[str] = None
+    mic_visible: Optional[bool] = None
+
+
+@router.patch("/{avatar_id}/looks/{look_id}")
+async def update_avatar_look(
+    avatar_id: str,
+    look_id: str,
+    payload: UpdateLookRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    avatar = await db.get(Avatar, avatar_id)
+    if not avatar or avatar.user_id != user.id:
+        raise HTTPException(404, "Avatar not found")
+
+    look = await db.get(AvatarLook, look_id)
+    if not look or look.avatar_id != avatar_id:
+        raise HTTPException(404, "Look not found")
+
+    if payload.environment is not None:
+        valid_environments = {e.value for e in SceneEnvironment}
+        environment = payload.environment.strip().lower()
+        if environment not in valid_environments:
+            raise HTTPException(400, f"Invalid environment. Must be one of: {sorted(valid_environments)}")
+        look.environment = environment
+
+    if payload.mic_visible is not None:
+        look.mic_visible = payload.mic_visible
+        if look.mic_visible and look.face_ref_key:
+            # Make sure the baked clip-on variant exists so the very next
+            # render doesn't pay the FLUX generation latency on the
+            # critical path — resolve_mic_on_face_key would lazy-generate
+            # it anyway, but doing it here means the toggle's effect is
+            # ready immediately rather than on next render. Never raises
+            # (see generate_mic_on_variant's own docstring/failure policy).
+            from services.mic_on_look import generate_mic_on_variant
+            await generate_mic_on_variant(avatar_id, look_id, db)
+
+    await db.commit()
+    await db.refresh(look)
     return _look_to_dict(look)
 
 

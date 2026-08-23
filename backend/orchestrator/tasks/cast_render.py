@@ -5325,16 +5325,20 @@ async def _render_async(task, render_id: str):
                     block_mic_on = getattr(blk, "mic_on", None) if blk else None
                     avatar_id_for_mic = getattr(cst, "avatar_id", None) if cst else None
 
-                    # When the block leaves mic_on unset, default to this
-                    # look's own mic_visible (chosen at scene-creation time)
-                    # instead of always keeping the clean frame — keeps the
-                    # visual mic in sync with the scene-aware audio chain
-                    # (services.mic_presets.resolve_scene_voice_settings).
+                    # The scene's own mic_visible (chosen deliberately when
+                    # the user creates/picks that scene) wins over the
+                    # block's mic_on, which is only ever a layout template's
+                    # default stamped before any specific scene was
+                    # necessarily attached — mirrors the same precedence now
+                    # used on the audio side
+                    # (services.mic_presets.resolve_scene_voice_settings),
+                    # so the visual mic and the voice filter never disagree.
                     async def _maybe_mic_on(look, key: str) -> str:
                         look_id = getattr(look, "id", None) if look is not None else None
+                        look_mic_visible = getattr(look, "mic_visible", None) if look is not None else None
                         effective_mic_on = (
-                            block_mic_on if block_mic_on is not None
-                            else bool(getattr(look, "mic_visible", False))
+                            look_mic_visible if look_mic_visible is not None
+                            else block_mic_on
                         )
                         resolved_key = await resolve_mic_on_face_key(
                             effective_mic_on, avatar_id_for_mic, look_id, key, bm_session

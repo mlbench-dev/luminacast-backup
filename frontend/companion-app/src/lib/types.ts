@@ -1214,6 +1214,10 @@ export interface AvatarLook {
   product_id?: string;
   error_message: string | null;
   created_at: string;
+  // Scene-aware voice filters: decided when the scene is created (or any
+  // time after via a toggle) rather than only per-block afterward.
+  environment: "studio" | "room" | "outdoor" | string;
+  mic_visible: boolean;
 }
 
 // ── Voice Corpus ──
