@@ -203,17 +203,12 @@ export function MyCastsPage() {
           <h1 className="text-2xl font-bold text-text">My Casts</h1>
           <p className="text-sm text-text-dim">{total} cast{total !== 1 ? "s" : ""}</p>
         </div>
-        {canCreate && (
-          <Button onClick={() => navigate("/cast-builder/new")} className="gap-2 cursor-pointer">
-            <Plus className="h-4 w-4" /> New Cast
-          </Button>
-        )}
-      </div>
-
-      {selectedIds.size > 0 && (
-        <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5">
-          <span className="text-sm text-text">{selectedIds.size} selected</span>
-          <div className="flex items-center gap-2">
+        {/* Selection controls replace the New Cast button in place (same
+            row/position) instead of adding a bar below — a separate bar
+            pushed every card down the moment something got selected. */}
+        {selectedIds.size > 0 ? (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-text-dim">{selectedIds.size} selected</span>
             <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
               Clear
             </Button>
@@ -236,8 +231,14 @@ export function MyCastsPage() {
               <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete selected
             </Button>
           </div>
-        </div>
-      )}
+        ) : (
+          canCreate && (
+            <Button onClick={() => navigate("/cast-builder/new")} className="gap-2 cursor-pointer">
+              <Plus className="h-4 w-4" /> New Cast
+            </Button>
+          )
+        )}
+      </div>
 
       {isLoading ? (
         <div className="space-y-3">
@@ -278,22 +279,28 @@ export function MyCastsPage() {
             return (
               <div
                 key={cast.id}
-                className="group relative w-full rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-accent/30"
+                className="group relative w-full flex items-start gap-3 rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-accent/30"
                 data-testid={`cast-card-${cast.id}`}
               >
                 {/* Selection checkbox — sits outside the navigate button
                     (nesting an input inside a button is invalid HTML and
-                    behaves inconsistently), absolutely positioned to match
-                    the delete icon's pattern on the opposite corner. */}
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(cast.id)}
-                  onChange={() => toggleSelected(cast.id)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="absolute top-4 left-4 z-10 h-4 w-4 rounded border-border accent-accent cursor-pointer"
-                  aria-label="Select cast"
-                  data-testid={`cast-card-${cast.id}-select`}
-                />
+                    behaves inconsistently) as a flex sibling rather than
+                    absolutely positioned, so it centers with the avatar row
+                    instead of pinning to the card's top edge regardless of
+                    how tall the card is (progress bars, retry, etc). The
+                    h-9 wrapper matches the avatar thumbnail's height below. */}
+                <div className="h-9 flex items-center shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(cast.id)}
+                    onChange={() => toggleSelected(cast.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="h-4 w-4 rounded border-border accent-accent cursor-pointer"
+                    aria-label="Select cast"
+                    data-testid={`cast-card-${cast.id}-select`}
+                  />
+                </div>
+                <div className="flex-1 min-w-0">
                 <button
                   onClick={() => {
                     // If rendering, go directly to editor (render progress shows inline)
@@ -305,11 +312,11 @@ export function MyCastsPage() {
                   }}
                   className="w-full text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 rounded-lg"
                 >
-                {/* pl-6/pr-9 reserve clear space in the top corners for the
-                    absolutely-positioned checkbox/delete button below, so
-                    neither overlaps the row content that would otherwise
-                    flow all the way to the row's edges. */}
-                <div className="flex items-center gap-4 pl-6 pr-9">
+                {/* pr-9 reserves clear space in the top-right corner for the
+                    absolutely-positioned delete button below, so it never
+                    overlaps the row content that would otherwise flow all
+                    the way to the row's edge. */}
+                <div className="flex items-center gap-4 pr-9">
                   {/* Thumbnails: avatar face + product */}
                   <div className="flex items-center gap-2 shrink-0">
                     {/* Avatar face thumbnail (36px circle) — sourced from
@@ -492,6 +499,7 @@ export function MyCastsPage() {
                     )}
                   </div>
                 )}
+                </div>
                 {/* Delete trash icon — revealed on row hover, mirrors the
                     pattern used elsewhere in the app (Publish hub
                     ScheduledPostCard). Stops propagation so it doesn't
