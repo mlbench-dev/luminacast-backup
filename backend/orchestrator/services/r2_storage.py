@@ -158,6 +158,13 @@ class R2StorageService:
         return url
 
 
+    async def delete_object(self, key: str) -> None:
+        """Delete an object from R2. Best-effort — a missing key is fine."""
+        try:
+            self.client.delete_object(Bucket=self.bucket, Key=key)
+        except Exception as e:
+            _log("warning", "r2_storage", f"Delete failed for key={key}: {e}")
+
     async def key_exists(self, key: str) -> bool:
         """Check if a key exists in R2 (HEAD request)."""
         try:

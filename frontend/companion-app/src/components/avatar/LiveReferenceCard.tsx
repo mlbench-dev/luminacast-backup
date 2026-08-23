@@ -1,11 +1,12 @@
 import { useRef, useCallback, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { RadioTower, Loader2, AlertCircle, CheckCircle2, Clock } from "lucide-react";
+import { RadioTower, Loader2, AlertCircle, CheckCircle2, Clock, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
 import { liveReferenceApi } from "@/api/liveReferenceApi";
 import type { LiveReference, LiveReferenceStatus } from "@/api/liveReferenceApi";
 import { toast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 
 interface LiveReferenceCardProps {
   avatarId?: string;
@@ -91,6 +92,15 @@ export function LiveReferenceCard({
         variant: "destructive",
       });
     },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => liveReferenceApi.deleteLiveReference(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey });
+      toast({ title: "Recording deleted" });
+    },
+    onError: () => toast({ title: "Delete failed", variant: "destructive" }),
   });
 
   const handleFiles = useCallback(
@@ -203,6 +213,23 @@ export function LiveReferenceCard({
                         ? summary
                         : STAGE_LABEL[ref.status]}
                     </span>
+
+                    <button
+                      onClick={async () => {
+                        if (await confirmAction({
+                          title: "Delete this recording?",
+                          text: "This will remove the recording and the style it taught. You can upload a new one any time.",
+                          confirmButtonText: "Delete",
+                        })) {
+                          deleteMutation.mutate(ref.id);
+                        }
+                      }}
+                      className="text-text-muted hover:text-red-400 shrink-0"
+                      title="Delete"
+                      data-testid={`live-reference-delete-${ref.id}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
 
                   {ref.status === "failed" && ref.error_message && (

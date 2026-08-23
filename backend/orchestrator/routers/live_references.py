@@ -150,6 +150,30 @@ async def get_live_reference(
     return _to_dict(ref)
 
 
+@router.delete("/{live_reference_id}")
+async def delete_live_reference(
+    live_reference_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an uploaded live reference — the row and its stored recording.
+
+    Exemplars derived from it (live_reference_exemplars) cascade-delete at
+    the DB level via their ON DELETE CASCADE foreign key.
+    """
+    ref = await db.get(LiveReference, live_reference_id)
+    if not ref or ref.user_id != user.id:
+        raise HTTPException(404, "Live reference not found")
+
+    if ref.source_r2_key:
+        r2 = get_r2_storage_service()
+        await r2.delete_object(ref.source_r2_key)
+
+    await db.delete(ref)
+    await db.commit()
+    return {"ok": True}
+
+
 @router.get("")
 async def list_live_references(
     avatar_id: Optional[str] = None,

@@ -66,4 +66,7 @@ export const liveReferenceApi = {
       .get<{ live_references: LiveReference[]; total: number }>("/live-references", { params })
       .then((r) => r.data);
   },
+
+  deleteLiveReference: (id: string) =>
+    api.delete<{ ok: boolean }>(`/live-references/${id}`).then((r) => r.data),
 };
