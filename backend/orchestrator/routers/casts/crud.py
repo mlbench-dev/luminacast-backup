@@ -101,13 +101,14 @@ async def _purge_cast_dependents(db: AsyncSession, cast_id: str) -> None:
     Variants are deleted via their parent blocks. Cast versions and cast_products
     cascade at the DB level but we mirror them here for older schemas.
     """
-    from sqlalchemy import delete as sa_delete
+    from sqlalchemy import delete as sa_delete, update as sa_update
     from models.cast_render import CastRender
     from models.render_job import RenderJob
     from models.api_usage_log import ApiUsageLog
     from models.generation_cost import GenerationCost
     from models.stream_session import StreamSession
     from models.live_reference import LiveReference
+    from models.billing import RenderUsageRecord, CreditTransaction, OverageCharge
 
     block_ids = (
         await db.execute(select(Block.id).where(Block.cast_id == cast_id))
@@ -115,6 +116,32 @@ async def _purge_cast_dependents(db: AsyncSession, cast_id: str) -> None:
     if block_ids:
         await db.execute(sa_delete(Variant).where(Variant.block_id.in_(block_ids)))
         await db.execute(sa_delete(Block).where(Block.id.in_(block_ids)))
+
+    # cast_renders is itself referenced by three billing tables with no
+    # ON DELETE rule, none of which _purge_cast_dependents previously knew
+    # about — confirmed live: deleting a cast with a completed render always
+    # failed with a FK violation from render_usage_records. Clear those
+    # references first, deleting the ones that only ever exist per-render
+    # (RenderUsageRecord — a metering audit row scoped to exactly one
+    # render, consistent with how generation_cost/api_usage_log are already
+    # deleted here) and nulling the ones that live on broader, append-only
+    # ledgers (CreditTransaction/OverageCharge — these must never be
+    # deleted, related_render_id is just an optional trace-back link).
+    render_ids = (
+        await db.execute(select(CastRender.id).where(CastRender.cast_id == cast_id))
+    ).scalars().all()
+    if render_ids:
+        await db.execute(sa_delete(RenderUsageRecord).where(RenderUsageRecord.render_id.in_(render_ids)))
+        await db.execute(
+            sa_update(CreditTransaction)
+            .where(CreditTransaction.related_render_id.in_(render_ids))
+            .values(related_render_id=None)
+        )
+        await db.execute(
+            sa_update(OverageCharge)
+            .where(OverageCharge.related_render_id.in_(render_ids))
+            .values(related_render_id=None)
+        )
 
     await db.execute(sa_delete(CastRender).where(CastRender.cast_id == cast_id))
     await db.execute(sa_delete(RenderJob).where(RenderJob.cast_id == cast_id))
