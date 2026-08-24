@@ -76,7 +76,7 @@ export default function PublishCast() {
       // status/error. Ignoring those meant every attempt (including the
       // user closing the popup without authorizing) showed a false
       // "Account connected" success toast.
-      const { platform, status, error, accountId } = ev.data as any;
+      const { platform, status, error, accountId, claimed: popupClaimed, reason } = ev.data as any;
       if (error || status !== "ok") {
         // Zernio's real explanation (from the connect-error lookup) can
         // read like a support article — fine on the callback popup, which
@@ -91,14 +91,16 @@ export default function PublishCast() {
         });
         return;
       }
-      // Attribute the newly-connected account to this user BEFORE
-      // refreshing /profiles — that endpoint now only returns accounts
-      // this user actually owns (fixing a leak where it used to return
-      // every Luminacast customer's connected accounts), so without this
-      // call the just-connected account would never appear here. Retries
-      // internally since a slow Zernio call can make the first attempt
-      // look unclaimed when the account just isn't visible yet.
-      const res = await confirmConnectWithRetry(platform, accountId);
+      // The callback popup already ran confirmConnectWithRetry itself (so
+      // it could show the real pass/fail outcome instead of a blanket
+      // "Connected" before this page even knew whether the claim would
+      // succeed) — reuse that result instead of running the whole ~7.5s
+      // retry cycle a second time for an answer that's already known.
+      // Falls back to running the check here if an old cached popup build
+      // didn't send it.
+      const res = typeof popupClaimed === "boolean"
+        ? { claimed: popupClaimed, reason }
+        : await confirmConnectWithRetry(platform, accountId);
       const claimed = res.claimed;
       queryClient.invalidateQueries({ queryKey: ["social-profiles"] });
       if (claimed) {

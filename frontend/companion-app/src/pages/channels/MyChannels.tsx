@@ -71,7 +71,7 @@ export default function SocialChannelsPage() {
       // for a failed/declined OAuth too, with the real outcome carried in
       // status/error. Ignoring those meant every attempt (including a
       // declined authorization) showed a false "Channel connected" toast.
-      const { platform, status, error, accountId } = ev.data as any;
+      const { platform, status, error, accountId, claimed: popupClaimed, reason } = ev.data as any;
       if (error || status !== "ok") {
         // Zernio's real explanation (from the connect-error lookup) can
         // read like a support article — fine on the callback popup, which
@@ -86,13 +86,16 @@ export default function SocialChannelsPage() {
         });
         return;
       }
-      // Attribute the newly-connected account to this user BEFORE
-      // refreshing the list — list_channels no longer auto-claims unclaimed
-      // accounts (that was the cross-user leak), so without this call the
-      // account would never show up for anyone. Retries internally since a
-      // slow Zernio call can make the first attempt look unclaimed when the
-      // account just isn't visible yet.
-      const res = await confirmConnectWithRetry(platform, accountId);
+      // The callback popup already ran confirmConnectWithRetry itself
+      // (so it could show the real pass/fail outcome instead of a
+      // blanket "Connected" before this page even knew whether the claim
+      // would succeed) — reuse that result instead of running the whole
+      // ~7.5s retry cycle a second time for an answer that's already known.
+      // accountId may be missing on an old cached popup build that hasn't
+      // picked up this change; fall back to running the check here.
+      const res = typeof popupClaimed === "boolean"
+        ? { claimed: popupClaimed, reason }
+        : await confirmConnectWithRetry(platform, accountId);
       const claimed = res.claimed;
       queryClient.invalidateQueries({ queryKey: ["social-channels"] });
       if (claimed) {

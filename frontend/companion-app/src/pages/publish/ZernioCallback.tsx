@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { socialApi } from "@/lib/api";
+import { socialApi, confirmConnectWithRetry } from "@/lib/api";
 
 /**
  * Close the current (popup) window as reliably as browsers allow.
@@ -105,7 +105,33 @@ export default function ZernioCallback() {
           // fall back to the generic code
         }
       }
-      setDisplayError(error);
+
+      // Zernio reporting OAuth success only means the social platform
+      // authorized us — it says nothing about whether THIS Luminacast
+      // account can actually claim it (e.g. it may already be linked to a
+      // different Luminacast login). That check used to happen only after
+      // this popup closed and posted back to the opener, so the popup
+      // always showed a green "Connected" even when the claim was about to
+      // fail — the failure only ever showed up as a toast on the page
+      // behind it, which looked like two contradictory answers. Doing the
+      // claim here means this window shows the real outcome. Kept separate
+      // from `error`/`status` (which stay OAuth-only) so the opener's
+      // existing error-vs-claimed-vs-reason branching doesn't change shape.
+      let claimed: boolean | null = null;
+      let reason: string | undefined;
+      let claimFailureMessage: string | null = null;
+      if (!error && platform && accountId) {
+        const confirmRes = await confirmConnectWithRetry(platform, accountId);
+        claimed = confirmRes.claimed;
+        reason = confirmRes.reason;
+        if (!claimed) {
+          claimFailureMessage =
+            reason === "owned_by_other_user"
+              ? "This account is already connected to a different Luminacast login. Sign in with that account, or disconnect it there first."
+              : "Connected, but couldn't confirm the account. Refresh My Channels — if it's still missing, try connecting again.";
+        }
+      }
+      setDisplayError(error || claimFailureMessage);
 
       try {
         if (window.opener && !window.opener.closed) {
@@ -117,8 +143,12 @@ export default function ZernioCallback() {
           // testing, so there's no single fixed value that's ever
           // guaranteed correct here. "*" is safe: the payload is just a
           // platform name + status, nothing sensitive.
+          // claimed/reason ride along so the opener shows the SAME
+          // outcome this window just determined, instead of re-running
+          // confirmConnectWithRetry itself (which used to mean waiting
+          // through a second ~7.5s retry cycle for an answer already known).
           window.opener.postMessage(
-            { type: "zernio-connected", platform, status, error, accountId, username },
+            { type: "zernio-connected", platform, status, error, accountId, username, claimed, reason },
             "*",
           );
         }
