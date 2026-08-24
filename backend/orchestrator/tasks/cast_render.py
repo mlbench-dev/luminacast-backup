@@ -3168,34 +3168,58 @@ async def _resolve_lipsync_audio_url(
         return fallback_url
 
 
-_session_factory_singleton = None
+import threading
+
+_session_factory_tls = threading.local()
 
 
 def _make_session_factory():
-    """Return this worker process's shared session factory, creating it once.
+    """Return a session factory bound to the CURRENT event loop, creating one
+    if this loop doesn't have one yet.
 
-    Confirmed live: this used to create a brand-new engine (and its own
-    connection pool) on EVERY call — and this function is called from 12
-    places in this file, including once per block during actual rendering.
-    None of those engines were ever disposed, so every call permanently
-    leaked a couple of real Postgres connections for the rest of the
-    worker process's life. Under normal render load this exhausted
-    Postgres's connection limit ("sorry, too many clients already"),
-    which in turn silently broke cleanup_stale_cast_renders (the reaper
-    that fails a block after 18 minutes of no progress) every single time
-    it ran, since it couldn't even open a DB connection to do its check —
-    letting genuinely stuck renders sit in "baking" for over an hour with
-    no timeout ever firing. A module-level singleton engine, reused for
-    this process's whole lifetime, uses its own pool_size=2 connections
-    exactly once instead of leaking two more on every call.
+    History: this used to create a brand-new engine (and its own connection
+    pool) on EVERY call — called from 12 places in this file, including once
+    per block during actual rendering. None of those engines were ever
+    disposed, so every call permanently leaked a couple of real Postgres
+    connections for the rest of the worker process's life, eventually
+    exhausting Postgres's connection limit ("sorry, too many clients
+    already"), which in turn silently broke cleanup_stale_cast_renders (the
+    reaper that fails a block after 18 minutes of no progress) every time it
+    ran, since it couldn't even open a DB connection to do its check.
+
+    A single cached engine (the first fix tried here, module-level then
+    thread-local) solves the leak but creates a worse, active-breakage bug:
+    render() (below) calls asyncio.new_event_loop() for EVERY render task,
+    and Celery's prefork worker processes are long-lived — the same process
+    (and same thread, since prefork's task execution is single-threaded)
+    runs many renders sequentially over its lifetime, each on a brand-new
+    loop. An asyncpg connection is bound to the event loop that created it;
+    caching the engine across loop boundaries meant render task #2 (new
+    loop, same process) reused an engine whose connections belonged to
+    render task #1's already-closed loop. Reproduced live as
+    "sqlalchemy.exc.InterfaceError: cannot perform operation: another
+    operation is in progress" — every render after the first one run by a
+    given worker process failed to even read its own render row.
+
+    Keying the cache on the running loop's identity (not just the thread)
+    gets both properties: an engine is reused for every DB call within the
+    SAME render task's SAME loop (no per-call leak), but a new loop always
+    gets a fresh engine (no cross-loop corruption). The old engine's
+    connections are simply abandoned when the loop closes — asyncpg has
+    nothing left to clean up against a dead loop — bounded to 2 connections
+    per render task rather than the original per-call leak.
     """
-    global _session_factory_singleton
-    if _session_factory_singleton is None:
+    loop = asyncio.get_running_loop()
+    cached_factory = getattr(_session_factory_tls, "factory", None)
+    cached_loop = getattr(_session_factory_tls, "loop", None)
+    if cached_factory is None or cached_loop is not loop:
         from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
         from config import settings
         eng = create_async_engine(settings.database_url, pool_size=2, max_overflow=0)
-        _session_factory_singleton = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
-    return _session_factory_singleton
+        cached_factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+        _session_factory_tls.factory = cached_factory
+        _session_factory_tls.loop = loop
+    return cached_factory
 
 
 def extract_bonded_blocks_from_timeline(timeline: dict) -> list[tuple[dict | None, dict | None]]:

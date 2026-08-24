@@ -225,6 +225,7 @@ export function CastBuilderPage() {
     etaSeconds?: number | null;
     bakingCompleted?: number;
     bakingTotal?: number;
+    renderCreatedAt?: string | null;
   }>({ status: "idle" });
 
   // Poll render status continuously (not just in editor/ready phases) — Setup
@@ -263,6 +264,7 @@ export function CastBuilderPage() {
             etaSeconds: typeof active.eta_seconds === "number" ? active.eta_seconds : null,
             bakingCompleted: active.baking_chunks_completed || 0,
             bakingTotal: active.baking_chunks_total || 0,
+            renderCreatedAt: active.created_at ?? null,
           });
         } else if (latest?.status === "ready") {
           // Content-hash based stale detection: compare render's timeline hash
@@ -591,6 +593,7 @@ export function CastBuilderPage() {
                       blocks={renderStatus.blocks}
                       bakingCompleted={renderStatus.bakingCompleted}
                       bakingTotal={renderStatus.bakingTotal}
+                      renderCreatedAt={renderStatus.renderCreatedAt}
                       onCancel={handleCancelRender}
                       cancelling={cancellingRender}
                     />

@@ -48,6 +48,11 @@ export type RenderStatusPillProps = {
    * further retries or compose get queued. */
   onCancel?: () => void;
   cancelling?: boolean;
+  /** ISO timestamp the render row was created. Drives a live "Xm Ys elapsed"
+   * counter for the WHOLE render — unambiguous unlike the per-block baking
+   * timer (which users read as a countdown even though it counts up) or the
+   * ETA (a guess, not a measurement). Always counts up from render start. */
+  renderCreatedAt?: string | null;
 };
 
 const PROVIDER_STYLES: Record<string, string> = {
@@ -199,8 +204,19 @@ export function RenderStatusPill({
   bakingTotal = 0,
   onCancel,
   cancelling = false,
+  renderCreatedAt,
 }: RenderStatusPillProps) {
   const [open, setOpen] = useState(false);
+  const [totalElapsed, setTotalElapsed] = useState(0);
+  useEffect(() => {
+    if (!renderCreatedAt) return;
+    const start = new Date(renderCreatedAt).getTime();
+    setTotalElapsed(Math.floor((Date.now() - start) / 1000));
+    const interval = setInterval(() => {
+      setTotalElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [renderCreatedAt]);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
@@ -306,6 +322,11 @@ export function RenderStatusPill({
           {counts.done}/{counts.total} done · {counts.baking} baking · {counts.queued} queued · {remainingLabel}
           {counts.failed > 0 && <span className="text-red-400"> · {counts.failed} failed</span>}
         </span>
+        {renderCreatedAt && (
+          <span className="text-[10px] text-white/30">
+            {formatElapsed(totalElapsed)} elapsed total
+          </span>
+        )}
       </div>
       {blocks.length === 0 ? (
         <div className="px-3 py-4 text-xs text-white/40 text-center">Waiting for blocks to start…</div>

@@ -1281,8 +1281,8 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                   />
                   <div className="flex-1 min-w-0 space-y-3">
                 {/* Block header */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between flex-wrap gap-y-1.5">
+                  <div className="flex items-center gap-2 shrink-0">
                     {/* Drag handle: ONLY this icon is draggable so the rest of the
                         card (textarea, selects) stays interactive. The icon's parent
                         div absorbs onDragOver so the visual indicator updates. */}
@@ -1345,7 +1345,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
 
                     {/* 4.7.8 — Per-block caption toggle */}
