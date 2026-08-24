@@ -218,6 +218,9 @@ export interface Variant {
   generation_error?: string;
   caption_words?: Array<{ word: string; start: number; end: number; probability: number }>;
   caption_segments?: Array<{ start: number; end: number; text: string }>;
+  // Resolved [sfx:NAME] markers, clip-relative to this variant's own audio.
+  // See utils/sfx_extraction.py (backend) / SFX_CATALOG in editorStarterMapping.ts.
+  sfx_timings?: Array<{ name: string; start_s: number }>;
 }
 
 export type RenderMode = "avatar_full" | "voiceover" | "pip" | "body_motion" | "motion";

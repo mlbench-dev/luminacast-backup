@@ -29,16 +29,11 @@ const stripComments = (source: string): string =>
 // Old user-facing label literals that must no longer appear, keyed by the file
 // that owned them. Each is a string a user could read in the UI.
 const RETIRED_LABELS: Record<string, string[]> = {
-  "components/avatar/AvatarBackgrounds.tsx": [
-    ">Backgrounds<",
-    "Background uploaded",
-    "Background generated",
-    "Background deleted",
-    "Delete this background?",
-    "Loading backgrounds...",
-    "No backgrounds yet",
-    "Generate Background",
-  ],
+  // components/avatar/AvatarBackgrounds.tsx was removed entirely (the
+  // AvatarBackground/name-matching scene system it managed was retired —
+  // see engine.cast_generator.stamp_template_defaults_on_blocks's
+  // docstring) — its retired labels can't reappear in a file that no
+  // longer exists, so there's nothing left to guard here.
   "components/cast-builder/BackgroundPicker.tsx": [
     "Keep avatar's background",
     "Blur original background",

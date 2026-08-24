@@ -516,4 +516,70 @@ describe("edge cases", () => {
     // Audio items still created
     expect(state.tracks[1].items).toHaveLength(3);
   });
+
+  // Regression 4 follow-up: [sfx:NAME] markers were correctly extracted and
+  // time-aligned into variant.sfx_timings server-side, but nothing in this
+  // editor path — the one every real cast actually goes through — ever
+  // turned that into a playable timeline element, so the sound never
+  // reached the render. See services/sfx_library.py /
+  // tests/unit/test_sfx_resolver.py for the backend half of this contract.
+  it("resolves sfx_timings into a real audio element on its own track", () => {
+    const baseBlock = FIXTURE_CAST.blocks![0];
+    const castWithSfx: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...baseBlock,
+          variants: [
+            {
+              ...baseBlock.variants![0],
+              sfx_timings: [{ name: "record_scratch", start_s: 0.2 }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const { state } = castToEditorStarterTimeline(castWithSfx, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+
+    const sfxTrack = state.tracks.find((t) => t.id === "track-sfx");
+    expect(sfxTrack).toBeDefined();
+    expect(sfxTrack!.items).toHaveLength(1);
+
+    const sfxItem = state.items[sfxTrack!.items[0]] as any;
+    expect(sfxItem.type).toBe("audio");
+    expect(sfxItem.metadata.kind).toBe("sfx");
+    expect(sfxItem.metadata.name).toBe("record_scratch");
+    expect(sfxItem.from).toBe(6); // 0.2s * 30fps
+
+    const sfxAsset = state.assets[sfxItem.assetId] as any;
+    expect(sfxAsset.remoteUrl).toBe(`${CDN_BASE}/sfx/record_scratch.wav`);
+  });
+
+  it("skips an unknown sfx name without throwing", () => {
+    const baseBlock = FIXTURE_CAST.blocks![0];
+    const castWithBadSfx: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...baseBlock,
+          variants: [
+            {
+              ...baseBlock.variants![0],
+              sfx_timings: [{ name: "not_a_real_sound", start_s: 0 }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const { state } = castToEditorStarterTimeline(castWithBadSfx, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+
+    const sfxTrack = state.tracks.find((t) => t.id === "track-sfx");
+    expect(sfxTrack).toBeUndefined();
+  });
 });

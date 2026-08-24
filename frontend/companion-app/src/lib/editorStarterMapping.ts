@@ -45,6 +45,36 @@ export interface BlockRegion {
   end_s: number;
 }
 
+// Mirrors services/sfx_library.py's SFX_CATALOG exactly (18 names — the
+// marker grammar the LLM emits — keep both lists in lockstep). Kept as a
+// small static table here rather than fetched from the backend because
+// castToEditorStarterTimeline is a synchronous, pure mapping function; this
+// catalog is fixed and rarely changes.
+const SFX_CATALOG: Record<string, { durationS: number; volume: number }> = {
+  whoosh: { durationS: 0.5, volume: 1.0 },
+  pop: { durationS: 0.3, volume: 1.0 },
+  ding: { durationS: 0.5, volume: 1.0 },
+  cash_register: { durationS: 0.8, volume: 1.0 },
+  sparkle: { durationS: 0.7, volume: 1.0 },
+  record_scratch: { durationS: 0.6, volume: 1.0 },
+  swoosh_up: { durationS: 0.5, volume: 1.0 },
+  swoosh_down: { durationS: 0.5, volume: 1.0 },
+  notification: { durationS: 0.4, volume: 1.0 },
+  timer_tick: { durationS: 0.3, volume: 1.0 },
+  click: { durationS: 0.2, volume: 1.0 },
+  drumroll: { durationS: 1.2, volume: 1.0 },
+  applause: { durationS: 1.5, volume: 1.0 },
+  camera_shutter: { durationS: 0.3, volume: 1.0 },
+  bass_drop: { durationS: 0.5, volume: 1.0 },
+  typing: { durationS: 0.8, volume: 1.0 },
+  coin: { durationS: 0.4, volume: 1.0 },
+  success: { durationS: 0.5, volume: 1.0 },
+};
+
+function sfxUrl(name: string): string {
+  return `https://media.luminacast.com/sfx/${name}.wav`;
+}
+
 /**
  * Strip internal script direction markers — `[sfx:*]`/`[pause]` and
  * `(excited)`/`(whispering)` prosody — so they never leak into rendered
@@ -140,10 +170,12 @@ export function castToEditorStarterTimeline(
   const audioTrackId = "track-audio";
   const productTrackId = "track-products";
   const musicTrackId = "track-music";
+  const sfxTrackId = "track-sfx";
 
   const videoTrackItemIds: string[] = [];
   const audioTrackItemIds: string[] = [];
   const musicTrackItemIds: string[] = [];
+  const sfxTrackItemIds: string[] = [];
   const captionTrackItemIds: string[] = [];
   const captionTrackId = "caption_track";
   const productTrackItemIds: string[] = [];
@@ -1294,6 +1326,72 @@ export function castToEditorStarterTimeline(
       captionTrackItemIds.push(capItemId);
     }
 
+    // ── SFX — resolved [sfx:NAME] markers become real audio accents ──
+    // Regression 4 (see tests/unit/test_sfx_resolver.py): the marker was
+    // only ever stripped from captions/TTS, never actually mixed in — the
+    // backend's variant.sfx_timings was computed and stored correctly, but
+    // the only code that ever turned it into a playable timeline element
+    // was routers/casts/timeline.py's auto_arrange_cast_timeline, a
+    // headless/API-only endpoint this app's own editor never calls. This
+    // mirrors that backend logic directly in the path every real cast
+    // actually goes through — same fix shape as the background-music one
+    // just above the caption block.
+    const sfxTimings = variant?.sfx_timings;
+    if (sfxTimings && sfxTimings.length > 0) {
+      sfxTimings.forEach((timing, ti) => {
+        const name = (timing?.name || "").trim().toLowerCase();
+        const entry = SFX_CATALOG[name];
+        if (!entry) {
+          console.warn(`Unknown SFX '${timing?.name}' in block ${block.id}; skipping`);
+          return;
+        }
+        const relStart = Math.max(Number(timing.start_s) || 0, 0);
+        const sfxStart = start + relStart;
+
+        const sfxAssetId = `asset_sfx_${block.id}_${ti}`;
+        const sfxAsset: AudioAsset = {
+          type: "audio",
+          id: sfxAssetId,
+          filename: `SFX — ${name}`,
+          size: 0,
+          remoteUrl: sfxUrl(name),
+          remoteFileKey: null,
+          mimeType: "audio/wav",
+          durationInSeconds: entry.durationS,
+        };
+        assets[sfxAssetId] = sfxAsset;
+
+        const sfxItemId = `sfx_${block.id}_${ti}`;
+        const sfxItem: AudioItem = {
+          type: "audio",
+          id: sfxItemId,
+          assetId: sfxAssetId,
+          from: secondsToFrames(sfxStart, fps),
+          durationInFrames: Math.max(secondsToFrames(entry.durationS, fps), 1),
+          top: 0,
+          left: 0,
+          width: 0,
+          height: 0,
+          opacity: 1,
+          isDraggingInTimeline: false,
+          audioStartFromInSeconds: 0,
+          decibelAdjustment: 0,
+          playbackRate: 1,
+          audioFadeInDurationInSeconds: 0,
+          audioFadeOutDurationInSeconds: 0,
+          metadata: {
+            block_id: block.id,
+            track_type: "audio_sfx",
+            kind: "sfx",
+            name,
+            volume: entry.volume,
+          },
+        };
+        items[sfxItemId] = sfxItem;
+        sfxTrackItemIds.push(sfxItemId);
+      });
+    }
+
     cursor = end;
   }
 
@@ -1376,6 +1474,9 @@ export function castToEditorStarterTimeline(
     { id: audioTrackId, items: audioTrackItemIds, hidden: false, muted: false },
     ...(musicTrackItemIds.length > 0
       ? [{ id: musicTrackId, items: musicTrackItemIds, hidden: false, muted: false }]
+      : []),
+    ...(sfxTrackItemIds.length > 0
+      ? [{ id: sfxTrackId, items: sfxTrackItemIds, hidden: false, muted: false }]
       : []),
   ];
 

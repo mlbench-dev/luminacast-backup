@@ -1409,11 +1409,6 @@ function ProductionLevelSelector({
       <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-accent/80 flex items-center gap-1.5">
         <Sparkles className="w-3 h-3" /> Production Level
       </h3>
-      {!hasTemplate && (
-        <p className="text-[10px] text-amber-400/70 -mt-1">
-          Applies to the format you pick above — select one to unlock this.
-        </p>
-      )}
       <div className="grid grid-cols-3 gap-3">
         {LEVELS.map((level) => {
           const active = value === level.id;
