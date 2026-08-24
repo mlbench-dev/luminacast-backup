@@ -26,6 +26,18 @@ ZERNIO_BASE = "https://zernio.com/api/v1"
 HTTP_TIMEOUT_SECONDS = 60.0
 UPLOAD_TIMEOUT_SECONDS = 180.0
 
+# Luminacast's internal platform id for X is "x" (matches the rebrand, used
+# throughout the frontend/DB), but Zernio's own API still expects "twitter"
+# — confirmed live: GET /v1/connect/x 400s while every other platform id
+# (tiktok/instagram/youtube/facebook/linkedin/pinterest) passes straight
+# through unchanged. Translate only at the Zernio API boundary so nothing
+# else (labels, DB rows, icons) needs to know Zernio's vocabulary differs.
+_TO_ZERNIO_PLATFORM = {"x": "twitter"}
+
+
+def to_zernio_platform(platform: str) -> str:
+    return _TO_ZERNIO_PLATFORM.get(platform, platform)
+
 
 class ZernioService:
     """Async client for the Zernio REST API."""
@@ -49,7 +61,13 @@ class ZernioService:
         scheduled_for: str | None = None,  # ISO 8601 or None for immediate
     ) -> dict[str, Any]:
         """Create or schedule a post across one or more platforms."""
-        payload: dict[str, Any] = {"content": content, "platforms": platforms}
+        # Translate at the boundary only — callers (and what we persist
+        # locally on SocialPost.platforms) keep Luminacast's internal ids
+        # ("x"); Zernio's own API needs its vocabulary ("twitter").
+        zernio_platforms = [
+            {**p, "platform": to_zernio_platform(p.get("platform", ""))} for p in platforms
+        ]
+        payload: dict[str, Any] = {"content": content, "platforms": zernio_platforms}
         if media_urls:
             # Per Zernio's OpenAPI spec, POST /v1/posts has no "mediaUrls"
             # field at all — media is "mediaItems": [{type, url}]. The old
@@ -270,7 +288,7 @@ class ZernioService:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
             profile_id = await self._get_default_profile_id(client)
             resp = await client.get(
-                f"{ZERNIO_BASE}/connect/{platform}",
+                f"{ZERNIO_BASE}/connect/{to_zernio_platform(platform)}",
                 headers=self.headers,
                 params={"profileId": profile_id, "redirect_url": redirect_uri},
             )
@@ -320,7 +338,7 @@ class ZernioService:
                         headers=self.headers,
                         params={
                             "type": "connections",
-                            "platform": platform,
+                            "platform": to_zernio_platform(platform),
                             "status": "failed",
                             "limit": 1,
                             "days": 1,

@@ -301,7 +301,13 @@ export function castToEditorStarterTimeline(
       continue;
     }
 
-    const dur = variant.tts_duration_seconds || variant.duration_seconds || 5;
+    // Floored at 3s: a short AI-written line can produce a genuinely short
+    // TTS clip (e.g. 2.0s), and the render pipeline's structural minimum for
+    // motion/body-motion clips is exactly 2.0s — ordinary frame-rounding on
+    // the baked clip then lands a few ms under that floor and fails
+    // validation every time (confirmed root cause of block-stuck-at-2.00s
+    // render failures). 3s leaves a full second of margin above that floor.
+    const dur = Math.max(variant.tts_duration_seconds || variant.duration_seconds || 5, 3);
     // Rounded up (not secondsToFrames' round-to-nearest) so the bonded
     // audio/video/image items below never come out a fraction of a frame
     // shorter than the actual voiceover — see secondsToFramesCeil.

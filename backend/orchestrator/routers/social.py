@@ -27,6 +27,7 @@ from models.avatar import Avatar
 from models.social_post import SocialPost, SocialComment, SocialChannel, PendingSocialConnect
 from models.user import User, TeamRole
 from routers.auth import get_current_user, WorkspaceContext, require_role
+from services.zernio import to_zernio_platform
 
 logger = logging.getLogger(__name__)
 
@@ -382,9 +383,10 @@ async def connect_platform(
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
         before_accounts = []
+    zernio_platform = to_zernio_platform(req.platform)
     before_ids = [
         zid for acc in before_accounts
-        if acc.get("platform") == req.platform and (zid := acc.get("_id") or acc.get("id"))
+        if acc.get("platform") == zernio_platform and (zid := acc.get("_id") or acc.get("id"))
     ]
     # Replace any stale pending row for this (user, platform) rather than
     # accumulate — only the most recent connect attempt's snapshot matters.
@@ -470,7 +472,7 @@ async def _claim_account_by_id(
             "user (requester=%s, owner=%s)",
             account_id, ctx.workspace_owner_id, other_owner.user_id,
         )
-        return {"claimed": False}
+        return {"claimed": False, "reason": "owned_by_other_user"}
 
     handle = match.get("username") or match.get("handle") or match.get("screenName")
     display_name = match.get("displayName") or match.get("name") or handle
@@ -620,7 +622,8 @@ async def confirm_connect(
         ).scalars().all()
     }
 
-    matching = [acc for acc in after_accounts if acc.get("platform") == req.platform]
+    zernio_platform = to_zernio_platform(req.platform)
+    matching = [acc for acc in after_accounts if acc.get("platform") == zernio_platform]
     logger.info(
         "confirm_connect: user=%s platform=%s total_accounts=%d matching_platform=%s "
         "own_zids=%s other_users_zids=%s",
@@ -630,8 +633,9 @@ async def confirm_connect(
     )
 
     claimed = []
+    blocked_by_other_user = False
     for acc in after_accounts:
-        if acc.get("platform") != req.platform:
+        if acc.get("platform") != zernio_platform:
             continue
         zid = acc.get("_id") or acc.get("id")
         if not zid:
@@ -652,6 +656,7 @@ async def confirm_connect(
             continue
 
         if zid in other_users_claimed_ids:
+            blocked_by_other_user = True
             continue
 
         new_ch = SocialChannel(
@@ -681,7 +686,10 @@ async def confirm_connect(
     if claimed:
         await db.delete(pending)
     await db.commit()
-    return {"claimed": bool(claimed), "zernio_account_ids": claimed}
+    result: dict = {"claimed": bool(claimed), "zernio_account_ids": claimed}
+    if not claimed and blocked_by_other_user:
+        result["reason"] = "owned_by_other_user"
+    return result
 
 
 @router.get("/connect-error")

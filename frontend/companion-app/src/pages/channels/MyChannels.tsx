@@ -101,6 +101,12 @@ export default function SocialChannelsPage() {
           description: `${platformLabel(platform)} ready to publish.`,
           variant: "success",
         });
+      } else if (res.reason === "owned_by_other_user") {
+        toast({
+          title: "Already connected to a different account",
+          description: `This ${platformLabel(platform)} account is linked to another Luminacast login. Sign in with that account, or disconnect it there first.`,
+          variant: "destructive",
+        });
       } else {
         toast({
           title: "Connected, but couldn't confirm the account",

@@ -60,7 +60,7 @@ export const socialApi = {
   // whenever we have it — the backend claims that exact account directly
   // instead of falling back to diffing account lists against a snapshot.
   confirmConnect: (platform: string, accountId?: string | null) =>
-    api.post<{ claimed: boolean; zernio_account_ids?: string[] }>(
+    api.post<{ claimed: boolean; zernio_account_ids?: string[]; reason?: string }>(
       "/social/connect/confirm", { platform, account_id: accountId || undefined },
     ).then((r) => r.data),
   // The OAuth redirect only ever carries a generic error code
@@ -126,8 +126,8 @@ export async function confirmConnectWithRetry(
   accountId?: string | null,
   attempts = 3,
   delayMs = 2500,
-): Promise<{ claimed: boolean; zernio_account_ids?: string[] }> {
-  let last: { claimed: boolean; zernio_account_ids?: string[] } = { claimed: false };
+): Promise<{ claimed: boolean; zernio_account_ids?: string[]; reason?: string }> {
+  let last: { claimed: boolean; zernio_account_ids?: string[]; reason?: string } = { claimed: false };
   for (let i = 0; i < attempts; i++) {
     try {
       last = await socialApi.confirmConnect(platform, accountId);
@@ -136,6 +136,11 @@ export async function confirmConnectWithRetry(
       last = { claimed: false };
     }
     if (last.claimed) return last;
+    // "owned_by_other_user" is a definitive answer, not a propagation-delay
+    // race — the account belongs to a different Luminacast login and no
+    // amount of retrying against Zernio's API changes that. Retrying here
+    // just makes the user wait ~7.5s for a toast that was already decided.
+    if (last.reason === "owned_by_other_user") return last;
     if (i < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   return last;
