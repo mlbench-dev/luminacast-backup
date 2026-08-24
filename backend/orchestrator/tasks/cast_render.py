@@ -3168,11 +3168,34 @@ async def _resolve_lipsync_audio_url(
         return fallback_url
 
 
+_session_factory_singleton = None
+
+
 def _make_session_factory():
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-    from config import settings
-    eng = create_async_engine(settings.database_url, pool_size=2, max_overflow=0)
-    return async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+    """Return this worker process's shared session factory, creating it once.
+
+    Confirmed live: this used to create a brand-new engine (and its own
+    connection pool) on EVERY call — and this function is called from 12
+    places in this file, including once per block during actual rendering.
+    None of those engines were ever disposed, so every call permanently
+    leaked a couple of real Postgres connections for the rest of the
+    worker process's life. Under normal render load this exhausted
+    Postgres's connection limit ("sorry, too many clients already"),
+    which in turn silently broke cleanup_stale_cast_renders (the reaper
+    that fails a block after 18 minutes of no progress) every single time
+    it ran, since it couldn't even open a DB connection to do its check —
+    letting genuinely stuck renders sit in "baking" for over an hour with
+    no timeout ever firing. A module-level singleton engine, reused for
+    this process's whole lifetime, uses its own pool_size=2 connections
+    exactly once instead of leaking two more on every call.
+    """
+    global _session_factory_singleton
+    if _session_factory_singleton is None:
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from config import settings
+        eng = create_async_engine(settings.database_url, pool_size=2, max_overflow=0)
+        _session_factory_singleton = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+    return _session_factory_singleton
 
 
 def extract_bonded_blocks_from_timeline(timeline: dict) -> list[tuple[dict | None, dict | None]]:
