@@ -458,6 +458,11 @@ async def _claim_account_by_id(
         )
         return {"claimed": False}
 
+    handle = match.get("username") or match.get("handle") or match.get("screenName")
+    display_name = match.get("displayName") or match.get("name") or handle
+    follower_count = match.get("followerCount") or match.get("followers") or 0
+    profile_image_url = match.get("profileImage") or match.get("avatarUrl") or match.get("profileImageUrl")
+
     other_owner = (
         await db.execute(
             select(SocialChannel).where(
@@ -467,17 +472,35 @@ async def _claim_account_by_id(
         )
     ).scalars().first()
     if other_owner is not None:
-        logger.warning(
-            "confirm_connect: accountId=%s already owned by a different "
-            "user (requester=%s, owner=%s)",
-            account_id, ctx.workspace_owner_id, other_owner.user_id,
-        )
-        return {"claimed": False, "reason": "owned_by_other_user"}
-
-    handle = match.get("username") or match.get("handle") or match.get("screenName")
-    display_name = match.get("displayName") or match.get("name") or handle
-    follower_count = match.get("followerCount") or match.get("followers") or 0
-    profile_image_url = match.get("profileImage") or match.get("avatarUrl") or match.get("profileImageUrl")
+        # Confirmed live: Zernio's account _id is a slot tied to the
+        # (workspace profile, platform) pair, NOT a permanent identifier for
+        # one specific real account — reconnecting a DIFFERENT real Pinterest
+        # login through the same Zernio profile reuses the exact same _id
+        # instead of minting a new one (fetched /v1/accounts directly:
+        # accountId 6a89eb07... now reports username "ammarfarooq207", not
+        # the "abdulrafaybutt71" our own row still has on file for it). If
+        # Zernio's live handle for this _id no longer matches what the
+        # other_owner row has stored, that row's ownership is stale — the
+        # real account behind this id has changed hands on Zernio's side —
+        # so block-by-id would otherwise permanently lock a legitimately
+        # different account out just because it inherited an old slot.
+        if other_owner.handle and handle and other_owner.handle != handle:
+            logger.warning(
+                "confirm_connect: accountId=%s ownership stale — was handle=%s "
+                "for user=%s, Zernio now reports handle=%s; releasing stale "
+                "claim so it can be reassigned (requester=%s)",
+                account_id, other_owner.handle, other_owner.user_id, handle,
+                ctx.workspace_owner_id,
+            )
+            await db.delete(other_owner)
+            await db.flush()
+        else:
+            logger.warning(
+                "confirm_connect: accountId=%s already owned by a different "
+                "user (requester=%s, owner=%s)",
+                account_id, ctx.workspace_owner_id, other_owner.user_id,
+            )
+            return {"claimed": False, "reason": "owned_by_other_user"}
 
     own_row = (
         await db.execute(
