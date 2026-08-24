@@ -702,21 +702,27 @@ function PublishedTab() {
           onChange={(e) => setPlatformFilter(e.target.value)}
           className="bg-white/5 border border-white/10 rounded-md px-2 py-1 text-white/70"
         >
-          <option value="all">All platforms</option>
-          <option value="tiktok">TikTok</option>
-          <option value="instagram">Instagram</option>
-          <option value="youtube">YouTube</option>
-          <option value="linkedin">LinkedIn</option>
-          <option value="facebook">Facebook</option>
+          {/* The select's own text-white/70 only styles its closed-state
+              button — the browser renders the opened <option> popup with
+              its own default (usually white) background, which options
+              ignore parent Tailwind classes for. Without an explicit color
+              here, light theme text on that white popup is invisible until
+              :hover's browser-native highlight creates contrast again. */}
+          <option value="all" className="bg-neutral-900 text-white">All platforms</option>
+          <option value="tiktok" className="bg-neutral-900 text-white">TikTok</option>
+          <option value="instagram" className="bg-neutral-900 text-white">Instagram</option>
+          <option value="youtube" className="bg-neutral-900 text-white">YouTube</option>
+          <option value="linkedin" className="bg-neutral-900 text-white">LinkedIn</option>
+          <option value="facebook" className="bg-neutral-900 text-white">Facebook</option>
         </select>
         <select
           value={windowFilter}
           onChange={(e) => setWindowFilter(e.target.value as any)}
           className="bg-white/5 border border-white/10 rounded-md px-2 py-1 text-white/70"
         >
-          <option value="7d">Last 7 days</option>
-          <option value="30d">Last 30 days</option>
-          <option value="all">All time</option>
+          <option value="7d" className="bg-neutral-900 text-white">Last 7 days</option>
+          <option value="30d" className="bg-neutral-900 text-white">Last 30 days</option>
+          <option value="all" className="bg-neutral-900 text-white">All time</option>
         </select>
       </div>
 
