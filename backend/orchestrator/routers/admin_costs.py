@@ -76,16 +76,22 @@ async def cost_overview(
             )
         ).all()
 
+        # LEFT JOIN (not inner) so a usage row from a since-deleted user still
+        # shows up with its raw id instead of silently vanishing from the
+        # total — this table is about cost accounting, not user management.
         by_user_rows = (
             await db.execute(
                 select(
                     UsageEvent.user_id,
+                    User.email,
+                    User.display_name,
                     func.sum(UsageEvent.provider_cost_usd).label("cost"),
                     func.sum(UsageEvent.user_price_usd).label("revenue"),
                     func.count(UsageEvent.id).label("events"),
                 )
+                .outerjoin(User, User.id == UsageEvent.user_id)
                 .where(UsageEvent.created_at >= since)
-                .group_by(UsageEvent.user_id)
+                .group_by(UsageEvent.user_id, User.email, User.display_name)
                 .order_by(func.sum(UsageEvent.provider_cost_usd).desc())
             )
         ).all()
@@ -148,6 +154,8 @@ async def cost_overview(
             "by_user": [
                 {
                     "user_id": r.user_id,
+                    "email": r.email,
+                    "display_name": r.display_name,
                     "cost": round(float(r.cost or 0), 2),
                     "revenue": round(float(r.revenue or 0), 2),
                     "events": r.events,

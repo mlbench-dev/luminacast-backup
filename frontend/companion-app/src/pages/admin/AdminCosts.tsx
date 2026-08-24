@@ -26,7 +26,14 @@ type Totals = {
 
 type ByProvider = { provider: string; cost: number; count: number };
 type ByEventType = { type: string; cost: number; count: number; avg: number };
-type ByUser = { user_id: string; cost: number; revenue: number; events: number };
+type ByUser = {
+  user_id: string;
+  email: string | null;
+  display_name: string | null;
+  cost: number;
+  revenue: number;
+  events: number;
+};
 type DailyTrend = { date: string; cost: number; revenue: number; events: number };
 
 type Overview = {
@@ -235,6 +242,12 @@ export function AdminCostsPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">Top Users by Cost</CardTitle>
+            <p className="text-xs text-text-muted mt-1">
+              The {Math.min(10, by_user.length)} users who generated the most provider
+              cost (AI/render/API spend) in the last {data.period_days} days, highest
+              first. "Cost" is what we paid providers for their usage; "rev" is what
+              they paid us (their plan/usage price) over the same period.
+            </p>
           </CardHeader>
           <CardContent>
             <div className="space-y-1.5">
@@ -243,10 +256,10 @@ export function AdminCostsPage() {
                   key={u.user_id}
                   className="flex justify-between py-1.5 text-sm border-b border-border last:border-0"
                 >
-                  <span className="font-mono text-xs text-text-dim">
-                    {(u.user_id || "anon").slice(0, 12)}
+                  <span className="text-text-dim truncate max-w-[55%]" title={u.user_id}>
+                    {u.display_name || u.email || `(deleted user ${(u.user_id || "unknown").slice(0, 12)})`}
                   </span>
-                  <span className="text-text">
+                  <span className="text-text shrink-0">
                     {formatUsd(u.cost)}{" "}
                     <span className="text-text-muted">/ rev {formatUsd(u.revenue)} · {u.events} ev</span>
                   </span>
