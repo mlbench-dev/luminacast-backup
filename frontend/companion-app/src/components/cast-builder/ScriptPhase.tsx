@@ -1077,11 +1077,11 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
             Captions {captionsGlobal ? "on" : "off"}
           </button>
 
-          <div className="text-right">
-            <div className="text-sm text-white/70">
+          <div className="text-right shrink-0">
+            <div className="text-sm text-white/70 whitespace-nowrap">
               {totalWords} words · ~{totalDuration}s
             </div>
-            <div className="text-xs text-white/40">{blocks.length} blocks</div>
+            <div className="text-xs text-white/40 whitespace-nowrap">{blocks.length} blocks</div>
           </div>
         </div>
       </div>
@@ -1346,7 +1346,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-white/40">{wc} words · ~{dur}s</span>
+                    <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
 
                     {/* 4.7.8 — Per-block caption toggle */}
                     <button
