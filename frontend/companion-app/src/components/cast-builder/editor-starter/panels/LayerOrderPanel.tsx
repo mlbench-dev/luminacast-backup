@@ -21,7 +21,6 @@ import type { EditorStarterItem } from "../items/item-type";
 import type { TrackType } from "../state/types";
 import {
   Image, Video, Music, Type, Square, Captions,
-  ChevronUp, ChevronDown, ChevronsUp, ChevronsDown,
   Layers, Eye, EyeOff, Volume2, VolumeX,
 } from "lucide-react";
 
@@ -322,44 +321,6 @@ export const LayerOrderPanel: React.FC<{
                   {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
                 </button>
               )}
-              <div className="flex gap-0.5 opacity-0 group-hover:opacity-100">
-                {visIdx > 0 && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); moveItem(layer.absIdx, visibleLayers[0].absIdx); }}
-                    className="p-0.5 text-white/30 hover:text-white/60"
-                    title="Bring to front"
-                  >
-                    <ChevronsUp className="w-3 h-3" />
-                  </button>
-                )}
-                {visIdx > 0 && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); moveItem(layer.absIdx, visibleLayers[visIdx - 1].absIdx); }}
-                    className="p-0.5 text-white/30 hover:text-white/60"
-                    title="Bring forward"
-                  >
-                    <ChevronUp className="w-3 h-3" />
-                  </button>
-                )}
-                {visIdx < visibleLayers.length - 1 && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); moveItem(layer.absIdx, visibleLayers[visIdx + 1].absIdx); }}
-                    className="p-0.5 text-white/30 hover:text-white/60"
-                    title="Send backward"
-                  >
-                    <ChevronDown className="w-3 h-3" />
-                  </button>
-                )}
-                {visIdx < visibleLayers.length - 1 && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); moveItem(layer.absIdx, visibleLayers[visibleLayers.length - 1].absIdx); }}
-                    className="p-0.5 text-white/30 hover:text-white/60"
-                    title="Send to back"
-                  >
-                    <ChevronsDown className="w-3 h-3" />
-                  </button>
-                )}
-              </div>
             </div>
           );
         })}
