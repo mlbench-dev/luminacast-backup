@@ -44,6 +44,16 @@ export type ItemMetadata = {
    * badges the frame so a static photo isn't mistaken for real footage.
    */
   is_motion_placeholder?: boolean;
+  /**
+   * Per-ITEM visibility, distinct from TrackType.hidden (which hides every
+   * item on a shared track — e.g. every block's B-roll or captions at
+   * once). The Layers panel's per-row eye button used to call the
+   * track-level hide action even though it's displayed per item, so
+   * hiding one block's B-roll silently hid every other block's B-roll on
+   * the same shared track too. This flag lets one specific item hide
+   * without affecting anything else on its track.
+   */
+  hidden?: boolean;
   [key: string]: any;
 };
 

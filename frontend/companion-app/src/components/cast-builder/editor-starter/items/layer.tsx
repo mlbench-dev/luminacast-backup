@@ -39,6 +39,10 @@ export const Layer: React.FC<{
 		return null;
 	}
 
+	if (item.metadata?.hidden) {
+		return null;
+	}
+
 	const itemIsBeingCropped = item.id === itemSelectedForCrop;
 
 	

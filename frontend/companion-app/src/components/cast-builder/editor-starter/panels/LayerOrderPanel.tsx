@@ -15,8 +15,8 @@ import {
 } from "../utils/use-context";
 import { useTimelinePosition } from "../utils/use-timeline-position";
 import { setSelectedItems } from "../state/actions/set-selected-items";
-import { hideTrack, unhideTrack } from "../state/actions/hide-track";
 import { muteTrack, unmuteTrack } from "../state/actions/mute-track";
+import { toggleItemHidden } from "../state/actions/toggle-item-hidden";
 import type { EditorStarterItem } from "../items/item-type";
 import type { TrackType } from "../state/types";
 import {
@@ -158,11 +158,11 @@ export const LayerOrderPanel: React.FC<{
     [setState],
   );
 
-  const toggleTrackVisibility = useCallback(
-    (trackId: string, isHidden: boolean, e: React.MouseEvent) => {
+  const toggleItemVisibility = useCallback(
+    (itemId: string, e: React.MouseEvent) => {
       e.stopPropagation();
       setState({
-        update: (state) => isHidden ? unhideTrack(state, trackId) : hideTrack(state, trackId),
+        update: (state) => toggleItemHidden(state, itemId),
         commitToUndoStack: false,
       });
     },
@@ -279,7 +279,7 @@ export const LayerOrderPanel: React.FC<{
         {visibleLayers.map((layer, visIdx) => {
           const isSelected = selectedItems.includes(layer.itemId);
           const isDragOver = dragOverIndex === visIdx;
-          const isHidden = layer.track.hidden;
+          const isHidden = Boolean(layer.item.metadata?.hidden);
           const isMuted = layer.track.muted;
 
           return (
@@ -306,7 +306,7 @@ export const LayerOrderPanel: React.FC<{
               </span>
               {/* Phase 4.8.4 — visibility + mute toggles per layer */}
               <button
-                onClick={(e) => toggleTrackVisibility(layer.trackId, isHidden, e)}
+                onClick={(e) => toggleItemVisibility(layer.itemId, e)}
                 className="p-0.5 text-white/30 hover:text-white/60"
                 title={isHidden ? "Show layer" : "Hide layer"}
               >
