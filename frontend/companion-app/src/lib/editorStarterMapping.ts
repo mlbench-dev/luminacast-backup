@@ -171,6 +171,7 @@ export function castToEditorStarterTimeline(
   const productTrackId = "track-products";
   const musicTrackId = "track-music";
   const sfxTrackId = "track-sfx";
+  const brollTrackId = "track-broll";
 
   const videoTrackItemIds: string[] = [];
   const audioTrackItemIds: string[] = [];
@@ -179,6 +180,17 @@ export function castToEditorStarterTimeline(
   const captionTrackItemIds: string[] = [];
   const captionTrackId = "caption_track";
   const productTrackItemIds: string[] = [];
+  // B-roll (parallel_media) plays on top of the avatar for the SAME block —
+  // it must live on its own track. It used to share videoTrackItemIds with
+  // the avatar's own V1 clip, which spans the identical from/duration range
+  // for that block. Every TimelineTrack renders all of its items at the same
+  // top/height (timeline-track.tsx), so the avatar clip was rendered directly
+  // underneath the B-roll clip — invisible in the UI, but very much present
+  // for collision purposes, so a B-roll drag could never even return to its
+  // own original spot (it always "overlapped" its own hidden avatar sibling),
+  // and any multi-select drag including a B-roll item hit the same phantom
+  // collision and snapped the whole group elsewhere.
+  const brollTrackItemIds: string[] = [];
 
   // Build product lookup from cast.products. The serialized shape is
   // {id, name, cover_image_url, cover_image_key}. PR #20 extends it with
@@ -809,7 +821,7 @@ export function castToEditorStarterTimeline(
             },
           };
           items[pmItemId] = pmItem;
-          videoTrackItemIds.push(pmItemId);
+          brollTrackItemIds.push(pmItemId);
         } else {
           // photo
           const pmAsset: ImageAsset = {
@@ -854,7 +866,7 @@ export function castToEditorStarterTimeline(
             },
           };
           items[pmItemId] = pmItem;
-          videoTrackItemIds.push(pmItemId);
+          brollTrackItemIds.push(pmItemId);
         }
       });
     }
@@ -1457,18 +1469,27 @@ export function castToEditorStarterTimeline(
   // want, top to bottom:
   //    1. Captions (always readable over everything)
   //    2. Product images / chips
-  //    3. Avatar (V1 video face)
-  //    4. Audio (no visual, irrelevant for stacking)
+  //    3. B-roll (plays over the avatar for the same block)
+  //    4. Avatar (V1 video face)
+  //    5. Audio (no visual, irrelevant for stacking)
   // Any other overlays the user adds default to the video track — placing
   // the avatar track below products keeps avatar from covering them and
   // matches the 'avatar in the back, product chip on top of avatar' layout
-  // used in the renderer.
+  // used in the renderer. B-roll gets its own track (rather than sharing
+  // videoTrackItemIds with the avatar) because it deliberately overlaps the
+  // avatar item's exact from/duration range for that block, and every item
+  // in one TimelineTrack renders at the same top/height — sharing a track
+  // would make the avatar clip an invisible drag-collision blocker sitting
+  // directly under the B-roll clip.
   const tracks: TrackType[] = [
     ...(captionTrackItemIds.length > 0
       ? [{ id: captionTrackId, items: captionTrackItemIds, hidden: false, muted: false }]
       : []),
     ...(productTrackItemIds.length > 0
       ? [{ id: productTrackId, items: productTrackItemIds, hidden: false, muted: false }]
+      : []),
+    ...(brollTrackItemIds.length > 0
+      ? [{ id: brollTrackId, items: brollTrackItemIds, hidden: false, muted: false }]
       : []),
     { id: videoTrackId, items: videoTrackItemIds, hidden: false, muted: false },
     { id: audioTrackId, items: audioTrackItemIds, hidden: false, muted: false },
