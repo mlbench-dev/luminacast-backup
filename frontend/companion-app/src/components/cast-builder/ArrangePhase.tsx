@@ -66,6 +66,17 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
       compositionWidth: state.compositionWidth,
       compositionHeight: state.compositionHeight,
       deletedAssets: state.deletedAssets,
+      // Which active blocks existed at the moment of this save. On the next
+      // load, an active block missing from the saved items is only treated
+      // as "genuinely new, must rebuild" when it's ALSO absent here —
+      // otherwise it's a block the user deliberately cut/removed from the
+      // timeline, and re-deriving fresh from cast.blocks would silently
+      // resurrect it (confirmed: cutting a block's clips, then refreshing,
+      // brought the block right back — the restore guard below couldn't
+      // tell "never saved yet" apart from "intentionally emptied out").
+      known_block_ids: (cast.blocks || [])
+        .filter((b: any) => b.is_active !== false && b.deleted_at == null)
+        .map((b: any) => b.id),
     };
     return {
       variant_id: "default",
@@ -73,7 +84,7 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
       block_regions: blockRegions,
       editor_state: editorState,
     };
-  }, []);
+  }, [cast.blocks]);
 
   // Expose flushSave to parent via ref — clears pending debounce and saves immediately
   useImperativeHandle(ref, () => ({
@@ -202,7 +213,20 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
             }
             const currentBlocks = (freshCast.blocks || [])
               .filter((b: any) => b.is_active !== false && b.deleted_at == null);
-            const allCurrentInSaved = currentBlocks.every((b: any) => blockIdsInSaved.has(b.id));
+            // A block missing from blockIdsInSaved is ambiguous on its own:
+            // it could be genuinely new (added since the last save — the
+            // saved state is stale and must be rebuilt) or one the user
+            // deliberately cut every item out of (the saved state is
+            // CORRECT and must be kept as-is, or the cut gets silently
+            // undone on every reload). known_block_ids (present on saves
+            // made after this fix) disambiguates: only a block absent from
+            // BOTH counts as "new enough to force a rebuild". Older saves
+            // predate known_block_ids and fall back to the previous
+            // (more conservative, cut-unaware) behavior.
+            const knownBlockIds: string[] | undefined = savedTimeline.editor_state.known_block_ids;
+            const allCurrentInSaved = knownBlockIds
+              ? currentBlocks.every((b: any) => knownBlockIds.includes(b.id))
+              : currentBlocks.every((b: any) => blockIdsInSaved.has(b.id));
 
             // Guard against a stale saved slot that's frozen far below the
             // block's live TTS duration — e.g. a snapshot saved before a
@@ -282,8 +306,10 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
             } else if (staleBlocks.length > 0) {
               console.log("Saved editor state has implausibly short slots — rebuilding fresh from live TTS durations. Affected block_ids:", staleBlocks);
             } else {
-              const missing = currentBlocks.filter((b: any) => !blockIdsInSaved.has(b.id)).map((b: any) => b.id);
-              console.log("Saved editor state stale — rebuilding. Missing block_ids:", missing);
+              const missing = knownBlockIds
+                ? currentBlocks.filter((b: any) => !knownBlockIds.includes(b.id)).map((b: any) => b.id)
+                : currentBlocks.filter((b: any) => !blockIdsInSaved.has(b.id)).map((b: any) => b.id);
+              console.log("Saved editor state stale — rebuilding. New block_ids not seen at last save:", missing);
             }
           }
         } catch (err) {

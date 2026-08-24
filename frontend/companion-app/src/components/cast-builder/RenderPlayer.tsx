@@ -1,7 +1,7 @@
 /**
  * RenderPlayer — Production-grade video player for render playback.
  *
- * Features: centered pop-out, 9:16 aspect, custom controls (play/pause, seek, volume,
+ * Features: centered pop-out matching the video's own aspect ratio, custom controls (play/pause, seek, volume,
  * fullscreen, PiP), keyboard shortcuts, version/quality badges, download button.
  * Portaled to document.body for proper z-index.
  */
@@ -29,6 +29,13 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
   const [buffered, setBuffered] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [pipSupported] = useState(() => typeof document !== "undefined" && "pictureInPictureEnabled" in document);
+  // Was hardcoded to 9:16 — correct for a vertical cast but squeezes a real
+  // 16:9 (or any non-vertical) render into a tall narrow box via
+  // object-contain, even though the underlying video file is fine (confirmed
+  // via ffprobe: a "squeezed" 16:9 render was genuinely 1920x1080 — only
+  // this player's fixed-aspect container was wrong). Read the video's own
+  // intrinsic dimensions once metadata loads instead of assuming an aspect.
+  const [videoAspect, setVideoAspect] = useState<number | null>(null);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -142,7 +149,15 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
         ref={containerRef}
         className="relative bg-black rounded-xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
-        style={{ maxWidth: "min(90vw, calc(90vh * 9/16))", maxHeight: "90vh", width: "480px", aspectRatio: "9/16" }}
+        style={(() => {
+          const ar = videoAspect ?? 9 / 16;
+          return {
+            width: `min(90vw, calc(90vh * ${ar}))`,
+            maxWidth: "90vw",
+            maxHeight: "90vh",
+            aspectRatio: String(ar),
+          };
+        })()}
       >
         {/* Header overlay */}
         <div className="absolute top-0 left-0 right-0 p-3 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between z-10">
@@ -187,7 +202,12 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-          onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setVolume(e.currentTarget.volume); }}
+          onLoadedMetadata={(e) => {
+            setDuration(e.currentTarget.duration);
+            setVolume(e.currentTarget.volume);
+            const { videoWidth, videoHeight } = e.currentTarget;
+            if (videoWidth > 0 && videoHeight > 0) setVideoAspect(videoWidth / videoHeight);
+          }}
           onProgress={(e) => {
             const v = e.currentTarget;
             if (v.buffered.length > 0) setBuffered(v.buffered.end(v.buffered.length - 1));
