@@ -455,44 +455,6 @@ def _caption_preset_is_unset(value) -> bool:
     return False
 
 
-async def _resolve_scene_to_background_id(scene: str, avatar_id, db):
-    """Resolve a template scene string to an ``avatar_backgrounds.id``.
-
-    Matches an AvatarBackground row for the cast's avatar whose ``name`` equals
-    the scene string (case-insensitive). When several match, the lowest ``id``
-    wins (deterministic) and the collision is logged. Returns ``None`` when the
-    scene is empty/``none`` or nothing matches — we never fabricate a row.
-    """
-    if not scene or scene == "none" or not avatar_id:
-        return None
-    from sqlalchemy import func, select
-
-    from models.avatar_background import AvatarBackground
-
-    result = await db.execute(
-        select(AvatarBackground)
-        .where(
-            AvatarBackground.avatar_id == avatar_id,
-            func.lower(AvatarBackground.name) == scene.strip().lower(),
-            AvatarBackground.deleted_at.is_(None),
-        )
-        .order_by(AvatarBackground.id)
-    )
-    matches = result.scalars().all()
-    if not matches:
-        return None
-    if len(matches) > 1:
-        _log(
-            "info",
-            "scene resolved to multiple backgrounds; choosing lowest id",
-            scene=scene,
-            avatar_id=avatar_id,
-            background_ids=[bg.id for bg in matches],
-            chosen=matches[0].id,
-        )
-    return matches[0].id
-
-
 async def _resolve_ready_mic_on_look_id(avatar_id, db) -> Optional[str]:
     """Return the id of a ready ``mic_on_*`` look for ``avatar_id``, or None.
 
@@ -607,8 +569,18 @@ async def stamp_template_defaults_on_blocks(cast, blocks, db) -> None:
     explicit user/block overrides always win. Stamps, when unset:
       * caption_preset (cast-level JSON in this schema) ← template caption_preset id
       * Block.mic_on                                    ← template voice.mic == "on"
-      * Block.background_id                             ← scene string resolved to a
-                                                          matching avatar_backgrounds row
+
+    A template's ``scene`` field used to also auto-stamp ``Block.background_id``
+    by matching it (case-insensitive, by NAME) against an AvatarBackground row —
+    removed. That match was invisible and undiscoverable (nothing in the UI ever
+    showed which scene name a template expected, or let a user set
+    background_id directly at all — it only ever happened automatically) and,
+    worse, silently outranked whatever a user explicitly picked in the Script
+    tab's Effects panel (Cast.effects_config.background), which IS a real,
+    visible, user-controlled way to set a cast's background. Existing blocks
+    that already have a background_id from before this change keep rendering
+    with it (the compositor's own read path is unchanged) — this only stops
+    NEW blocks from silently getting one stamped on.
 
     Must run AFTER ``attach_layout_template_to_cast`` so ``cast.layout_template_id``
     is known. If the selector failed (id is NULL) we skip entirely and preserve
@@ -644,7 +616,6 @@ async def stamp_template_defaults_on_blocks(cast, blocks, db) -> None:
 
         caption_preset_id = config.get("caption_preset")
         mic_default = (config.get("voice") or {}).get("mic") == "on"
-        scene = config.get("scene")
 
         # Caption preset is cast-level in this schema (Cast.caption_preset JSON).
         # Stamp the template's preset id only when the cast has none — the
@@ -652,23 +623,15 @@ async def stamp_template_defaults_on_blocks(cast, blocks, db) -> None:
         if caption_preset_id and _caption_preset_is_unset(getattr(cast, "caption_preset", None)):
             cast.caption_preset = {"id": caption_preset_id}
 
-        resolved_bg = await _resolve_scene_to_background_id(
-            scene, getattr(cast, "avatar_id", None), db
-        )
-
         for block in blocks:
             if getattr(block, "mic_on", None) is None:
                 block.mic_on = mic_default
-            if scene and scene != "none" and not getattr(block, "background_id", None):
-                if resolved_bg is not None:
-                    block.background_id = resolved_bg
 
         _log(
             "info",
             (
                 f"template defaults stamped: blocks={len(blocks)} "
-                f"caption_preset={caption_preset_id} mic={mic_default} "
-                f"scene={scene}->bg={resolved_bg or 'none'}"
+                f"caption_preset={caption_preset_id} mic={mic_default}"
             ),
             cast_id=getattr(cast, "id", None),
             layout_template_id=template_id,

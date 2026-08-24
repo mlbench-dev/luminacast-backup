@@ -459,7 +459,6 @@ async def _openrouter_error_handler(request: Request, exc: OpenRouterError):
 
 # Register routers
 from routers import auth, avatar, casts, stream, chat, products, analytics, admin, layouts, channels, webhooks, product_discovery
-from routers import avatar_backgrounds
 from routers import music as music_router
 from routers import user_videos as user_videos_router
 from routers import user_photos as user_photos_router
@@ -491,7 +490,6 @@ app.include_router(products.router)
 app.include_router(product_discovery.router)
 app.include_router(analytics.router)
 app.include_router(admin.router)
-app.include_router(avatar_backgrounds.router)
 app.include_router(layouts.router)
 app.include_router(channels.router)
 app.include_router(webhooks.router)

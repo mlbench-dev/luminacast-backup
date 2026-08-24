@@ -1,13 +1,20 @@
-"""Step 5 — template defaults feed caption / mic / scene into blocks.
+"""Step 5 — template defaults feed caption / mic into blocks.
 
 Covers ``engine.cast_generator.stamp_template_defaults_on_blocks``: at
 generation time, the cast's resolved layout template stamps each block's
-``caption_preset`` (cast-level in this schema), ``mic_on`` flag, and
-``background_id`` (scene) — but ONLY when unset. Explicit overrides always win.
+``caption_preset`` (cast-level in this schema) and ``mic_on`` flag — but ONLY
+when unset. Explicit overrides always win.
+
+A template's ``scene`` field used to also auto-stamp ``Block.background_id``
+by name-matching an AvatarBackground row — removed (see
+engine.cast_generator.stamp_template_defaults_on_blocks's docstring): it was
+invisible/undiscoverable and could silently override a user's explicit
+Effects-panel background choice. Existing skip-condition tests below still
+assert background_id stays None, since nothing ever sets it now regardless.
 
 DB-free by design (the CI "Backend Tests" unit job runs WITHOUT a Postgres
-service): a tiny fake async session answers the two SELECTs the helper issues
-(load the template by id; resolve the scene to an avatar_backgrounds row).
+service): a tiny fake async session answers the one SELECT the helper issues
+(load the template by id).
 """
 import asyncio
 
@@ -15,7 +22,6 @@ import pytest
 
 from models.block import Block
 from models.layout_template import LayoutTemplate
-from models.avatar_background import AvatarBackground
 
 
 # ── fakes ───────────────────────────────────────────────────────────────────
@@ -35,11 +41,10 @@ class _FakeResult:
 
 
 class _FakeSession:
-    """Answers the LayoutTemplate-by-id and AvatarBackground-by-name SELECTs."""
+    """Answers the LayoutTemplate-by-id SELECT."""
 
-    def __init__(self, *, template=None, backgrounds=None):
+    def __init__(self, *, template=None):
         self._template = template
-        self._backgrounds = list(backgrounds or [])
 
     async def flush(self):
         return None
@@ -49,9 +54,6 @@ class _FakeSession:
         if "layout_templates" in text:
             rows = [self._template] if self._template is not None else []
             return _FakeResult(rows)
-        if "avatar_backgrounds" in text:
-            # Mirror the helper's filter: lowest id first (the query orders by id).
-            return _FakeResult(sorted(self._backgrounds, key=lambda b: b.id))
         return _FakeResult([])
 
 
@@ -87,15 +89,6 @@ def _block(**kwargs):
     b.mic_on = kwargs.pop("mic_on", None)
     b.background_id = kwargs.pop("background_id", None)
     return b
-
-
-def _background(bg_id, name, avatar_id="ava_1"):
-    bg = AvatarBackground(
-        id=bg_id, avatar_id=avatar_id, user_id="usr_1",
-        name=name, r2_key="bg/key.png",
-    )
-    bg.deleted_at = None
-    return bg
 
 
 def _stamp(cast, blocks, session):
@@ -145,60 +138,6 @@ def test_block_mic_explicitly_set_keeps_override():
     block = _block(mic_on=False)
     _stamp(cast, [block], session)
     assert block.mic_on is False
-
-
-# ── scene resolution ─────────────────────────────────────────────────────────
-
-def test_scene_resolves_to_background_id_when_match_exists():
-    cast = _FakeCast()
-    session = _FakeSession(
-        template=_template(scene="studio"),
-        backgrounds=[_background("bg_studio", "Studio")],
-    )
-    block = _block(background_id=None)
-    _stamp(cast, [block], session)
-    assert block.background_id == "bg_studio"
-
-
-def test_scene_no_match_leaves_background_id_null():
-    cast = _FakeCast()
-    session = _FakeSession(template=_template(scene="studio"), backgrounds=[])
-    block = _block(background_id=None)
-    _stamp(cast, [block], session)
-    assert block.background_id is None
-
-
-def test_scene_multiple_matches_picks_lowest_id():
-    cast = _FakeCast()
-    session = _FakeSession(
-        template=_template(scene="studio"),
-        backgrounds=[_background("bg_zzz", "Studio"), _background("bg_aaa", "studio")],
-    )
-    block = _block(background_id=None)
-    _stamp(cast, [block], session)
-    assert block.background_id == "bg_aaa"
-
-
-def test_scene_explicit_background_id_keeps_override():
-    cast = _FakeCast()
-    session = _FakeSession(
-        template=_template(scene="studio"),
-        backgrounds=[_background("bg_studio", "Studio")],
-    )
-    block = _block(background_id="bg_user_choice")
-    _stamp(cast, [block], session)
-    assert block.background_id == "bg_user_choice"
-
-
-def test_scene_none_leaves_background_id_null():
-    cast = _FakeCast()
-    session = _FakeSession(
-        template=_template(scene="none"),
-        backgrounds=[_background("bg_studio", "Studio")],
-    )
-    block = _block(background_id=None)
-    _stamp(cast, [block], session)
-    assert block.background_id is None
 
 
 # ── skip conditions ───────────────────────────────────────────────────────

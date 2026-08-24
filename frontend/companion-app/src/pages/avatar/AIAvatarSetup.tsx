@@ -20,7 +20,6 @@ import { LiveReferenceCard } from "@/components/avatar/LiveReferenceCard";
 import { VoiceBrowser } from "@/components/avatar/VoiceBrowser";
 import { AvatarIdentityPanel } from "@/components/avatar/AvatarIdentityPanel";
 import { ClipMicToggle } from "@/components/avatar/ClipMicToggle";
-import { AvatarBackgrounds } from "@/components/avatar/AvatarBackgrounds";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { STYLE_PRESETS, MAKE_IT_REAL_CHIPS, type StylePresetId } from "@/lib/avatarStyles";
 import type { Avatar } from "@/lib/types";
@@ -1138,18 +1137,6 @@ function FacePhase({
               </div>
             )}
 
-            {/* F2: name-able background photos. Each tile shows the image, has an
-              inline-editable name (click to rename, blur or Enter to save),
-              and supports upload + AI-generation. The backend already exposes
-              GET/POST/PATCH/DELETE on /avatars/{id}/backgrounds. */}
-            {avatarId && (
-              <div className="rounded-xl border border-border bg-surface p-5">
-                <p className="text-xs text-text-muted mb-2">
-                  Optional: upload or generate scene photos for this avatar. Click a name to rename it (max 80 chars).
-                </p>
-                <AvatarBackgrounds avatarId={avatarId} />
-              </div>
-            )}
           </>
         )}
       </div>
