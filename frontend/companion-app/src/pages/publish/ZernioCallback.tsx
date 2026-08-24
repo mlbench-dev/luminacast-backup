@@ -85,7 +85,19 @@ export default function ZernioCallback() {
       // save — the accounts were connecting fine the whole time, we were
       // just reading the wrong query params. accountId is the definitive
       // answer to "which account is this" — no diffing needed at all.
-      const platform = params.get("connected") || params.get("platform") || "";
+      // Zernio's own vocabulary differs from ours for this one platform:
+      // it calls back with "connected=twitter" while every Luminacast id
+      // for X/Twitter (PlatformIcon.tsx's PLATFORMS list, SocialChannel
+      // rows, the connect modal's "already connected" check) is "x".
+      // Confirmed live: connecting X stored "twitter" straight into
+      // SocialChannel.platform, which no lookup by "x" ever matches — the
+      // channel showed a "?" fallback icon and the connect modal never
+      // recognized it as already connected, letting the user "connect"
+      // the same account again. Translate right here, at the one place
+      // Zernio's raw platform string enters the app — everywhere else the
+      // platform value already originated from our own UI (already "x").
+      const rawPlatform = params.get("connected") || params.get("platform") || "";
+      const platform = rawPlatform === "twitter" ? "x" : rawPlatform;
       const accountId = params.get("accountId") || null;
       const username = params.get("username") || null;
       let error = params.get("error") || null;
