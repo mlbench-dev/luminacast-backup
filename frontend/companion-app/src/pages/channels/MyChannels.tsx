@@ -277,9 +277,13 @@ function ChannelCard({
 
         {/* Primary avatar */}
         <div className="text-right hidden sm:block">
-          {channel.primary_avatar ? (
+          {/* Was gated on primary_avatar (an unrelated "which avatar is
+              assigned to this channel" field) instead of total_posts, so
+              any channel without a primary avatar showed "No posts yet"
+              forever regardless of how many real posts it had. */}
+          {channel.total_posts > 0 ? (
             <div className="flex items-center gap-2">
-              {avatarUrl && (
+              {channel.primary_avatar && avatarUrl && (
                 <img
                   src={avatarUrl}
                   alt={channel.primary_avatar.name || ""}
@@ -287,7 +291,9 @@ function ChannelCard({
                 />
               )}
               <div className="text-right">
-                <div className="text-xs text-white/70">{channel.primary_avatar.name}</div>
+                {channel.primary_avatar && (
+                  <div className="text-xs text-white/70">{channel.primary_avatar.name}</div>
+                )}
                 <div className="text-[10px] text-white/30">
                   {channel.total_posts} {channel.total_posts === 1 ? "post" : "posts"}
                 </div>
