@@ -10,13 +10,11 @@ const TimelineTrackUnmemoized = ({
 	visibleFrames,
 	top,
 	height,
-	effectiveMuted,
 }: {
 	track: TrackType;
 	visibleFrames: number;
 	top: number;
 	height: number;
-	effectiveMuted: boolean;
 }) => {
 	const {items} = useAllItems();
 
@@ -40,7 +38,7 @@ const TimelineTrackUnmemoized = ({
 						visibleFrames={visibleFrames}
 						top={top}
 						height={height}
-						trackMuted={effectiveMuted}
+						trackMuted={track.muted}
 					/>
 				);
 			})}

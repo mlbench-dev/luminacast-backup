@@ -1,7 +1,6 @@
 import React, {useRef} from 'react';
 import {AbsoluteFill} from 'remotion';
 import {Layer} from '../items/layer';
-import {isTrackEffectivelyMuted} from '../state/actions/solo-track';
 import {TrackType} from '../state/types';
 import {useForbidScroll} from '../utils/forbid-scroll';
 
@@ -32,7 +31,7 @@ const LayersUnmemoized: React.FC<{
 									<Layer
 										key={itemId}
 										itemId={itemId}
-										trackMuted={isTrackEffectivelyMuted(track, tracks)}
+										trackMuted={track.muted}
 									/>
 								);
 							})}

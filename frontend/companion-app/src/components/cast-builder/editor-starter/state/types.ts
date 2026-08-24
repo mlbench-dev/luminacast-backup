@@ -15,7 +15,6 @@ export type TrackType = {
 	id: string;
 	hidden: boolean;
 	muted: boolean;
-	solo?: boolean;  // Phase 4.8.5 — solo track (only this track plays audio)
 };
 
 type DeletedAsset = {

@@ -36,8 +36,8 @@ export const TopPanel: React.FC<{
         <Canvas playerRef={playerRef} loop={loop} />
         <div className="flex flex-col border-l-editor-starter-border border-l-[1px]">
           {layerPanelOpen && (
-            <div className="w-[350px] border-b border-white/10 bg-editor-starter-panel overflow-y-auto max-h-[40%]">
-              <LayerOrderPanel />
+            <div className="w-[440px] border-b border-white/10 bg-editor-starter-panel overflow-y-auto max-h-[60%]">
+              <LayerOrderPanel playerRef={playerRef} />
             </div>
           )}
           <div className="flex-1 min-h-0">
