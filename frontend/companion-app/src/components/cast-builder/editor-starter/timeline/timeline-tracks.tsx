@@ -1,4 +1,5 @@
 import React from 'react';
+import {isTrackEffectivelyMuted} from '../state/actions/solo-track';
 import {TimelineTrack} from './timeline-track/timeline-track';
 import {TimelineTrackAndLayout} from './utils/drag/calculate-track-heights';
 
@@ -6,6 +7,7 @@ const TimelineTracksUnmemoized: React.FC<{
 	tracks: TimelineTrackAndLayout[];
 	visibleFrames: number;
 }> = ({tracks, visibleFrames}) => {
+	const allTracks = tracks.map((t) => t.track);
 	return tracks.map((trackAndLayout) => {
 		return (
 			<TimelineTrack
@@ -14,6 +16,7 @@ const TimelineTracksUnmemoized: React.FC<{
 				visibleFrames={visibleFrames}
 				top={trackAndLayout.top}
 				height={trackAndLayout.height}
+				effectiveMuted={isTrackEffectivelyMuted(trackAndLayout.track, allTracks)}
 			/>
 		);
 	});

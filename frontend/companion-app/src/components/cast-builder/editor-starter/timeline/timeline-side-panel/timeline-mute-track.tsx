@@ -1,13 +1,27 @@
-import {useCallback} from 'react';
+import {useCallback, useMemo} from 'react';
 import {IconButton} from '../../icon-button';
 import {MuteIcon} from '../../icons/mute';
 import {UnmuteIcon} from '../../icons/unmute';
 import {muteTrack, unmuteTrack} from '../../state/actions/mute-track';
 import {TrackType} from '../../state/types';
-import {useWriteContext} from '../../utils/use-context';
+import {useAllItems, useWriteContext} from '../../utils/use-context';
 
 export const TimelineMuteTrack = ({track}: {track: TrackType}) => {
 	const {setState} = useWriteContext();
+	const {items} = useAllItems();
+
+	// Mute only ever silences audio/video items (see InnerLayer — captions,
+	// images, text, solids never receive trackMuted at all) — so a track
+	// made up of anything else has nothing for this button to do. Disabling
+	// it there instead of leaving it clickable-but-inert answers "why did
+	// nothing happen when I muted this?" before the question comes up.
+	const hasAudibleContent = useMemo(
+		() => track.items.some((id) => {
+			const item = items[id];
+			return item?.type === 'audio' || item?.type === 'video';
+		}),
+		[track.items, items],
+	);
 
 	const toggle = useCallback(
 		(e: React.MouseEvent) => {
@@ -40,9 +54,18 @@ export const TimelineMuteTrack = ({track}: {track: TrackType}) => {
 
 	return (
 		<IconButton
-			onClick={toggle}
+			onClick={hasAudibleContent ? toggle : undefined}
 			onPointerDown={onPointerDown}
-			aria-label={track.muted ? 'Unmute Track' : 'Mute Track'}
+			disabled={!hasAudibleContent}
+			aria-label={
+				!hasAudibleContent
+					? 'No audio on this track'
+					: track.muted
+						? 'Unmute Track'
+						: 'Mute Track'
+			}
+			title={!hasAudibleContent ? 'This track has no audio to mute' : undefined}
+			className={!hasAudibleContent ? 'cursor-not-allowed opacity-30' : undefined}
 		>
 			{track.muted ? (
 				<UnmuteIcon className="text-editor-starter-accent size-4" />
