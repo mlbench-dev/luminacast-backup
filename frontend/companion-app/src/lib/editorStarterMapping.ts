@@ -1781,6 +1781,7 @@ export function computeBlockRegions(undoableState: UndoableState): BlockRegion[]
   return regions;
 }
 
+
 /**
  * Load saved timeline or build fresh from cast data.
  * Loads saved timeline or builds fresh from cast data.
@@ -1812,7 +1813,7 @@ export async function loadOrBuildEditorStarterTimeline(
     }
   }
 
-  
+
   const result = castToEditorStarterTimeline(cast, options);
 
   // Merge saved custom_labels back into fresh items
