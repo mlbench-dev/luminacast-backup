@@ -1781,7 +1781,6 @@ export function computeBlockRegions(undoableState: UndoableState): BlockRegion[]
   return regions;
 }
 
-
 /**
  * Load saved timeline or build fresh from cast data.
  * Loads saved timeline or builds fresh from cast data.
