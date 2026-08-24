@@ -1045,6 +1045,28 @@ async def create_social_post(
     db.add(post)
     await db.commit()
 
+    # SocialChannel.total_posts is read on My Channels ("N posts") but was
+    # never written anywhere in the codebase — confirmed by grep across the
+    # whole backend, only two read sites and zero writes — so it stayed at
+    # its column default of 0 forever regardless of how many posts actually
+    # went out. Bump it for every channel this post actually targeted.
+    try:
+        target_zernio_ids = [p.accountId for p in req.platforms if p.accountId]
+        if target_zernio_ids:
+            channels_posted = (
+                await db.execute(
+                    select(SocialChannel).where(
+                        SocialChannel.user_id == ctx.workspace_owner_id,
+                        SocialChannel.zernio_account_id.in_(target_zernio_ids),
+                    )
+                )
+            ).scalars().all()
+            for ch in channels_posted:
+                ch.total_posts = (ch.total_posts or 0) + 1
+            await db.commit()
+    except Exception as _exc:
+        sentry_sdk.capture_exception(_exc)
+
     try:
         from services.cost_rates import COST_RATES
         from services.usage_tracker import log_usage
