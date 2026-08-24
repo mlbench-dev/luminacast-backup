@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Loader2, GripVertical, Trash2, Plus, Wand2, Volume2, RefreshCw, FileText,
-  Check, ChevronDown, MessageSquare, Eye, EyeOff, Undo2, Redo2, Captions, Send,
+  Check, ChevronDown, MessageSquare, Undo2, Redo2, Captions, Send,
   Type, Scissors, Smartphone, X,
 } from "lucide-react";
 import { CAPTION_PRESETS, getCaptionPreset, DEFAULT_CAPTION_PRESET_ID } from "@/lib/captionPresets";
@@ -390,9 +390,6 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
 
   // 6.6.3 — Per-block textarea refs for gesture autocomplete
   const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
-
-  // 4.7.3 — Gesture display toggle
-  const [showGestures, setShowGestures] = useState(true);
 
   // 4.7.8 — Captions toggles
   const [captionsGlobal, setCaptionsGlobal] = useState(true);
@@ -1009,12 +1006,6 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   }, 0);
   const totalDuration = Math.round((totalWords / 2.5) * 10) / 10;
 
-  // Display text helper: strips [gesture:] if hidden
-  const displayText = (text: string) => {
-    if (showGestures) return text;
-    return text.replace(/\[gesture:[^\]]*\]/g, "").replace(/\{[^}]*\}/g, "").replace(/\s+/g, " ").trim();
-  };
-
   /** Render script text with color-coded gesture [green] and prosody {cyan} markers */
   const formatScriptHtml = (text: string): string => {
     return text
@@ -1055,28 +1046,6 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
           </p>
         </div>
         <div className="flex items-center gap-4">
-          {/* 4.7.3 — Gesture display toggle */}
-          <button
-            onClick={() => setShowGestures(v => !v)}
-            className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white/70"
-            title={showGestures ? "Hide gesture markers" : "Show gesture markers"}
-          >
-            {showGestures ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-            {showGestures ? "Hide gestures" : "Show gestures"}
-          </button>
-
-          {/* 4.7.8 — Global captions toggle */}
-          <button
-            onClick={() => setCaptionsGlobal(v => !v)}
-            className={cn(
-              "flex items-center gap-1.5 text-xs px-2 py-1 rounded-full transition-all",
-              captionsGlobal ? "bg-accent/20 text-accent" : "text-white/40 hover:text-white/60"
-            )}
-          >
-            <Captions className="w-3.5 h-3.5" />
-            Captions {captionsGlobal ? "on" : "off"}
-          </button>
-
           <div className="text-right shrink-0">
             <div className="text-sm text-white/70 whitespace-nowrap">
               {totalWords} words · ~{totalDuration}s
@@ -1674,14 +1643,13 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                 {variant && (
                   <div className="space-y-1">
                     <div className="relative">
-                      <ProsodyHighlighter text={showGestures ? rawText : displayText(rawText)} />
+                      <ProsodyHighlighter text={rawText} />
                       <textarea
                         ref={el => { textareaRefs.current[block.id] = el; }}
                         data-script-textarea="true"
-                        value={showGestures ? rawText : displayText(rawText)}
+                        value={rawText}
                         onChange={e => {
-                          const newText = showGestures ? e.target.value : e.target.value;
-                          handleScriptChange(block.id, variant.id, newText);
+                          handleScriptChange(block.id, variant.id, e.target.value);
                         }}
                         onBlur={() => handleScriptBlur(block.id, variant.id, rawText)}
                         onKeyDown={e => {

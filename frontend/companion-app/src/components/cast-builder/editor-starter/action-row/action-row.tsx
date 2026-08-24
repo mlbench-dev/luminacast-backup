@@ -27,14 +27,20 @@ import {useSelectedItems, useWriteContext} from '../utils/use-context';
 // Caption Fix 6 — single-row toolbar with three semantic groups separated by
 // thin dividers. Layout (left → right):
 //
-//   [Tool ▾][Undo Redo Save]  │  Safe zones  │  Layers Captions Gestures  │  ⋯  ─── Fit ───
-//   ─────────  group 1  ────     group 2 (radio-ish)  ──── group 3 (toggles) ───  more  zoom
+//   [Tool ▾][Undo Redo Save]  │  Safe zones  │  Layers  │  ⋯  ─── Fit ───
+//   ─────────  group 1  ────     group 2 (radio-ish)  ── group 3 ──  more  zoom
 //
 // Group 2 (aspect-ratio guides) lives inside SafeZoneToggle and uses a filled
 // pill background when active. Group 3 (view toggles) uses an accent
 // underline beneath the label to distinguish toggles from radios. The red
 // Delete button is gone — destructive actions live in the ⋯ kebab menu;
 // Backspace / Delete on the canvas still delete the selected item.
+//
+// Captions and Gestures toggles were removed from group 3 — both were local
+// useState with zero consumers anywhere in the codebase (confirmed: neither
+// was ever passed to the canvas or read by any renderer), so clicking them
+// changed their own highlighted look and nothing else. Same class of dead
+// toggle as the Solo track button removed earlier.
 
 const Divider: React.FC = () => (
 	<div className="h-5 w-px shrink-0 bg-white/10" aria-hidden="true" />
@@ -131,8 +137,6 @@ export const ActionRow: React.FC<{
 	playerRef: React.RefObject<PlayerRef | null>;
 }> = ({playerRef}) => {
 	const {isOpen: layerPanelOpen, toggle: toggleLayerPanel} = useLayerPanel();
-	const [captionsEnabled, setCaptionsEnabled] = useState(true);
-	const [gesturesVisible, setGesturesVisible] = useState(true);
 
 	return (
 		<div
@@ -172,7 +176,7 @@ export const ActionRow: React.FC<{
 
 			<Divider />
 
-			{/* ── Group 3: view toggles (Layers / Captions / Gestures) ── */}
+			{/* ── Group 3: view toggles (Layers) ── */}
 			<div
 				role="group"
 				aria-label="View toggles"
@@ -185,20 +189,6 @@ export const ActionRow: React.FC<{
 					icon={<LayersIcon className="h-3.5 w-3.5" />}
 				>
 					Layers
-				</GroupLabel>
-				<GroupLabel
-					active={captionsEnabled}
-					onClick={() => setCaptionsEnabled((v) => !v)}
-					title="Toggle captions"
-				>
-					Captions
-				</GroupLabel>
-				<GroupLabel
-					active={gesturesVisible}
-					onClick={() => setGesturesVisible((v) => !v)}
-					title="Toggle gesture display"
-				>
-					Gestures
 				</GroupLabel>
 			</div>
 
