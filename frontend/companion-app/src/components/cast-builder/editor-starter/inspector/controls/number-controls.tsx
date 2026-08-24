@@ -43,13 +43,26 @@ export const NumberControl: React.FC<{
 
 	const onChange = React.useCallback(
 		(e: React.ChangeEvent<HTMLInputElement>) => {
-			const newValue = Number(e.target.value);
-			// Only call setValue if the value is a valid number
-			if (!isNaN(newValue)) {
-				setValue({num: newValue, commitToUndoStack: true});
+			const typed = Number(e.target.value);
+			// Only proceed if the value is a valid number
+			if (isNaN(typed)) {
+				return;
 			}
+			// The input's min/max attributes are browser hints only — typing
+			// (as opposed to dragging the label, which already clamps via
+			// calculatePosition below) can still submit a value outside
+			// them, e.g. 0 for the Canvas width/height fields. That reached
+			// Remotion's <Player compositionHeight={0}>, which throws and
+			// crashes the whole editor ("must be positive, but got 0").
+			// Clamp here too so both interaction paths enforce the same
+			// bounds instead of only the drag path being safe.
+			const newValue = Math.min(
+				Math.max(min ?? -Infinity, typed),
+				max ?? Infinity,
+			);
+			setValue({num: newValue, commitToUndoStack: true});
 		},
-		[setValue],
+		[setValue, min, max],
 	);
 
 	const onKeyDown = React.useCallback(
