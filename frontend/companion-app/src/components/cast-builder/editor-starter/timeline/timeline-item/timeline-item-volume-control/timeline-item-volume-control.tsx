@@ -10,7 +10,7 @@ import {AudioItem} from '../../../items/audio/audio-item-type';
 import {EditorStarterItem} from '../../../items/item-type';
 import {VideoItem} from '../../../items/video/video-item-type';
 import {changeItem} from '../../../state/actions/change-item';
-import {MAX_VOLUME_DB, MIN_VOLUME_DB} from '../../../utils/decibels';
+import {decibelToGain, MAX_VOLUME_DB, MIN_VOLUME_DB} from '../../../utils/decibels';
 import {useWriteContext} from '../../../utils/use-context';
 import {VolumeLevelIndicator} from './volume-level-indicator';
 import {VolumeLine} from './volume-line';
@@ -140,9 +140,16 @@ export function TimelineItemVolumeControl({
 							return prevItem;
 						}
 
+						// See volume-controls.tsx: mirror the dB change into
+						// metadata.volume (linear 0-1) so the render pipeline's
+						// resolve_music_volume() picks it up, not just the preview.
 						return {
 							...prevItem,
 							decibelAdjustment: newVolume,
+							metadata: {
+								...prevItem.metadata,
+								volume: Math.max(0, Math.min(1, decibelToGain(newVolume))),
+							},
 						};
 					});
 				},

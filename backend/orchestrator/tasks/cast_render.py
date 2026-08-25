@@ -1618,16 +1618,28 @@ async def _post_compose_audio_remux(
                 except (TypeError, ValueError):
                     slot_dur = 0.0
                 local = os.path.join(tmpdir, f"a_{idx}")
-                try:
-                    resp = await http.get(src, follow_redirects=True)
-                    resp.raise_for_status()
-                    with open(local, "wb") as f:
-                        f.write(resp.content)
-                except Exception as fetch_exc:
+                fetch_exc: Exception | None = None
+                # One retry: a transient CDN/network blip on the fetch used to
+                # silently drop this element (most often music, since there's
+                # usually only one) from the final mix with no visible error —
+                # the render still "succeeded", just missing that track.
+                for attempt in range(2):
+                    try:
+                        resp = await http.get(src, follow_redirects=True)
+                        resp.raise_for_status()
+                        with open(local, "wb") as f:
+                            f.write(resp.content)
+                        fetch_exc = None
+                        break
+                    except Exception as exc:
+                        fetch_exc = exc
+                if fetch_exc is not None:
+                    sentry_sdk.set_tag("remux_element_kind", kind or "narration")
                     sentry_sdk.capture_exception(fetch_exc)
                     logger.warning(
-                        "Render %s remux: failed to fetch audio element %d (%s); skipping",
-                        render_id, idx, fetch_exc,
+                        "Render %s remux: failed to fetch audio element %d (kind=%s) "
+                        "after retry (%s); skipping",
+                        render_id, idx, kind or "narration", fetch_exc,
                     )
                     continue
 
@@ -7216,19 +7228,37 @@ async def _render_async(task, render_id: str):
     # audio at its absolute slot start and extends the video to the
     # full timeline duration. Wrapped to never fail the render — on
     # error we fall back to compose's original output.
-    try:
-        await _post_compose_audio_remux(
-            r2=r2,
-            output_key=output_key,
-            timeline=timeline,
-            render_id=render_id,
-            cast_music_volume=cast_music_volume,
-        )
-    except Exception as remux_exc:
-        sentry_sdk.capture_exception(remux_exc)
-        logger.warning(
-            "Render %s post-compose remux failed (%s); leaving compose output as-is",
-            render_id, remux_exc,
+    # Retried once: this reads compose's original output fresh each attempt
+    # and only overwrites it on success, so a retry is safe/idempotent. A
+    # single transient failure (network blip fetching a track, a flaky ffmpeg
+    # invocation) used to permanently and silently drop background
+    # music/SFX from an otherwise-successful render with no visible error.
+    remux_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            await _post_compose_audio_remux(
+                r2=r2,
+                output_key=output_key,
+                timeline=timeline,
+                render_id=render_id,
+                cast_music_volume=cast_music_volume,
+            )
+            remux_error = None
+            break
+        except Exception as exc:
+            remux_error = exc
+            if attempt == 0:
+                logger.warning(
+                    "Render %s post-compose remux failed (%s); retrying once",
+                    render_id, exc,
+                )
+    if remux_error is not None:
+        sentry_sdk.set_tag("remux_failure", "music_sfx_missing")
+        sentry_sdk.capture_exception(remux_error)
+        logger.error(
+            "Render %s post-compose remux failed twice (%s); shipping compose "
+            "output WITHOUT background music/SFX",
+            render_id, remux_error,
         )
 
     # Defensive post-compose product-overlay composite. The finalize

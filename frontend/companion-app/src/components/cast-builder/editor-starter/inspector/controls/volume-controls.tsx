@@ -3,7 +3,7 @@ import {AudioItem} from '../../items/audio/audio-item-type';
 import {VideoItem} from '../../items/video/video-item-type';
 import {Slider} from '../../slider';
 import {changeItem} from '../../state/actions/change-item';
-import {MAX_VOLUME_DB, MIN_VOLUME_DB} from '../../utils/decibels';
+import {decibelToGain, MAX_VOLUME_DB, MIN_VOLUME_DB} from '../../utils/decibels';
 import {useWriteContext} from '../../utils/use-context';
 import {InspectorSubLabel} from '../components/inspector-label';
 
@@ -22,9 +22,18 @@ const VolumeControlsUnmemoized: React.FC<{
 						if (prev.decibelAdjustment === newDecibelAdjustment) {
 							return prev;
 						}
+						// Preview reads decibelAdjustment directly; the render pipeline
+						// (background music / sfx) reads metadata.volume as a linear
+						// 0-1 gain (resolve_music_volume in cast_ffmpeg_composer.py) —
+						// write both so this slider affects both, clamped to unity
+						// since the render mix can't go hotter than source level.
 						return {
 							...prev,
 							decibelAdjustment: newDecibelAdjustment,
+							metadata: {
+								...prev.metadata,
+								volume: Math.max(0, Math.min(1, decibelToGain(newDecibelAdjustment))),
+							},
 						};
 					});
 				},
