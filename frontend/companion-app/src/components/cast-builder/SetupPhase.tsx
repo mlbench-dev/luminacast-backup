@@ -1404,6 +1404,7 @@ function ProductionLevelSelector({
       price: "~$1.50",
     },
   ];
+  
   return (
     <div className="rounded-2xl border border-accent/15 bg-gradient-to-br from-accent/[0.06] to-transparent px-4 py-3 space-y-3">
       <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-accent/80 flex items-center gap-1.5">
