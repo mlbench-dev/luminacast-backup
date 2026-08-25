@@ -761,6 +761,46 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
         )}
       </div>
 
+      {/* B-roll visual source — applies to stock_photo/stock_video (pure
+          B-roll) blocks that have a product attached. "Stock" is today's
+          default (Pexels search); "AI-generated" instead makes a
+          product-only photo/video from the product's own reference photo, so
+          the b-roll actually shows the real product instead of a generic
+          stock clip. Either way this is just a default — a specific block's
+          visual can still be overridden in the Script tab. Always shown
+          (products are a required field, so this always applies once
+          generation runs) — previously gated on selectedProducts.length,
+          which buried it below Background Music and made it look missing
+          until a product was picked. */}
+      <div className="space-y-1.5">
+        <p className="text-xs text-white/40">B-roll visual source</p>
+        <div className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.02] p-1">
+          <button
+            type="button"
+            onClick={() => setBrollMediaSource("stock")}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              brollMediaSource === "stock" ? "bg-accent text-white" : "text-white/40"
+            }`}
+          >
+            Generic stock
+          </button>
+          <button
+            type="button"
+            onClick={() => setBrollMediaSource("ai_generated")}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              brollMediaSource === "ai_generated" ? "bg-accent text-white" : "text-white/40"
+            }`}
+          >
+            AI-generated from product
+          </button>
+        </div>
+        <p className="text-[10px] text-white/25">
+          {brollMediaSource === "stock"
+            ? "B-roll is auto-selected from Pexels based on script content."
+            : "B-roll is generated from your product's own photo — takes a few minutes per clip, runs in the background."}
+        </p>
+      </div>
+
       {/* LIVE-only — user b-roll upload prompt. Long-form casts weave the
           user's own clips between voiceover takes, so we surface an explicit
           "upload your clips" affordance here. Hidden entirely in recorded
@@ -1099,45 +1139,6 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           setMusicTrackPickerOpen(false);
         }}
       />
-
-      {/* B-roll visual source — applies to stock_photo/stock_video (pure
-          B-roll) blocks that have a product attached. "Stock" is today's
-          default (Pexels search); "AI-generated" instead makes a
-          product-only photo/video from the product's own reference photo, so
-          the b-roll actually shows the real product instead of a generic
-          stock clip. Either way this is just a default — a specific block's
-          visual can still be overridden in the Script tab. Only relevant
-          once a product is selected. */}
-      {selectedProducts.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-xs text-white/40">B-roll visual source</p>
-          <div className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.02] p-1">
-            <button
-              type="button"
-              onClick={() => setBrollMediaSource("stock")}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                brollMediaSource === "stock" ? "bg-accent text-white" : "text-white/40"
-              }`}
-            >
-              Generic stock
-            </button>
-            <button
-              type="button"
-              onClick={() => setBrollMediaSource("ai_generated")}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                brollMediaSource === "ai_generated" ? "bg-accent text-white" : "text-white/40"
-              }`}
-            >
-              AI-generated from product
-            </button>
-          </div>
-          <p className="text-[10px] text-white/25">
-            {brollMediaSource === "stock"
-              ? "B-roll is auto-selected from Pexels based on script content."
-              : "B-roll is generated from your product's own photo — takes a few minutes per clip, runs in the background."}
-          </p>
-        </div>
-      )}
 
       {/* Sticky-feel Generate footer */}
       <div className="flex items-center justify-between pt-2">
