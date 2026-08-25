@@ -3438,6 +3438,17 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
                     or os.getenv("CAPTION_STROKE_COLOR")
                     or _CAPTION_DEFAULT_STROKE_COLOR
                 )
+                # Preset-driven fields (positionY/box/textTransform) were
+                # computed by editorStarterMapping.ts and saved on the item,
+                # but never made it past this extraction step — the render
+                # compose step had no way to see them even though the editor
+                # sent them, so every caption fell back to a hardcoded
+                # bottom-center, no-box, no-transform look regardless of the
+                # preset actually chosen.
+                overlay["positionY"] = props.get("positionY")
+                overlay["ffmpegBoxEnabled"] = bool(props.get("ffmpegBoxEnabled"))
+                overlay["ffmpegBoxColor"] = props.get("ffmpegBoxColor") or "black@0.5"
+                overlay["textTransform"] = props.get("textTransform") or "none"
 
             # Static media fields
             if normalized_type in ("image", "overlay", "sticker", "logo", "gif"):

@@ -16,6 +16,40 @@ except ImportError:  # pragma: no cover — keeps the module importable in test 
 
 logger = logging.getLogger(__name__)
 
+# Reused from cast_ffmpeg_composer.py rather than reimplemented: font-file
+# resolution (fontFamily string → actual bundled TTF path) and drawtext
+# text escaping are small, pure, already-tested helpers with no dependency
+# back on this module, so importing them keeps the two composers' caption
+# fonts/escaping in sync instead of maintaining two copies that can drift.
+from services.cast_ffmpeg_composer import _resolve_caption_font_file, _ffmpeg_escape_drawtext
+
+
+def _drawtext_color(value, default: str) -> str:
+    """Convert a caption color to FFmpeg drawtext's accepted format.
+
+    Our stored colors are CSS-style hex (#RRGGBB or #RRGGBBAA, from the
+    caption preset table / editor color pickers). drawtext wants either a
+    named color or 0xRRGGBB[@alpha]; anything already in a format drawtext
+    understands (a bare name, or an existing "black@0.5"-style value like
+    the ffmpegBoxColor default) is passed through unchanged.
+    """
+    if not value:
+        return default
+    v = str(value).strip()
+    if v.startswith("#"):
+        hex_part = v[1:]
+        if len(hex_part) == 8:
+            rgb, aa = hex_part[:6], hex_part[6:]
+            try:
+                alpha = int(aa, 16) / 255.0
+                return f"0x{rgb}@{alpha:.2f}"
+            except ValueError:
+                return f"0x{rgb}"
+        if len(hex_part) == 6:
+            return f"0x{hex_part}"
+        return default
+    return v
+
 def _env_first(*names: str, default: str = "") -> str:
     """Return the first non-empty value found among the given env var names.
 
@@ -879,34 +913,6 @@ def _run_ffmpeg_compose(req):
         caption_overlays = [
             ov for ov in overlay_elements if ov.get("type") in ("caption", "text")
         ]
-        srt_path = None
-        if caption_overlays:
-            srt_path = os.path.join(tmpdir, "captions.srt")
-            sorted_caps = sorted(caption_overlays, key=lambda c: c.get("start_s", 0))
-            with open(srt_path, "w", encoding="utf-8") as srt_file:
-                for i, cap in enumerate(sorted_caps, 1):
-                    text = (cap.get("text") or "").strip()
-                    if not text:
-                        continue
-                    try:
-                        start = float(cap.get("start_s", 0))
-                        end = float(cap.get("end_s", start + 1))
-                    except (TypeError, ValueError) as ex:
-                        sentry_sdk.capture_exception(ex)
-                        continue
-
-                    def fmt(t):
-                        h = int(t // 3600)
-                        m = int((t % 3600) // 60)
-                        s = int(t % 60)
-                        ms = int((t - int(t)) * 1000)
-                        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-                    srt_file.write(f"{i}\n{fmt(start)} --> {fmt(end)}\n{text}\n\n")
-            logger.info(
-                "compose %s: wrote %d SRT entries to %s",
-                render_id, len(sorted_caps), srt_path,
-            )
 
         # Image and video overlays
         overlay_parts, current_label = _build_overlay_filter_parts(
@@ -914,28 +920,97 @@ def _run_ffmpeg_compose(req):
         )
         filter_parts.extend(overlay_parts)
 
-        if srt_path and os.path.exists(srt_path) and not SKIP_CAPTION_BURN_IN:
-            srt_path_escaped = srt_path.replace(":", r"\:").replace("'", r"\\'")
-            sub_label = "[subtitled]"
-            # The commas inside force_style are literal ASS-style separators,
-            # not filtergraph filter separators — but ffmpeg's top-level
-            # filtergraph parser scans for unescaped commas even inside a
-            # single-quoted option value on some builds, misreading
-            # "...,FontSize=10,..." as the start of a new chained filter
-            # ("No option name near ..."). Backslash-escaping each comma
-            # keeps the outer parser from splitting on them.
-            force_style = (
-                "FontName=DejaVu Sans,FontSize=10,"
-                "PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,"
-                "BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=30"
-            ).replace(",", "\\,")
-            filter_parts.append(
-                f"{current_label}subtitles={srt_path_escaped}"
-                f":force_style='{force_style}'"
-                f"{sub_label}"
+        # Captions used to burn in as one plain .srt file with a single
+        # HARDCODED force_style (DejaVu Sans, white, fixed size/position)
+        # applied to every line — the font/color/highlight/box/position
+        # each caption actually carries (from the editor's caption preset)
+        # was computed correctly all the way through extract_overlay_elements
+        # but never read here, so every render showed the same generic
+        # white caption regardless of what was styled in the editor. Each
+        # caption now gets its own drawtext filter using its own resolved
+        # style instead of one style for all of them.
+        if caption_overlays and not SKIP_CAPTION_BURN_IN:
+            sorted_caps = sorted(caption_overlays, key=lambda c: c.get("start_s", 0))
+            drawn = 0
+            for i, cap in enumerate(sorted_caps):
+                text = (cap.get("text") or "").strip()
+                if not text:
+                    continue
+                try:
+                    start = float(cap.get("start_s", 0))
+                    end = float(cap.get("end_s", start + 1))
+                except (TypeError, ValueError) as ex:
+                    sentry_sdk.capture_exception(ex)
+                    continue
+                if end <= start:
+                    continue
+
+                transform = (cap.get("textTransform") or "none").lower()
+                if transform == "uppercase":
+                    text = text.upper()
+                elif transform == "lowercase":
+                    text = text.lower()
+                # drawtext treats a literal newline in text= as a hard line
+                # break, but there's none in caption text here — this join
+                # only matters if a caption ever legitimately contains one.
+                escaped_text = "\n".join(
+                    _ffmpeg_escape_drawtext(ln) for ln in text.split("\n")
+                )
+
+                font_path = _resolve_caption_font_file(cap.get("fontFamily") or "", 700)
+                font_size = int(cap.get("fontSize") or 42)
+                font_color = _drawtext_color(cap.get("fontColor"), default="white")
+                stroke_width = int(cap.get("strokeWidth") or 0)
+                stroke_color = _drawtext_color(cap.get("strokeColor"), default="black")
+
+                # Horizontal: honour textAlign; default matches the old
+                # hardcoded ASS Alignment=2 (bottom-center).
+                align = (cap.get("textAlign") or "center").lower()
+                if align == "left":
+                    x_expr = "40"
+                elif align == "right":
+                    x_expr = "w-text_w-40"
+                else:
+                    x_expr = "(w-text_w)/2"
+
+                # Vertical: positionY is a 0..1 fraction of canvas height
+                # from the top, set by the caption preset (see
+                # editorStarterMapping.ts's presetPositionFraction). Falls
+                # back to a fixed bottom margin — close to the old
+                # hardcoded ASS MarginV=30 look — for legacy items saved
+                # before presets carried this field.
+                position_y = cap.get("positionY")
+                if isinstance(position_y, (int, float)):
+                    frac = max(0.0, min(1.0, float(position_y)))
+                    y_expr = f"(h-text_h)*{frac:.4f}"
+                else:
+                    y_expr = "h-text_h-40"
+
+                box_args = ""
+                if cap.get("ffmpegBoxEnabled"):
+                    box_color = _drawtext_color(cap.get("ffmpegBoxColor"), default="black@0.5")
+                    box_args = f"box=1:boxcolor={box_color}:boxborderw=12:"
+
+                out_label = f"[cap{i}]"
+                filter_parts.append(
+                    f"{current_label}drawtext="
+                    f"fontfile='{font_path}':"
+                    f"text='{escaped_text}':"
+                    f"fontsize={font_size}:"
+                    f"fontcolor={font_color}:"
+                    f"{box_args}"
+                    f"borderw={stroke_width}:bordercolor={stroke_color}:"
+                    f"x={x_expr}:y={y_expr}:"
+                    f"enable='between(t,{start},{end})'"
+                    f"{out_label}"
+                )
+                current_label = out_label
+                drawn += 1
+
+            logger.info(
+                "compose %s: added %d styled drawtext caption(s)",
+                render_id, drawn,
             )
-            current_label = sub_label
-            logger.info("compose %s: added SRT subtitles filter", render_id)
 
         # ── 6. Run final FFmpeg. ──
         output_path = os.path.join(tmpdir, "final.mp4")
