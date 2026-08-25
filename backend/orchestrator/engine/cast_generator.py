@@ -787,6 +787,10 @@ PRODUCT: {p.get('name', 'Unknown')}
 {p.get('description', '')}
 Key benefits: {', '.join(p.get('key_benefits', [])) if p.get('key_benefits') else 'N/A'}
 Price: {p.get('price', 'N/A')}
+NOTE: The PRODUCT name above is ONE single product, even if its name is long or contains
+multiple descriptive words (e.g. a pattern/occasion and an item type). Do not treat parts
+of the name as separate products or separate topics — every block must stay focused on
+this one item.
 """
 
         avatar_visual_section = ""
@@ -1369,24 +1373,37 @@ def assign_product_id_to_blocks(cast) -> int:
 # query to a few product-category keywords, stripping brand and SKU tokens.
 
 
-def shorten_stock_query(product_name: str, max_words: int = 4) -> str:
-    """Collapse a long product name into a short Pexels-friendly query.
+# Occasion / pattern descriptors that commonly lead a long e-commerce title
+# ("Christmas Tartan Plaid Table Runner and Placemats") ahead of the actual
+# product type. Left in place they push the item's *theme* into stock-media
+# queries instead of what it *is*, and — because build_pexels_query and
+# shorten_stock_query used to derive their queries independently — different
+# blocks of the same cast could resolve onto unrelated footage (holiday decor
+# vs. table linens) for the same product. Deprioritized during truncation so
+# the product-type words survive instead.
+_OCCASION_PATTERN_TOKENS = frozenset({
+    "christmas", "xmas", "halloween", "thanksgiving", "easter", "valentine",
+    "valentines", "birthday", "wedding", "holiday", "festive",
+    "tartan", "plaid", "floral", "striped", "stripe", "polka", "checkered",
+    "camo", "camouflage", "paisley", "houndstooth", "gingham",
+})
 
-    Strips the leading brand token, SKU / model-number tokens, capacity / unit
-    tokens, and generic filler, then keeps the first ``max_words`` meaningful
-    words. Aims for a query under ~30 characters that names the product
-    category, e.g.::
 
-        "MASGRE Cordless Neck and Shoulder Massager with Heat" -> "cordless neck shoulder massager"
-        "Sony WH-1000XM5 Wireless Headphones" -> "wireless headphones"
+def _meaningful_product_words(product_name: str) -> list[str]:
+    """Tokenize a product name into brand/SKU-stripped meaningful words, in
+    original order, with no length cap.
+
+    Shared by shorten_stock_query and build_pexels_query's category fallback
+    so both derive the SAME product identity instead of diverging on long
+    titles (one picking an occasion word, the other a trailing noun).
     """
     import re
 
     if not product_name:
-        return ""
+        return []
     words = [w for w in re.split(r"[^A-Za-z0-9]+", product_name) if w]
     if not words:
-        return ""
+        return []
 
     # Drop a leading ALL-CAPS brand token (MASGRE, ANKER, …) when the name has
     # more than one word, so the query leads with the product category.
@@ -1401,10 +1418,36 @@ def shorten_stock_query(product_name: str, max_words: int = 4) -> str:
         if _looks_like_sku(w):
             continue
         meaningful.append(lw)
-        if len(meaningful) >= max_words:
-            break
+    return meaningful
 
-    return " ".join(meaningful)
+
+def shorten_stock_query(product_name: str, max_words: int = 4) -> str:
+    """Collapse a long product name into a short Pexels-friendly query.
+
+    Strips the leading brand token, SKU / model-number tokens, capacity / unit
+    tokens, and generic filler, then keeps the first ``max_words`` meaningful
+    words. Aims for a query under ~30 characters that names the product
+    category, e.g.::
+
+        "MASGRE Cordless Neck and Shoulder Massager with Heat" -> "cordless neck shoulder massager"
+        "Sony WH-1000XM5 Wireless Headphones" -> "wireless headphones"
+
+    When the name has more meaningful words than ``max_words``, occasion /
+    pattern descriptors (see ``_OCCASION_PATTERN_TOKENS``) are dropped first
+    so the query still names the product type rather than just its theme,
+    e.g. "7 Pcs Christmas Tartan Plaid Table Runner and Placemats" ->
+    "pcs table runner placemats" instead of "pcs christmas tartan plaid".
+    """
+    meaningful = _meaningful_product_words(product_name)
+    if not meaningful:
+        return ""
+
+    if len(meaningful) > max_words:
+        without_descriptors = [w for w in meaningful if w not in _OCCASION_PATTERN_TOKENS]
+        if without_descriptors:
+            meaningful = without_descriptors
+
+    return " ".join(meaningful[:max_words])
 
 
 def _looks_like_sku(token: str) -> bool:
@@ -2330,6 +2373,10 @@ async def generate_smart_outline(
                 f"{p.get('description', '')}\n"
                 f"Key benefits: {benefits}\n"
                 f"Price: {p.get('price', 'N/A')}\n"
+                f"NOTE: The PRODUCT name above is ONE single product, even if its name is long or\n"
+                f"contains multiple descriptive words (e.g. a pattern/occasion and an item type).\n"
+                f"Do not treat parts of the name as separate products or separate topics — every\n"
+                f"block must stay focused on this one item.\n"
             )
 
     avatar_visual_section = ""
@@ -2719,9 +2766,15 @@ def build_pexels_query(product: dict | None, script_block: dict | None) -> list[
 
     # Infer a category from the product name when none is supplied, so the
     # generic fallback is still product-shaped ("headphones") and not "product".
+    # Reuses the same brand/SKU-stripped word list shorten_stock_query() builds
+    # (rather than an independent whitespace split) so both candidates below
+    # describe the same product instead of drifting onto different words for
+    # long, descriptor-heavy titles.
     if not category and name:
-        name_words = [w for w in name.lower().split() if w not in _GENERIC_BRAND_TOKENS]
-        category = name_words[-1] if name_words else ""
+        name_words = _meaningful_product_words(name)
+        non_descriptor_words = [w for w in name_words if w not in _OCCASION_PATTERN_TOKENS]
+        candidates_for_category = non_descriptor_words or name_words
+        category = candidates_for_category[-1] if candidates_for_category else ""
 
     candidates: list[str] = []
 
