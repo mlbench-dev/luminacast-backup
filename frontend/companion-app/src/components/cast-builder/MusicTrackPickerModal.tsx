@@ -174,9 +174,15 @@ function LibraryTab({
           onChange={(e) => setMood(e.target.value)}
           className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1.5 text-sm text-white/85 focus:outline-none focus:border-accent/40"
         >
-          <option value="">All moods</option>
+          {/* Browsers render the opened <option> popup with their own
+              default (usually white) background, ignoring the <select>'s
+              own text-white/85 which only styles its closed-state button —
+              without an explicit color here the text is invisible until
+              :hover's browser-native highlight creates contrast. Same fix
+              as the Published page's platform/date dropdowns. */}
+          <option value="" className="bg-neutral-900 text-white">All moods</option>
           {(params?.moods || []).map((m) => (
-            <option key={m.value} value={m.value}>{m.label}</option>
+            <option key={m.value} value={m.value} className="bg-neutral-900 text-white">{m.label}</option>
           ))}
         </select>
       </div>
