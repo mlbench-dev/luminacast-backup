@@ -86,6 +86,11 @@ class CastCreate(BaseModel):
     music_track_choice: Optional[str] = "auto"
     music_volume: Optional[float] = None
     caption_preset: Optional[dict] = None
+    # Default visual source for stock_photo/stock_video blocks with a
+    # product attached and no per-block override: "stock" (Pexels, default)
+    # or "ai_generated" (product-only FLUX/Kling generation). Picked at
+    # SetupPhase; per-block overrides go through PUT .../blocks/{block_id}.
+    broll_media_source: Optional[str] = "stock"
     # Cast-wide avatar background look picked at SetupPhase. Optional;
     # null means "use the avatar's own default look". The smart outline
     # endpoint propagates this onto each new block's `avatar_look_id`.
@@ -132,6 +137,7 @@ class CastResponse(BaseModel):
     final_video_url: Optional[str] = None
     music_track_choice: Optional[str] = "auto"
     music_volume: Optional[float] = None
+    broll_media_source: Optional[str] = "stock"
     default_avatar_look_id: Optional[str] = None
     live_mode_defaults: Optional[dict] = None
     user_video_ids: Optional[List[str]] = None

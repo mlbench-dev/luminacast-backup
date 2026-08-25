@@ -892,6 +892,18 @@ async def generate_smart_outline_endpoint(
         # Non-fatal — the editor can still play directly from the Pexels CDN.
         sentry_sdk.capture_exception(exc)
 
+    # 4b-bis. If the cast opted into AI-generated b-roll (Setup-tab picker),
+    # kick off product-only photo/video generation for stock_photo/stock_video
+    # blocks in the background — each Kling video call takes minutes, so this
+    # can't run in-band. The Pexels asset from step 2 stays as the fallback
+    # until (or if) this replaces it with Block.video_asset_id/image_asset_id.
+    if getattr(cast, "broll_media_source", "stock") == "ai_generated":
+        try:
+            from tasks.product_broll_tasks import generate_ai_broll_for_cast_task
+            generate_ai_broll_for_cast_task.delay(cast_id)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+
     # 4c. Kick off AI background music generation in the background.
     # Mubert v3 polling can take 5-30s; we don't block the outline
     # response on it. The cast row gets background_music_url written

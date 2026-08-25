@@ -29,6 +29,7 @@ celery_app = Celery(
         "tasks.acting_video",
         "tasks.cast_render",
         "tasks.smart_cast_tasks",
+        "tasks.product_broll_tasks",
         "tasks.social_tasks",
         "tasks.golive_compositor",
         "tasks.usage_rollup",
