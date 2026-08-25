@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Play, Pause, Volume2, VolumeX, Maximize2, Minimize2, Download, X, RotateCcw } from "lucide-react";
 import { cdnUrl } from "@/lib/cdn";
+import { downloadFile } from "@/lib/downloadFile";
 
 interface RenderPlayerProps {
   renderId: string;
@@ -172,17 +173,16 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
             )}
           </div>
           <div className="flex items-center gap-1">
-            <a
-              href={cdnUrl(videoKey)}
-              download={`render-v${version || 1}-${qualityLabel}.mp4`}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                downloadFile(cdnUrl(videoKey), `render-v${version || 1}-${qualityLabel}.mp4`);
+              }}
               className="p-1.5 rounded hover:bg-white/10 text-white/70 hover:text-white transition-colors"
               title="Download"
-              onClick={(e) => e.stopPropagation()}
             >
               <Download className="w-4 h-4" />
-            </a>
+            </button>
             <button
               onClick={onClose}
               className="p-1.5 rounded hover:bg-white/10 text-white/70 hover:text-white transition-colors"

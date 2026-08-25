@@ -11,6 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { castsApi } from "@/lib/api";
 import { cdnUrl } from "@/lib/cdn";
+import { downloadFile } from "@/lib/downloadFile";
 import type { Cast } from "@/lib/types";
 
 interface FinalizingPhaseProps {
@@ -221,10 +222,7 @@ export function FinalizingPhase({ castId, onReady, onError }: FinalizingPhasePro
 
   const handleDownload = useCallback(() => {
     if (videoUrl) {
-      const a = document.createElement("a");
-      a.href = videoUrl;
-      a.download = "cast-render.mp4";
-      a.click();
+      downloadFile(videoUrl, "cast-render.mp4");
     }
   }, [videoUrl]);
 

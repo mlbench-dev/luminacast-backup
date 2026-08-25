@@ -13,6 +13,7 @@ import { CheckCircle2, Edit3, Play, Download, ArrowLeft, FilePlus, Star, Send } 
 import { Button } from "@/components/ui/button";
 import { castsApi } from "@/lib/api";
 import { cdnUrl } from "@/lib/cdn";
+import { downloadFile } from "@/lib/downloadFile";
 import { toast } from "@/hooks/useToast";
 import type { Cast } from "@/lib/types";
 
@@ -82,10 +83,7 @@ export function ReadyPhase({ cast, onEdit, onEditScript }: ReadyPhaseProps) {
 
   const handleDownload = useCallback(() => {
     if (videoUrl) {
-      const a = document.createElement("a");
-      a.href = videoUrl;
-      a.download = `${cast.name || "cast"}.mp4`;
-      a.click();
+      downloadFile(videoUrl, `${cast.name || "cast"}.mp4`);
     }
   }, [videoUrl, cast.name]);
 
