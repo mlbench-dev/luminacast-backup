@@ -609,9 +609,31 @@ async def _attempt_overage_charge(
         from services.stripe_billing import get_stripe_billing_service
 
         stripe_service = get_stripe_billing_service()
+
+        # Same gap as the avatar-slot purchase endpoint (fixed alongside
+        # this): without an explicit payment_method, Stripe falls back to
+        # the CUSTOMER's default_payment_method — a different field from
+        # the SUBSCRIPTION's own default_payment_method, and not reliably
+        # set even for an actively-paying customer. Because this function
+        # never raises (failures silently become "pending" — see docstring),
+        # this was likely failing quietly for real customers with no
+        # visible error anywhere, just an overage charge that never
+        # actually collected. Resolve the subscription's own default
+        # payment method — the one that already charges every renewal —
+        # instead of relying on the customer-level default.
+        payment_method_id = None
+        if subscription.stripe_subscription_id:
+            try:
+                stripe_sub = await stripe_service.get_subscription(subscription.stripe_subscription_id)
+                pm = stripe_sub.get("default_payment_method")
+                payment_method_id = pm.get("id") if isinstance(pm, dict) else pm
+            except Exception as pm_exc:
+                sentry_sdk.capture_exception(pm_exc)
+
         await stripe_service.create_off_session_payment(
             amount_cents=amount_cents,
             customer_id=subscription.stripe_customer_id,
+            payment_method_id=payment_method_id,
             metadata={"owner_id": owner_id, "kind": "overage"},
         )
         return OverageBillingMethod.STRIPE_CHARGE.value

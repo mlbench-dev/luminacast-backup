@@ -244,7 +244,17 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
   const isReady = avatar.status === AvatarStatus.READY;
   const isApproved = avatar.status === AvatarStatus.APPROVED;
   const isFailed = avatar.status === AvatarStatus.FAILED;
-  const isClickableForResume = isDraft || isProcessing || isFaceCandidatesReady || isCandidatesReady || isFailed;
+  // isProcessing deliberately excluded: the wizard this navigates into
+  // (AIAvatarSetup.tsx) infers which step to resume on purely from which
+  // output fields already exist (preview_video_url, voice_id, etc.) — it
+  // has no awareness of "a render is actively in flight right now". While
+  // that render's own output field is still empty, resuming lands on an
+  // earlier, fully-editable step where Generate can be clicked again,
+  // launching a second overlapping job for the same avatar. Simplest safe
+  // fix: don't make the card clickable at all while it's mid-render — the
+  // amber "Processing..." badge (progress_step) already communicates that
+  // state, this just stops it from being an entry point back into the form.
+  const isClickableForResume = isDraft || isFaceCandidatesReady || isCandidatesReady || isFailed;
   const [showRegenInput, setShowRegenInput] = useState(false);
   const [isRecloning, setIsRecloning] = useState(false);
   const defaultScript = "Hi everyone! Welcome to my stream. I'm so excited to show you some amazing products today!";

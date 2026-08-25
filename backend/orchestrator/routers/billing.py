@@ -247,10 +247,32 @@ async def purchase_avatar_slot(
         )
     rate_cents = OVERAGE_RATE_CENTS["avatar_slot_per_month"]
     stripe_service = get_stripe_billing_service()
+
+    # create_off_session_payment only attaches a payment_method to the
+    # PaymentIntent when one is explicitly passed — otherwise Stripe falls
+    # back to the CUSTOMER's default_payment_method, which is a distinct
+    # field from the SUBSCRIPTION's own default_payment_method and isn't
+    # reliably set even for an actively-paying customer (confirmed live:
+    # cus_V4XToZl9rdarcK has an active, successfully-billed Studio
+    # subscription, yet this charge failed with Stripe's
+    # payment_intent_unexpected_state — "missing a payment method" — purely
+    # because the customer-level default was never set). The subscription's
+    # own default_payment_method is what actually charges every renewal, so
+    # resolve and use THAT instead of relying on the customer-level default.
+    payment_method_id = None
+    if subscription.stripe_subscription_id:
+        try:
+            stripe_sub = await stripe_service.get_subscription(subscription.stripe_subscription_id)
+            pm = stripe_sub.get("default_payment_method")
+            payment_method_id = pm.get("id") if isinstance(pm, dict) else pm
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+
     try:
         intent = await stripe_service.create_off_session_payment(
             amount_cents=rate_cents,
             customer_id=subscription.stripe_customer_id,
+            payment_method_id=payment_method_id,
             metadata={"owner_id": ctx.workspace_owner_id, "kind": "avatar_slot"},
         )
     except Exception as exc:

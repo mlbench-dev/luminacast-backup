@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { billingApi } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 import type { BillingIntervalId, PlanId } from "@/lib/types";
 
 function formatDollars(cents: number): string {
@@ -136,7 +137,21 @@ export function PricingPage() {
                     className="w-full"
                     variant={featured ? "default" : "outline"}
                     disabled={checkout.isPending}
-                    onClick={() => checkout.mutate(planId)}
+                    onClick={async () => {
+                      // Was firing immediately on click — for an existing
+                      // subscriber this applies the plan switch (and its
+                      // price change) right away with no confirmation at
+                      // all. A brand-new subscription still gets a natural
+                      // confirmation step on Stripe's own checkout page, so
+                      // this isn't fully redundant there either, just a
+                      // consistent "are you sure" before either path.
+                      const confirmed = await confirmAction({
+                        title: `Switch to ${plan.name}?`,
+                        text: `This updates your subscription to ${plan.name} at ${formatDollars(monthlyEquivalent)}/mo (billed ${isAnnual ? "annually" : "monthly"}).`,
+                        confirmButtonText: `Switch to ${plan.name}`,
+                      });
+                      if (confirmed) checkout.mutate(planId);
+                    }}
                   >
                     {checkout.isPending && checkout.variables === planId ? (
                       <Loader2 className="h-4 w-4 animate-spin" />

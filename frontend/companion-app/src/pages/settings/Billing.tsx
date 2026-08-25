@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { billingApi, api } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 import type { BillingDashboard } from "@/lib/types";
 
 type UsageSummary = {
@@ -155,10 +156,16 @@ export function BillingPage() {
       toast({ title: "Avatar slot added" });
       queryClient.invalidateQueries({ queryKey: ["billing-dashboard"] });
     },
-    onError: () =>
+    onError: (err: any) =>
+      // Was a hardcoded "no active subscription" message regardless of
+      // which failure actually happened — a real card-charge failure (402)
+      // and a genuinely missing subscription (400) are different problems
+      // with different fixes, and showing the wrong one sends the user to
+      // check the wrong thing. The backend already returns a specific
+      // detail for both cases; surface that instead of guessing.
       toast({
         title: "Could not add avatar slot",
-        description: "Make sure you have an active subscription with billing on file.",
+        description: err?.response?.data?.detail || "Make sure you have an active subscription with billing on file.",
         variant: "destructive",
       }),
   });
@@ -248,7 +255,16 @@ export function BillingPage() {
                   variant="ghost"
                   size="sm"
                   className="text-danger ml-auto"
-                  onClick={() => cancel.mutate()}
+                  onClick={async () => {
+                    const confirmed = await confirmAction({
+                      title: "Cancel subscription?",
+                      text: dashboard.renewal_date
+                        ? `Your plan will stay active until ${new Date(dashboard.renewal_date).toLocaleDateString()}, then it won't renew.`
+                        : "Your plan will stay active until the end of the current period, then it won't renew.",
+                      confirmButtonText: "Cancel subscription",
+                    });
+                    if (confirmed) cancel.mutate();
+                  }}
                   disabled={cancel.isPending}
                 >
                   Cancel subscription
@@ -314,7 +330,18 @@ export function BillingPage() {
                   variant="outline"
                   size="sm"
                   className="w-full"
-                  onClick={() => buySlot.mutate()}
+                  onClick={async () => {
+                    // Charges the card on file immediately, with no other
+                    // confirmation step anywhere in the flow (unlike a plan
+                    // switch or new subscription, which at least redirect
+                    // through Stripe's own checkout/portal UI).
+                    const confirmed = await confirmAction({
+                      title: "Add an avatar slot?",
+                      text: "This charges your card on file immediately for one additional avatar slot.",
+                      confirmButtonText: "Add avatar slot",
+                    });
+                    if (confirmed) buySlot.mutate();
+                  }}
                   disabled={buySlot.isPending || dashboard.is_free_tier}
                 >
                   + Add avatar slot
