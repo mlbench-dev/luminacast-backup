@@ -21,7 +21,13 @@ logger = logging.getLogger(__name__)
 # text escaping are small, pure, already-tested helpers with no dependency
 # back on this module, so importing them keeps the two composers' caption
 # fonts/escaping in sync instead of maintaining two copies that can drift.
-from services.cast_ffmpeg_composer import _resolve_caption_font_file, _ffmpeg_escape_drawtext
+from services.cast_ffmpeg_composer import (
+    _resolve_caption_font_file,
+    _ffmpeg_escape_drawtext,
+    _caption_safe_width,
+    _caption_font,
+    _wrap_text_to_width,
+)
 
 
 def _drawtext_color(value, default: str) -> str:
@@ -950,18 +956,32 @@ def _run_ffmpeg_compose(req):
                     text = text.upper()
                 elif transform == "lowercase":
                     text = text.lower()
-                # drawtext treats a literal newline in text= as a hard line
-                # break, but there's none in caption text here — this join
-                # only matters if a caption ever legitimately contains one.
-                escaped_text = "\n".join(
-                    _ffmpeg_escape_drawtext(ln) for ln in text.split("\n")
-                )
 
                 font_path = _resolve_caption_font_file(cap.get("fontFamily") or "", 700)
                 font_size = int(cap.get("fontSize") or 42)
                 font_color = _drawtext_color(cap.get("fontColor"), default="white")
                 stroke_width = int(cap.get("strokeWidth") or 0)
                 stroke_color = _drawtext_color(cap.get("strokeColor"), default="black")
+
+                # drawtext never wraps text on its own — a caption drawn as
+                # one unbroken line runs straight off the frame edges on any
+                # canvas narrower than the text (confirmed live: correct on
+                # a wide 16:9 test, but a normal-length caption clipped hard
+                # off both edges on a 4:5 render). Measure and wrap against
+                # this caption's own resolved font before drawing, the same
+                # way cast_ffmpeg_composer's own (separately-used) drawtext
+                # path already does for its captions.
+                safe_width = _caption_safe_width(canvas_w)
+                measure_font = _caption_font(font_path, font_size)
+                wrapped_lines = _wrap_text_to_width(text, measure_font, float(safe_width))
+                if not wrapped_lines:
+                    continue
+                # drawtext treats a literal newline in text= as a hard line
+                # break — join the wrapped lines with a real one so the
+                # multi-line block renders instead of running off-frame.
+                escaped_text = "\n".join(
+                    _ffmpeg_escape_drawtext(ln) for ln in wrapped_lines
+                )
 
                 # Horizontal: honour textAlign; default matches the old
                 # hardcoded ASS Alignment=2 (bottom-center).
@@ -999,6 +1019,7 @@ def _run_ffmpeg_compose(req):
                     f"fontsize={font_size}:"
                     f"fontcolor={font_color}:"
                     f"{box_args}"
+                    f"line_spacing=6:fix_bounds=1:"
                     f"borderw={stroke_width}:bordercolor={stroke_color}:"
                     f"x={x_expr}:y={y_expr}:"
                     f"enable='between(t,{start},{end})'"
