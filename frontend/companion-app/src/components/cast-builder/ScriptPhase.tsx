@@ -11,6 +11,7 @@ import { castsApi, scriptApi, avatarApi, avatarLooksApi } from "@/lib/api";
 import { FrameSlot } from "@/components/cast-builder/FrameSlot";
 import { ParallelMediaPicker } from "@/components/cast-builder/ParallelMediaPicker";
 import { ProductCarouselToggle } from "@/components/cast-builder/scriptphase/ProductCarouselToggle";
+import { VisualSourcePicker } from "@/components/cast-builder/scriptphase/VisualSourcePicker";
 import { BlockProductPicker } from "@/components/cast-builder/scriptphase/BlockProductPicker";
 import { AvatarLookPicker } from "@/components/cast-builder/scriptphase/AvatarLookPicker";
 import { BlockVisualPreview } from "@/components/cast-builder/scriptphase/BlockVisualPreview";
@@ -1509,9 +1510,13 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                 )}
 
                 {(block.category === "stock_photo" || block.category === "stock_video") && (
-                  <div className="text-[10px] text-white/30 italic">
-                    Stock media will be auto-selected from Pexels based on script content
-                  </div>
+                  <VisualSourcePicker
+                    castId={cast.id}
+                    block={block}
+                    onUpdated={() => {
+                      queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
+                    }}
+                  />
                 )}
 
                 {/* Parallel b-roll — stock photo/video that plays ON TOP of

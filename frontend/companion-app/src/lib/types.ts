@@ -235,6 +235,13 @@ export interface Block {
   layout_mode: LayoutMode;
   render_mode?: RenderMode;
   user_video_asset_id?: string;
+  /** Explicit visual-source override for stock_photo/stock_video blocks,
+   *  set via the Script tab's per-block "Visual source" picker. Points at a
+   *  ProductAsset id (the product's own uploaded/AI-generated media) and
+   *  outranks stock_media_url at render time. Null/undefined = auto
+   *  (Pexels, or the cast's broll_media_source AI-generated default). */
+  video_asset_id?: string | null;
+  image_asset_id?: string | null;
   avatar_look_id?: string;
   pip_engine?: PipEngine;
   scene_image_key?: string;
@@ -494,6 +501,10 @@ export interface Cast {
   music_track_choice?: string;
   music_volume?: number | null;
   caption_preset?: Record<string, unknown> | null;
+  /** Default visual source for stock_photo/stock_video blocks with a product
+   *  attached and no per-block override. "stock" (Pexels, default) |
+   *  "ai_generated" (product-only FLUX/Kling generation). */
+  broll_media_source?: "stock" | "ai_generated";
   default_avatar_look_id?: string | null;
   cast_type?: "recorded" | "live";
   template_id?: string | null;
@@ -526,6 +537,8 @@ export interface CastCreate {
   background_music_url?: string;
   background_music_mood?: string;
   background_music_tags?: string[];
+  /** Default visual source for stock_photo/stock_video blocks — see Cast. */
+  broll_media_source?: "stock" | "ai_generated";
   products?: ProductCreate[];
   blocks?: BlockCreate[];
 }

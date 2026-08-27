@@ -109,6 +109,17 @@ class Cast(Base):
     # MUSIC_DEFAULT_VOLUME env (0.15). Set from the visual-studio music panel.
     music_volume = Column(Float, nullable=True)
 
+    # Default visual source for stock_photo/stock_video blocks that have a
+    # product attached and no per-block override (Block.video_asset_id /
+    # image_asset_id — see ScriptPhase's per-block picker). "stock" (default)
+    # auto-populates from Pexels as before; "ai_generated" instead generates
+    # a product-only photo/video (FLUX Kontext / Kling, see
+    # services/product_ai_media.py) from the product's own reference photo.
+    # Set from the Setup-tab picker at cast creation.
+    broll_media_source = Column(
+        String(20), nullable=False, default="stock", server_default="stock"
+    )
+
     # Cast-wide default avatar background look. Picked at SetupPhase
     # creation; new blocks created via Smart Cast outline inherit this
     # via Block.avatar_look_id. The user can override per-block in

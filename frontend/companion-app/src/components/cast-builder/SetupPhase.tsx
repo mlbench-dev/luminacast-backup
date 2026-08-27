@@ -155,6 +155,13 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   // via MusicTrackPickerModal, with its url/mood/tags already stored on
   // background_music_url/background_music_mood/background_music_tags.
   const [musicChoice, setMusicChoice] = useState<string>("auto");
+  // Default visual source for stock_photo/stock_video (pure B-roll) blocks
+  // with a product attached: "stock" auto-selects from Pexels (existing
+  // behavior); "ai_generated" instead generates a product-only photo/video
+  // from the product's own reference photo (see services/product_ai_media.py).
+  // Either way the user can still override a specific block's visual in the
+  // Script tab (VisualSourcePicker).
+  const [brollMediaSource, setBrollMediaSource] = useState<"stock" | "ai_generated">("stock");
   const [musicTrackPickerOpen, setMusicTrackPickerOpen] = useState(false);
   const [pickedTrack, setPickedTrack] = useState<{ url: string; mood: string; name: string } | null>(null);
   const { data: castTemplates } = useQuery({
@@ -197,6 +204,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
       if (cast.production_level !== "standard") setAutoCast(false);
     }
     if (cast.music_track_choice) setMusicChoice(cast.music_track_choice);
+    if (cast.broll_media_source) setBrollMediaSource(cast.broll_media_source);
     if (cast.music_track_choice === "custom" && (cast as any).background_music_url) {
       const mood = (cast as any).background_music_mood || "";
       setPickedTrack({
@@ -386,6 +394,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           platform_target: targetPlatforms[0] || "tiktok",
           default_avatar_look_id: selectedLookId || "",
           music_track_choice: musicChoice,
+          broll_media_source: brollMediaSource,
           ...(musicChoice === "custom" && pickedTrack
             ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || null }
             : {}),
@@ -410,6 +419,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || undefined }
           : {}),
         music_track_choice: musicChoice,
+        broll_media_source: brollMediaSource,
         // Stage-1 template. Omitted when null (Auto / let AI choose).
         template_id: selectedTemplate || undefined,
         // LIVE-only: user-uploaded b-roll clips to weave between voiceover takes.
@@ -749,6 +759,46 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
             })}
           </div>
         )}
+      </div>
+
+      {/* B-roll visual source — applies to stock_photo/stock_video (pure
+          B-roll) blocks that have a product attached. "Stock" is today's
+          default (Pexels search); "AI-generated" instead makes a
+          product-only photo/video from the product's own reference photo, so
+          the b-roll actually shows the real product instead of a generic
+          stock clip. Either way this is just a default — a specific block's
+          visual can still be overridden in the Script tab. Always shown
+          (products are a required field, so this always applies once
+          generation runs) — previously gated on selectedProducts.length,
+          which buried it below Background Music and made it look missing
+          until a product was picked. */}
+      <div className="space-y-1.5">
+        <p className="text-xs text-white/40">B-roll visual source</p>
+        <div className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.02] p-1">
+          <button
+            type="button"
+            onClick={() => setBrollMediaSource("stock")}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              brollMediaSource === "stock" ? "bg-accent text-white" : "text-white/40"
+            }`}
+          >
+            Generic stock
+          </button>
+          <button
+            type="button"
+            onClick={() => setBrollMediaSource("ai_generated")}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              brollMediaSource === "ai_generated" ? "bg-accent text-white" : "text-white/40"
+            }`}
+          >
+            AI-generated from product
+          </button>
+        </div>
+        <p className="text-[10px] text-white/25">
+          {brollMediaSource === "stock"
+            ? "B-roll is auto-selected from Pexels based on script content."
+            : "B-roll is generated from your product's own photo — takes a few minutes per clip, runs in the background."}
+        </p>
       </div>
 
       {/* LIVE-only — user b-roll upload prompt. Long-form casts weave the

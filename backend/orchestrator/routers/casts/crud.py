@@ -219,6 +219,7 @@ async def create_cast(
         # Music handling: "off" | "auto" | "track_id:<id>". Default "auto".
         music_track_choice=req.music_track_choice or "auto",
         music_volume=req.music_volume,
+        broll_media_source=req.broll_media_source or "stock",
         # PR #162 — Stage-1 LIVE/Recorded toggle payload. Persisted as-is; both
         # nullable. The outline generator reads live_mode_defaults; the b-roll
         # pipeline reads user_video_ids.
@@ -672,6 +673,11 @@ async def get_cast(
             "background_id": getattr(block, 'background_id', None),
             "render_mode": getattr(block, 'render_mode', 'avatar_full') or 'avatar_full',
             "user_video_asset_id": getattr(block, 'user_video_asset_id', None),
+            # Explicit visual-source override (Script tab's per-block picker) —
+            # takes priority over stock_media_url at render time (see
+            # tasks/cast_render.py resolve_voiceover_visual_sources).
+            "video_asset_id": getattr(block, 'video_asset_id', None),
+            "image_asset_id": getattr(block, 'image_asset_id', None),
             "avatar_look_id": getattr(block, 'avatar_look_id', None),
             "pip_engine": getattr(block, 'pip_engine', 'infinitetalk_rendered'),
             "body_motion_start_look_id": block.body_motion_start_look_id,
@@ -875,6 +881,7 @@ async def get_cast(
         "background_music_tags": getattr(cast, "background_music_tags", None) or [],
         "music_track_choice": getattr(cast, "music_track_choice", "auto") or "auto",
         "music_volume": getattr(cast, "music_volume", None),
+        "broll_media_source": getattr(cast, "broll_media_source", "stock") or "stock",
         "caption_preset": getattr(cast, "caption_preset", None),
         "default_avatar_look_id": getattr(cast, "default_avatar_look_id", None),
         "created_at": cast.created_at.isoformat() if cast.created_at else None,
@@ -909,6 +916,7 @@ class CastPatchRequest(BaseModel):
     music_track_choice: Optional[str] = None
     music_volume: Optional[float] = None
     caption_preset: Optional[dict] = None
+    broll_media_source: Optional[str] = None
     default_avatar_look_id: Optional[str] = None
     # PR #162 — Stage-1 LIVE/Recorded toggle payload (see CastCreate).
     live_mode_defaults: Optional[dict] = None
@@ -957,6 +965,8 @@ async def update_cast(
         cast.live_mode_defaults = req.live_mode_defaults
     if getattr(req, "user_video_ids", None) is not None:
         cast.user_video_ids = req.user_video_ids
+    if getattr(req, "broll_media_source", None) is not None:
+        cast.broll_media_source = req.broll_media_source
     await db.commit()
     await db.refresh(cast)
     try:
@@ -997,6 +1007,7 @@ async def patch_cast(
         "music_track_choice",
         "music_volume",
         "caption_preset",
+        "broll_media_source",
         # PR #162 — Stage-1 LIVE/Recorded toggle payload.
         "live_mode_defaults",
         "user_video_ids",
