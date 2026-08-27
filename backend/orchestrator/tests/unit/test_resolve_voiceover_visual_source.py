@@ -173,6 +173,127 @@ def test_parallel_media_wins_over_stock_media_url(monkeypatch):
     assert result == ("video", "https://videos.pexels.com/pm.mp4")
 
 
+def test_product_own_media_outranks_generic_stock(monkeypatch):
+    """When a product resolves for the block, its OWN uploaded gallery
+    assets must be tried before the AI-picked stock (parallel_media) and
+    the coarse stock_media_url — a "promote the Galaxy S26" cast should
+    show the real S26 photos, not a random Pexels phone. Regression for the
+    old order where product media sat at the bottom and was never reached."""
+    from tasks.cast_render import resolve_voiceover_visual_sources
+
+    block = _FakeBlock(parallel_media=[
+        {"kind": "video", "url": "https://videos.pexels.com/random-phone.mp4"},
+    ])
+    block.stock_media_url = "https://images.pexels.com/photos/vivo.jpeg"
+    block.stock_media_kind = "photo"
+    block.product_id = "prod_s26"
+    block.position = 0
+
+    class _GalleryAsset:
+        def __init__(self, asset_id, media_type, key):
+            self.id = asset_id
+            self.media_type = media_type
+            self.r2_key = key
+            self.position = 0
+            self.created_at = asset_id
+
+    gallery = [
+        _GalleryAsset("pa_1", "image", "products/prod_s26/assets/pa_1.jpg"),
+        _GalleryAsset("pa_2", "image", "products/prod_s26/assets/pa_2.jpg"),
+    ]
+
+    class _Prod:
+        cover_image_key = "products/covers/s26.jpg"
+
+    class _Result:
+        def scalars(self):
+            return types.SimpleNamespace(all=lambda: gallery)
+
+    async def _fake_get(model, obj_id):
+        if getattr(model, "__name__", "") == "Product":
+            return _Prod()
+        return block
+
+    async def _fake_execute(_query):
+        return _Result()
+
+    session = types.SimpleNamespace(get=_fake_get, execute=_fake_execute)
+    r2 = types.SimpleNamespace(get_public_url=lambda key: f"https://cdn/{key}")
+
+    import tasks.cast_render as cr
+    monkeypatch.setattr(
+        cr, "resolve_effective_product_id", AsyncMock(return_value="prod_s26"),
+    )
+
+    result = _run(resolve_voiceover_visual_sources(
+        "blk_test", session, r2, "cst_test",
+    ))
+    # First two candidates are the product's own gallery photos, then the
+    # cover, and only then the generic Pexels stock.
+    assert result[0] == ("image", "https://cdn/products/prod_s26/assets/pa_1.jpg")
+    assert result[1] == ("image", "https://cdn/products/prod_s26/assets/pa_2.jpg")
+    assert result[2] == ("image", "https://cdn/products/covers/s26.jpg")
+    assert ("video", "https://videos.pexels.com/random-phone.mp4") in result
+    assert result.index(("video", "https://videos.pexels.com/random-phone.mp4")) > 2
+
+
+def test_product_media_rotates_by_block_position(monkeypatch):
+    """Consecutive product beats must not all open on the same photo — the
+    resolved gallery list is rotated by block.position."""
+    from tasks.cast_render import resolve_voiceover_visual_sources
+
+    class _GalleryAsset:
+        def __init__(self, asset_id, key):
+            self.id = asset_id
+            self.media_type = "image"
+            self.r2_key = key
+            self.position = 0
+            self.created_at = asset_id
+
+    gallery = [
+        _GalleryAsset("pa_1", "k1.jpg"),
+        _GalleryAsset("pa_2", "k2.jpg"),
+        _GalleryAsset("pa_3", "k3.jpg"),
+    ]
+
+    class _Result:
+        def scalars(self):
+            return types.SimpleNamespace(all=lambda: gallery)
+
+    async def _fake_execute(_query):
+        return _Result()
+
+    class _Prod:
+        cover_image_key = ""
+
+    async def _fake_get(model, obj_id):
+        if getattr(model, "__name__", "") == "Product":
+            return _Prod()
+        return _fake_get.block
+
+    import tasks.cast_render as cr
+    monkeypatch.setattr(
+        cr, "resolve_effective_product_id", AsyncMock(return_value="prod_x"),
+    )
+    r2 = types.SimpleNamespace(get_public_url=lambda key: f"https://cdn/{key}")
+
+    b0 = _FakeBlock()
+    b0.product_id = "prod_x"
+    b0.position = 0
+    _fake_get.block = b0
+    session = types.SimpleNamespace(get=_fake_get, execute=_fake_execute)
+    r0 = _run(resolve_voiceover_visual_sources("blk0", session, r2, "cst"))
+
+    b1 = _FakeBlock()
+    b1.product_id = "prod_x"
+    b1.position = 1
+    _fake_get.block = b1
+    r1 = _run(resolve_voiceover_visual_sources("blk1", session, r2, "cst"))
+
+    assert r0[0] == ("image", "https://cdn/k1.jpg")
+    assert r1[0] == ("image", "https://cdn/k2.jpg")
+
+
 def test_returns_none_when_nothing_resolves(monkeypatch):
     block = _FakeBlock(parallel_media=None)
     session = types.SimpleNamespace(get=AsyncMock(return_value=block))

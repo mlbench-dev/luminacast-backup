@@ -567,17 +567,25 @@ async def resolve_voiceover_visual_sources(
     block) had zero detected freeze — but was never tried.
 
       1. ("video"/"image", url) — a registered explicit asset
-         (block.video_asset_id / block.image_asset_id).
-      2. ("video"/"image", url) — each entry in block.parallel_media, the
+         (block.video_asset_id / block.image_asset_id). An explicit
+         per-block override picked in the Script tab still wins outright.
+      2. ("video"/"image", url) — the effective product's OWN uploaded
+         media: every gallery ProductAsset (videos + images), rotated by
+         block position so consecutive product beats don't all open on the
+         same photo, then the product cover image. Ranked ABOVE generic
+         stock so a "promote the Galaxy S26" cast actually shows the S26
+         instead of a random stock phone. Only applies when a product
+         resolves for the block (block.product_id, else the cast's primary
+         product — see resolve_effective_product_id).
+      3. ("video"/"image", url) — each entry in block.parallel_media, the
          AI-picked stock B-roll the script engine attaches to this beat.
-      3. ("video"/"image", url) — stock_photo/stock_video blocks' pick
+      4. ("video"/"image", url) — stock_photo/stock_video blocks' pick
          (block.stock_media_url).
-      4. ("video", url) — the effective product's first video ProductAsset.
-      5. ("image", url) — the product hero (cover_image_key), or
-         block.scene_image_key.
-      Videos are looped/trimmed to the slot by the caller; images are
-      animated with a Ken-Burns pan-zoom (NEVER shown as a still — a still
-      trips clip_mostly_frozen).
+      5. ("image", url) — block.scene_image_key.
+      Blocks with no resolvable product keep the old order (parallel_media
+      → stock_media_url → scene). Videos are looped/trimmed to the slot by
+      the caller; images are animated with a Ken-Burns pan-zoom (NEVER
+      shown as a still — a still trips clip_mostly_frozen).
 
     Returns ``[]`` when nothing resolves (the caller then renders
     avatar-idle B-roll as the last resort). Any DB / resolver error is
@@ -606,7 +614,13 @@ async def resolve_voiceover_visual_sources(
                 if url:
                     candidates.append((want, url))
 
-        # 2. AI-picked stock B-roll (block.parallel_media) — ALL entries,
+        # Build each generic-stock source group first, then decide ordering
+        # against the product's own media below. Previously these were
+        # appended straight onto `candidates` and the real product shots
+        # (added last) were never reached because Pexels always baked fine.
+        generic_stock: list[tuple[str, str]] = []
+
+        # (3) AI-picked stock B-roll (block.parallel_media) — ALL entries,
         # not just the first, so a bad first pick has a fallback candidate
         # already attached to the same block instead of skipping straight
         # to the avatar-idle Ken-Burns clip.
@@ -618,47 +632,68 @@ async def resolve_voiceover_visual_sources(
                 pm_url = pm.get("url")
                 pm_kind = pm.get("kind")
                 if pm_url and pm_kind in ("video", "photo"):
-                    candidates.append(("video" if pm_kind == "video" else "image", pm_url))
+                    generic_stock.append(("video" if pm_kind == "video" else "image", pm_url))
 
-        # 3. stock_photo / stock_video blocks carry their pick in
+        # (4) stock_photo / stock_video blocks carry their pick in
         # stock_media_url (a different field than parallel_media — set by
         # the auto-populate step, not the multi-angle b-roll attacher).
         stock_media_url = getattr(blk, "stock_media_url", None) if blk else None
         if stock_media_url:
             stock_media_kind = (getattr(blk, "stock_media_kind", None) or "").lower()
-            candidates.append(("video" if stock_media_kind == "video" else "image", stock_media_url))
+            generic_stock.append(("video" if stock_media_kind == "video" else "image", stock_media_url))
 
-        # 4/5. Resolve the effective product and pull a video first, then
-        # fall back to its hero image.
+        # (2) The effective product's OWN uploaded media — EVERY gallery
+        # asset (videos and images), not just the first video + cover. The
+        # resolved list is rotated by block position so consecutive product
+        # beats don't all open on the same photo.
+        product_media: list[tuple[str, str]] = []
         product_id = await resolve_effective_product_id(blk, session, cast_id)
         if product_id:
             res = await session.execute(
                 _sa_select(_ProductAsset)
                 .where(_ProductAsset.product_id == product_id)
-                .where(_ProductAsset.media_type == "video")
-                .order_by(_ProductAsset.position.asc())
-                .limit(1)
+                .where(_ProductAsset.media_type.in_(("video", "image")))
+                .order_by(
+                    _ProductAsset.position.asc(),
+                    _ProductAsset.created_at.asc(),
+                    _ProductAsset.id.asc(),
+                )
             )
-            vid = res.scalars().first()
-            vkey = getattr(vid, "r2_key", None) if vid else None
-            if vkey:
-                url = r2.get_public_url(vkey)
-                if url:
-                    candidates.append(("video", url))
+            resolved: list[tuple[str, str]] = []
+            for a in res.scalars().all():
+                key = getattr(a, "r2_key", None)
+                if not key:
+                    continue
+                url = r2.get_public_url(key)
+                if not url:
+                    continue
+                resolved.append(("video" if a.media_type == "video" else "image", url))
+            if resolved:
+                offset = (getattr(blk, "position", 0) or 0) % len(resolved)
+                product_media = resolved[offset:] + resolved[:offset]
 
+            # Cover image as a final product-media entry when it isn't
+            # already one of the gallery asset rows above.
             prod = await session.get(_Product, product_id)
             ckey = getattr(prod, "cover_image_key", None) if prod else None
             if ckey:
-                url = r2.get_public_url(ckey)
-                if url:
-                    candidates.append(("image", url))
+                curl = r2.get_public_url(ckey)
+                if curl and all(curl != u for _, u in product_media):
+                    product_media.append(("image", curl))
 
-        # Scene image key on the block.
+        # (5) Scene image key on the block — last-resort still.
+        scene_tail: list[tuple[str, str]] = []
         scene_key = getattr(blk, "scene_image_key", None) if blk else None
         if scene_key:
             url = r2.get_public_url(scene_key)
             if url:
-                candidates.append(("image", url))
+                scene_tail.append(("image", url))
+
+        # Assemble in priority order: explicit override (already appended
+        # above) → the product's own media → generic stock → scene still.
+        candidates.extend(product_media)
+        candidates.extend(generic_stock)
+        candidates.extend(scene_tail)
 
         return candidates
     except Exception as e:
