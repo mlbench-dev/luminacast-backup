@@ -45,6 +45,36 @@ export interface ArrangePhaseHandle {
 /** Auto-save debounce interval (ms) — matches the old Twick auto-save */
 const AUTO_SAVE_DEBOUNCE_MS = 1500;
 
+/** Audible fallback bed level when the cast has no explicit music_volume.
+ *  Matches the historical MUSIC_DEFAULT_VOLUME and editorStarterMapping. */
+const AUDIBLE_MUSIC_BED_DEFAULT = 0.15;
+
+/** Overwrite the volume of every "music" audio item in a restored editor
+ *  state. Used both to apply a fresh Arrange-tab slider value without losing
+ *  the user's timeline arrangement, and to heal older saved timelines whose
+ *  auto music item predates the metadata.volume stamp (played full-volume in
+ *  preview, near-silent in the render). */
+function normalizeMusicVolumeInState(
+  state: UndoableState,
+  volLinear: number,
+): UndoableState {
+  const v = Math.max(0, Math.min(1, volLinear));
+  const db = v <= 0 ? -60 : Math.max(-60, Math.min(20, 20 * Math.log10(v)));
+  let changed = false;
+  const items: Record<string, any> = { ...state.items };
+  for (const [id, item] of Object.entries(items)) {
+    if ((item as any)?.type === "audio" && (item as any)?.metadata?.kind === "music") {
+      items[id] = {
+        ...(item as any),
+        decibelAdjustment: db,
+        metadata: { ...(item as any).metadata, volume: v },
+      };
+      changed = true;
+    }
+  }
+  return changed ? ({ ...state, items } as UndoableState) : state;
+}
+
 export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(function ArrangePhase({ cast, onEditScript, onEdited }, ref) {
   const navigate = useNavigate();
   const [initialState, setInitialState] = useState<UndoableState | null>(null);
@@ -52,6 +82,39 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const changeCountRef = useRef(0);
   const latestStateRef = useRef<UndoableState | null>(null);
+
+  // ── Background-music volume (Arrange-tab slider) ──────────────────────
+  const hasMusic = !!cast.background_music_url && (cast.music_track_choice ?? "auto") !== "off";
+  const [musicVolume, setMusicVolume] = useState<number>(
+    typeof cast.music_volume === "number" ? cast.music_volume : AUDIBLE_MUSIC_BED_DEFAULT,
+  );
+  const musicVolTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Set when the slider commits a new value — the load effect picks this up
+  // to re-stamp the restored timeline's music item (preserving arrangement)
+  // and then clears it.
+  const pendingMusicVolumeRef = useRef<number | null>(null);
+  // Bumping this forces the editor subtree to remount so the new music
+  // volume is heard in the preview.
+  const [editorReloadKey, setEditorReloadKey] = useState(0);
+
+  const commitMusicVolume = useCallback((next: number) => {
+    setMusicVolume(next);
+    if (musicVolTimerRef.current) clearTimeout(musicVolTimerRef.current);
+    musicVolTimerRef.current = setTimeout(async () => {
+      try {
+        await castsApi.patch(cast.id, { music_volume: next });
+        pendingMusicVolumeRef.current = next;
+        // Mirror handleRefreshTimeline: the keyed remount re-fires an initial
+        // state-change we don't want counted as a fresh user edit.
+        changeCountRef.current = 0;
+        setEditorReloadKey((k) => k + 1);
+        onEdited?.();
+      } catch (e) {
+        console.error("music_volume patch failed:", e);
+        toast({ title: "Couldn't save music volume", variant: "destructive" });
+      }
+    }, 400);
+  }, [cast.id, onEdited]);
 
   /** Build the save payload from current editor state */
   const buildSavePayload = useCallback((state: UndoableState) => {
@@ -179,6 +242,11 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
   // Load saved editor state or build fresh timeline from cast blocks
   useEffect(() => {
     let cancelled = false;
+    // Consumed once per run: a music-volume slider commit that bumped
+    // editorReloadKey leaves the new value here for the restore branch to
+    // re-stamp onto the timeline.
+    const pendingMusicVolume = pendingMusicVolumeRef.current;
+    pendingMusicVolumeRef.current = null;
     (async () => {
       try {
         // Always re-fetch cast so newly added blocks are included
@@ -317,6 +385,31 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
         }
 
         if (restoredState && !cancelled) {
+          // Apply the Arrange-tab music-volume slider without discarding the
+          // user's timeline arrangement. Two cases:
+          //  - a slider commit just bumped editorReloadKey → re-stamp with the
+          //    pending value;
+          //  - an older saved timeline whose auto music item has no
+          //    metadata.volume (full-volume in preview, ~silent in render) →
+          //    heal it to the cast's current music_volume.
+          const pending = pendingMusicVolume;
+          const savedMusicHasVolume = Object.values(
+            (restoredState.items || {}) as Record<string, any>,
+          ).some(
+            (it) =>
+              it?.type === "audio" &&
+              it?.metadata?.kind === "music" &&
+              typeof it?.metadata?.volume === "number",
+          );
+          const targetVol =
+            pending != null
+              ? pending
+              : typeof freshCast.music_volume === "number"
+                ? freshCast.music_volume
+                : AUDIBLE_MUSIC_BED_DEFAULT;
+          if (pending != null || !savedMusicHasVolume) {
+            restoredState = normalizeMusicVolumeInState(restoredState, targetVol);
+          }
           setInitialState(restoredState);
           setLoading(false);
           return;
@@ -367,12 +460,16 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
       }
     })();
     return () => { cancelled = true; };
-  }, [cast.id, cast.avatar_id]);
+    // editorReloadKey bumps when the music-volume slider commits — re-run so
+    // the restored timeline is re-stamped with the new bed level and the
+    // editor subtree (keyed on the same value) remounts to play it.
+  }, [cast.id, cast.avatar_id, editorReloadKey]);
 
-  // Cleanup timer on unmount
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (musicVolTimerRef.current) clearTimeout(musicVolTimerRef.current);
     };
   }, []);
 
@@ -526,8 +623,32 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
           )}
         </div>
       )}
+      {/* Background-music volume — the auto/generated bed plays under the
+          narration in both the preview and the final render. This slider
+          writes cast.music_volume, which the renderer reads directly and the
+          editor preview picks up on the keyed remount below. */}
+      {hasMusic && (
+        <div className="flex items-center gap-3 bg-white/[0.03] border-b border-white/10 px-4 py-2 text-xs text-white/60 shrink-0">
+          <span className="shrink-0 font-medium text-white/70">Music volume</span>
+          <input
+            type="range"
+            min={0}
+            max={0.6}
+            step={0.01}
+            value={musicVolume}
+            onChange={(e) => commitMusicVolume(Number(e.target.value))}
+            className="flex-1 max-w-xs accent-accent"
+            aria-label="Background music volume"
+          />
+          <span className="shrink-0 tabular-nums w-10 text-right text-white/50">
+            {Math.round((musicVolume / 0.6) * 100)}%
+          </span>
+          <span className="shrink-0 text-white/30">Applies to preview &amp; render</span>
+        </div>
+      )}
       <div className="flex-1 min-h-0 overflow-hidden">
         <LuminacastEditor
+          key={`ed-${cast.id}-${editorReloadKey}`}
           cast={cast}
           initialUndoableState={initialState}
           onUndoableStateChange={handleStateChange}

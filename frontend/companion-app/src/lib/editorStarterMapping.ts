@@ -1426,6 +1426,26 @@ export function castToEditorStarterTimeline(
   // second voice track.
   const musicChoice = (cast as any).music_track_choice || "auto";
   if (cast.background_music_url && musicChoice !== "off" && cursor > 0) {
+    // Resolve the bed volume ONCE here so the editor preview and the final
+    // render agree. Previously the auto item was created at decibelAdjustment=0
+    // (full volume in the Remotion preview) with no metadata.volume, so the
+    // renderer fell through to its hard-coded DEFAULT_MUSIC_VOLUME (~0.0044,
+    // ≈ -47 dB) — audible while arranging, inaudible in the exported MP4.
+    // Stamping metadata.volume makes the composer's resolve_music_volume()
+    // pick it up as the top-precedence `element_prop`; decibelAdjustment is
+    // the same value in dB for the preview. cast.music_volume (set by the
+    // Arrange-tab slider) wins; otherwise fall back to an audible bed that
+    // matches the historical MUSIC_DEFAULT_VOLUME (0.15).
+    const AUDIBLE_MUSIC_BED_DEFAULT = 0.15;
+    const rawMusicVol = (cast as any).music_volume;
+    const musicVolLinear =
+      typeof rawMusicVol === "number" && isFinite(rawMusicVol)
+        ? Math.max(0, Math.min(1, rawMusicVol))
+        : AUDIBLE_MUSIC_BED_DEFAULT;
+    const musicVolDb =
+      musicVolLinear <= 0
+        ? -60
+        : Math.max(-60, Math.min(20, 20 * Math.log10(musicVolLinear)));
     const musicAssetId = "asset_music_bg";
     const musicAsset: AudioAsset = {
       type: "audio",
@@ -1453,7 +1473,7 @@ export function castToEditorStarterTimeline(
       opacity: 1,
       isDraggingInTimeline: false,
       audioStartFromInSeconds: 0,
-      decibelAdjustment: 0,
+      decibelAdjustment: musicVolDb,
       playbackRate: 1,
       audioFadeInDurationInSeconds: 0,
       audioFadeOutDurationInSeconds: 0,
@@ -1461,6 +1481,8 @@ export function castToEditorStarterTimeline(
         track_type: "audio_music",
         kind: "music",
         source: "auto",
+        // Linear gain the renderer reads (resolve_music_volume → element_prop).
+        volume: musicVolLinear,
       },
     };
     items[musicItemId] = musicItem;

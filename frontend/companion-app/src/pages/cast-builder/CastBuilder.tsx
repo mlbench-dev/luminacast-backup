@@ -150,12 +150,16 @@ export function CastBuilderPage() {
     setPhase(statusToPhase(updatedCast.status));
   }, []);
 
-  const handleCastCreated = useCallback(async (newCast: Cast, wasExisting?: boolean) => {
+  const handleCastCreated = useCallback(async (newCast: Cast, wasExisting?: boolean, forceRegenerate?: boolean) => {
     setCast(newCast);
     // wasExisting = the user navigated back to Setup on an already-generated
     // cast and hit Continue again (e.g. just to tweak duration/quality) —
     // outline + script already exist and may have been reviewed/edited, so
     // don't regenerate and clobber them. Only fresh casts get a script run.
+    //
+    // forceRegenerate = the user changed the brief/duration back in Setup and
+    // explicitly confirmed a rebuild (SetupPhase prompts first). Run the same
+    // outline + script pass the Script tab's "Regenerate" button uses.
     if (!wasExisting) {
       setPhase("generating_script");
       try {
@@ -163,10 +167,19 @@ export function CastBuilderPage() {
       } catch (err) {
         console.error("Auto script gen failed:", err);
       }
+    } else if (forceRegenerate) {
+      setPhase("generating_script");
+      try {
+        await castsApi.generateOutline(newCast.id);
+        await castsApi.generateScripts(newCast.id);
+        queryClient.invalidateQueries({ queryKey: ["cast", newCast.id] });
+      } catch (err) {
+        console.error("Setup-triggered script regen failed:", err);
+      }
     }
     setPhase("script");
     navigate(`/cast-builder/${newCast.id}/script`, { replace: true });
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   const handleScriptDone = useCallback((updatedCast: Cast) => {
     setCast(updatedCast);

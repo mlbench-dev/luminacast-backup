@@ -72,6 +72,24 @@ const TEMPLATE_ICONS: Record<string, LucideIcon> = {
   mic_on_creator_vlog: Camera,
 };
 
+// Stable string form of the fields that (a) shape the generated script AND
+// (b) can actually be persisted on an existing cast via PATCH — currently
+// the brief and the target duration. Structural fields (avatar, products,
+// quality, template, production level, cast type) are intentionally excluded:
+// the PATCH endpoint doesn't accept them on an existing cast, so changing one
+// then "regenerating" would rebuild from stale values. Those still require
+// starting a new cast.
+function serializeRegenFields(f: {
+  description: string;
+  durationManual: boolean;
+  durationTarget: number;
+}): string {
+  return JSON.stringify({
+    description: f.description.trim(),
+    durationTarget: f.durationManual ? f.durationTarget : null,
+  });
+}
+
 interface SetupPhaseProps {
   // Present when navigating back to Setup after the cast already exists
   // (e.g. via the wizard's Back button from Script/Arrange). Used to
@@ -84,7 +102,15 @@ interface SetupPhaseProps {
   // The parent needs this to decide whether to auto-trigger script
   // generation — doing that unconditionally would silently overwrite a
   // script the user already reviewed/edited on an existing cast.
-  onCreated: (cast: Cast, wasExisting?: boolean) => void;
+  //
+  // `forceRegenerate` overrides that: it's set when the user came back to
+  // Setup, changed a script-affecting field (brief, template, avatar,
+  // products, quality, production level, duration, cast type), and hit
+  // "Generate Script" again — a deliberate request to rebuild the outline +
+  // script from the new settings, so the parent regenerates even though the
+  // cast already existed. Without this the only way to pick up Setup changes
+  // was the Script tab's separate "Regenerate" button.
+  onCreated: (cast: Cast, wasExisting?: boolean, forceRegenerate?: boolean) => void;
   // True while a render is actively queued/baking/composing for this cast.
   // The render task reads several fields (quality, duration, script/voice)
   // live rather than from a frozen snapshot, so an edit here mid-render can
@@ -180,6 +206,13 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   // one-time hydration, not a live sync, and shouldn't fight the user's
   // subsequent edits on every re-render.
   const hydratedFromCastRef = useRef(false);
+  // Snapshot of the script-affecting fields as they were when we hydrated an
+  // existing cast. On resubmit we diff against this to decide whether hitting
+  // "Generate Script" should rebuild the outline + script (see createMutation).
+  const regenSnapshotRef = useRef<string | null>(null);
+  // Set inside mutationFn when the user confirms a regeneration; read in
+  // onSuccess to tell the parent to rebuild.
+  const regenRequestedRef = useRef(false);
   useEffect(() => {
     if (!cast || hydratedFromCastRef.current) return;
     hydratedFromCastRef.current = true;
@@ -213,6 +246,11 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
         name: mood ? `Custom track (${mood})` : "Custom track",
       });
     }
+    regenSnapshotRef.current = serializeRegenFields({
+      description: cast.description || "",
+      durationManual: cast.duration_target_seconds != null,
+      durationTarget: cast.duration_target_seconds ?? 60,
+    });
   }, [cast]);
 
   // When Auto Cast is ON we lock quality to HD and hide the slider — the
@@ -399,6 +437,33 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
             ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || null }
             : {}),
         });
+
+        // If the brief or target duration changed since we hydrated, the
+        // user came back specifically to rework the script — hitting
+        // "Generate Script" should rebuild it, not silently no-op (the old
+        // behavior, which forced them to the Script tab's Regenerate button).
+        regenRequestedRef.current = false;
+        const currentSnapshot = serializeRegenFields({
+          description,
+          durationManual,
+          durationTarget,
+        });
+        if (
+          regenSnapshotRef.current !== null &&
+          currentSnapshot !== regenSnapshotRef.current
+        ) {
+          const proceed =
+            typeof window === "undefined" ||
+            window.confirm(
+              "Regenerate the script with your new settings? This replaces the current script and any edits you've made to it.",
+            );
+          if (proceed) {
+            regenRequestedRef.current = true;
+            // Keep the baseline in sync so a second Continue without further
+            // edits doesn't prompt again.
+            regenSnapshotRef.current = currentSnapshot;
+          }
+        }
         return patched;
       }
 
@@ -467,11 +532,14 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
     },
     onSuccess: (resultCast) => {
       if (cast) {
-        toast({ title: "Cast updated" });
+        toast({
+          title: regenRequestedRef.current ? "Regenerating script…" : "Cast updated",
+        });
       } else {
         toast({ title: "Cast created!", description: "Generating script..." });
       }
-      onCreated(resultCast, !!cast);
+      onCreated(resultCast, !!cast, regenRequestedRef.current);
+      regenRequestedRef.current = false;
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err?.response?.data?.detail || err.message, variant: "destructive" });
