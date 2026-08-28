@@ -1,51 +1,73 @@
-import { useEffect } from "react";
+import { useEffect, lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { Loader2 } from "lucide-react";
 import { queryClient } from "@/lib/api";
 import { Toaster } from "@/components/ui/toaster";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ProtectedRoute } from "@/components/layout/ProtectedRoute";
 import { PublicRoute } from "@/components/layout/PublicRoute";
-import { useAuthStore } from "@/stores/authStore";
-import { LoginPage } from "@/pages/auth/Login";
-import { SignupPage } from "@/pages/auth/Signup";
-import { ForgotPasswordPage } from "@/pages/auth/ForgotPassword";
-import { ResetPasswordPage } from "@/pages/auth/ResetPassword";
-import { ReactivateAccountPage } from "@/pages/auth/ReactivateAccount";
-import { AcceptInvitePage } from "@/pages/teams/AcceptInvite";
-import { CastBuilderPage } from "@/pages/cast-builder/CastBuilder";
-import { MyCastsPage } from "@/pages/cast-builder/MyCasts";
-import { CastDetailPage } from "@/pages/cast-builder/CastDetail";
-import { LiveControlPage } from "@/pages/live-stream/LiveControl";
-import { SetupPage } from "@/pages/avatar/Setup";
-import { AnalyticsPage } from "@/pages/analytics/Analytics";
-import { ReviewQueuePage } from "@/pages/review/ReviewQueue";
-import { AdminPage } from "@/pages/admin/Admin";
-import { StreamKeysPage } from "@/pages/settings/StreamKeys";
-import { MyChannelsPage } from "@/pages/settings/MyChannels";
-import { TeamPage } from "@/pages/teams/Team";
-import { BillingPage } from "@/pages/settings/Billing";
-import { PricingPage } from "@/pages/settings/Pricing";
-import { SettingsProfilePage, SettingsPasswordPage, SettingsDeleteAccountPage } from "@/pages/settings/Settings";
 import { SettingsLayout } from "@/components/layout/SettingsLayout";
-import { ProductLibraryPage } from "@/pages/cast-builder/ProductLibrary";
-import { AIAvatarSetupPage } from "@/pages/avatar/AIAvatarSetup";
-import { EditAvatarPage } from "@/pages/avatar/EditAvatarPage";
-import { PromptAdminPage } from "@/pages/admin/PromptAdmin";
-import { AdminCostsPage } from "@/pages/admin/AdminCosts";
-import { ControlPanelPage } from "@/pages/admin/ControlPanel";
-import { MusicPage } from "@/pages/music/Music";
-import { MyVideosPage } from "@/pages/media-library/MyVideos";
-import { DashboardPage } from "@/pages/dashboard/Dashboard";
-import GoLive from "@/pages/live-stream/GoLive";
-import LiveMonitor from "@/pages/live-stream/LiveMonitor";
-import PublishCast from "@/pages/publish/PublishCast";
-import Comments from "@/pages/publish/Comments";
-import PublishHub from "@/pages/publish/PublishHub";
-import SocialChannelsPage from "@/pages/channels/MyChannels";
-import ZernioCallback from "@/pages/publish/ZernioCallback";
+import { useAuthStore } from "@/stores/authStore";
 import { UserRole } from "@/lib/types";
+
+// Route pages are code-split so a given screen only downloads/parses/keeps in
+// memory the JS it actually needs. The Cast Builder in particular drags in the
+// whole Remotion editor (~90k LOC + @remotion/*); before this it was parsed
+// and resident on every page, including login. Suspense (below) covers the
+// brief async load. `.then(m => ({ default: ... }))` adapts our named exports
+// to what React.lazy expects.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const lz = (f: () => Promise<{ default: any }>) => lazy(f);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const named = (imp: () => Promise<any>, key: string) =>
+  lazy(() => imp().then((m) => ({ default: m[key] })));
+
+const LoginPage = named(() => import("@/pages/auth/Login"), "LoginPage");
+const SignupPage = named(() => import("@/pages/auth/Signup"), "SignupPage");
+const ForgotPasswordPage = named(() => import("@/pages/auth/ForgotPassword"), "ForgotPasswordPage");
+const ResetPasswordPage = named(() => import("@/pages/auth/ResetPassword"), "ResetPasswordPage");
+const ReactivateAccountPage = named(() => import("@/pages/auth/ReactivateAccount"), "ReactivateAccountPage");
+const AcceptInvitePage = named(() => import("@/pages/teams/AcceptInvite"), "AcceptInvitePage");
+const CastBuilderPage = named(() => import("@/pages/cast-builder/CastBuilder"), "CastBuilderPage");
+const MyCastsPage = named(() => import("@/pages/cast-builder/MyCasts"), "MyCastsPage");
+const LiveControlPage = named(() => import("@/pages/live-stream/LiveControl"), "LiveControlPage");
+const SetupPage = named(() => import("@/pages/avatar/Setup"), "SetupPage");
+const AnalyticsPage = named(() => import("@/pages/analytics/Analytics"), "AnalyticsPage");
+const ReviewQueuePage = named(() => import("@/pages/review/ReviewQueue"), "ReviewQueuePage");
+const AdminPage = named(() => import("@/pages/admin/Admin"), "AdminPage");
+const StreamKeysPage = named(() => import("@/pages/settings/StreamKeys"), "StreamKeysPage");
+const MyChannelsPage = named(() => import("@/pages/settings/MyChannels"), "MyChannelsPage");
+const TeamPage = named(() => import("@/pages/teams/Team"), "TeamPage");
+const BillingPage = named(() => import("@/pages/settings/Billing"), "BillingPage");
+const PricingPage = named(() => import("@/pages/settings/Pricing"), "PricingPage");
+const SettingsProfilePage = named(() => import("@/pages/settings/Settings"), "SettingsProfilePage");
+const SettingsPasswordPage = named(() => import("@/pages/settings/Settings"), "SettingsPasswordPage");
+const SettingsDeleteAccountPage = named(() => import("@/pages/settings/Settings"), "SettingsDeleteAccountPage");
+const ProductLibraryPage = named(() => import("@/pages/cast-builder/ProductLibrary"), "ProductLibraryPage");
+const AIAvatarSetupPage = named(() => import("@/pages/avatar/AIAvatarSetup"), "AIAvatarSetupPage");
+const EditAvatarPage = named(() => import("@/pages/avatar/EditAvatarPage"), "EditAvatarPage");
+const AdminCostsPage = named(() => import("@/pages/admin/AdminCosts"), "AdminCostsPage");
+const ControlPanelPage = named(() => import("@/pages/admin/ControlPanel"), "ControlPanelPage");
+const MusicPage = named(() => import("@/pages/music/Music"), "MusicPage");
+const MyVideosPage = named(() => import("@/pages/media-library/MyVideos"), "MyVideosPage");
+const DashboardPage = named(() => import("@/pages/dashboard/Dashboard"), "DashboardPage");
+const GoLive = lz(() => import("@/pages/live-stream/GoLive"));
+const LiveMonitor = lz(() => import("@/pages/live-stream/LiveMonitor"));
+const PublishCast = lz(() => import("@/pages/publish/PublishCast"));
+const Comments = lz(() => import("@/pages/publish/Comments"));
+const PublishHub = lz(() => import("@/pages/publish/PublishHub"));
+const SocialChannelsPage = lz(() => import("@/pages/channels/MyChannels"));
+const ZernioCallback = lz(() => import("@/pages/publish/ZernioCallback"));
+
+function RouteFallback() {
+  return (
+    <div className="flex h-screen w-full items-center justify-center bg-[#0a0a0a]">
+      <Loader2 className="h-6 w-6 animate-spin text-white/40" />
+    </div>
+  );
+}
 
 export default function App() {
   const hydrate = useAuthStore((s) => s.hydrate);
@@ -54,6 +76,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary>
         <BrowserRouter>
+          <Suspense fallback={<RouteFallback />}>
           <Routes>
             {/* Public auth routes — protected so logged-in users can't access them */}
             <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
@@ -159,6 +182,7 @@ export default function App() {
             {/* Catch-all redirect */}
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
+          </Suspense>
         </BrowserRouter>
       </ErrorBoundary>
       <Toaster />

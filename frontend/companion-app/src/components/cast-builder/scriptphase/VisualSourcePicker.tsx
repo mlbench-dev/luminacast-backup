@@ -138,7 +138,7 @@ export function VisualSourcePicker({ castId, block, onUpdated }: VisualSourcePic
           )}
         >
           {block.stock_media_thumbnail ? (
-            <img src={block.stock_media_thumbnail} className="w-full h-full object-cover" alt="" />
+            <img src={block.stock_media_thumbnail} className="w-full h-full object-cover" alt="" loading="lazy" decoding="async" />
           ) : (
             <ImageIcon className="w-4 h-4 text-white/40" />
           )}
@@ -164,11 +164,11 @@ export function VisualSourcePicker({ castId, block, onUpdated }: VisualSourcePic
             >
               {asset.media_type === "video" ? (
                 <>
-                  <video src={asset.r2_url} className="w-full h-full object-cover" muted />
+                  <video src={asset.r2_url} className="w-full h-full object-cover" muted preload="metadata" playsInline />
                   <Play className="absolute inset-0 m-auto w-3 h-3 text-white/60" />
                 </>
               ) : (
-                <img src={asset.r2_url} className="w-full h-full object-cover" alt="" />
+                <img src={asset.r2_url} className="w-full h-full object-cover" alt="" loading="lazy" decoding="async" />
               )}
               {asset.asset_type?.startsWith("ai_generated") && (
                 <span className="absolute top-0 left-0 right-0 bg-accent/70 text-[6px] text-white text-center leading-tight">

@@ -147,6 +147,8 @@ export function ProductPickerDialog({
                     src={v.imageUrl}
                     alt={v.name}
                     className="w-20 h-20 object-cover rounded-md bg-white/5"
+                    loading="lazy"
+                    decoding="async"
                   />
                 ) : (
                   <div className="w-20 h-20 rounded-md bg-white/5 flex items-center justify-center">
@@ -178,6 +180,8 @@ export function ProductPickerDialog({
                   src={asset.r2_url || cdnUrl(asset.r2_key)}
                   alt={asset.asset_type}
                   className="w-full aspect-square object-cover"
+                  loading="lazy"
+                  decoding="async"
                 />
               </button>
             ))}

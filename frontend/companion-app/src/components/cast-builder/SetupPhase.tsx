@@ -729,6 +729,8 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
                       src={avatar.face_image_url || cdnUrl(avatar.face_ref_key!)}
                       alt={avatar.name || "Avatar"}
                       className="w-full h-full object-cover"
+                      loading="lazy"
+                      decoding="async"
                     />
                   ) : (
                     <div className="w-full h-full bg-white/5 flex items-center justify-center">
@@ -810,6 +812,8 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
                       src={product.cover_image_url || cdnUrl(product.cover_image_key)}
                       alt={product.name}
                       className="w-full aspect-square object-cover"
+                      loading="lazy"
+                      decoding="async"
                     />
                   ) : (
                     <div className="w-full aspect-square bg-white/5 flex items-center justify-center">

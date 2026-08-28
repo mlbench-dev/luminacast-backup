@@ -93,6 +93,7 @@ export function ProductMediaGallery({
           autoPlay
           loop
           playsInline
+          preload="metadata"
           className="w-full h-full object-cover"
         />
       ) : (
@@ -100,6 +101,8 @@ export function ProductMediaGallery({
           src={item.url}
           alt={product.name || ""}
           className="w-full h-full object-cover"
+          loading="lazy"
+          decoding="async"
         />
       )}
 

@@ -181,11 +181,11 @@ export function ProductCarouselToggle({ castId, block, onUpdated }: ProductCarou
                 >
                   {asset.media_type === "video" ? (
                     <>
-                      <video src={asset.r2_url} className="w-full h-full object-cover" muted />
+                      <video src={asset.r2_url} className="w-full h-full object-cover" muted preload="metadata" playsInline />
                       <Play className="absolute inset-0 m-auto w-3 h-3 text-white/60" />
                     </>
                   ) : (
-                    <img src={asset.r2_url} className="w-full h-full object-cover" alt="" />
+                    <img src={asset.r2_url} className="w-full h-full object-cover" alt="" loading="lazy" decoding="async" />
                   )}
                   <span className="absolute bottom-0 left-0 right-0 bg-black/50 text-[8px] text-white/50 text-center">
                     {i + 1}

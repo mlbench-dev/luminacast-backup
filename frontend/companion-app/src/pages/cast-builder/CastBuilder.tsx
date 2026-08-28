@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, AlertCircle, RefreshCw, ArrowLeft, Trash2, Rocket, MoreVertical, Copy, ChevronLeft, CheckCircle2, XCircle } from "lucide-react";
@@ -11,7 +11,13 @@ import { SetupPhase } from "@/components/cast-builder/SetupPhase";
 import { ScriptGeneratingPhase } from "@/components/cast-builder/ScriptGeneratingPhase";
 import { ScriptPhase } from "@/components/cast-builder/ScriptPhase";
 import { AudioGeneratingPhase } from "@/components/cast-builder/AudioGeneratingPhase";
-import { ArrangePhase, type ArrangePhaseHandle } from "@/components/cast-builder/ArrangePhase";
+import type { ArrangePhaseHandle } from "@/components/cast-builder/ArrangePhase";
+// The Arrange phase is the Remotion editor (~90k LOC + @remotion/*). Lazy so
+// the Setup / Script / Audio phases don't parse or hold it in memory — it
+// loads only when the user actually reaches the editor step.
+const ArrangePhase = lazy(() =>
+  import("@/components/cast-builder/ArrangePhase").then((m) => ({ default: m.ArrangePhase })),
+);
 import { ReadyPhase } from "@/components/cast-builder/ReadyPhase";
 import { VersionPicker } from "@/components/cast-builder/VersionPicker";
 import { RenderStatusPill } from "@/components/cast-builder/RenderStatusPill";
@@ -750,16 +756,26 @@ export function CastBuilderPage() {
         )}
 
         {phase === "editor" && cast && (
-          <ArrangePhase ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} onEdited={() => {
-            editsSinceRenderRef.current += 1;
-            // Instant UI flip: if showing "Render Ready" and user edits, switch to idle immediately
-            setRenderStatus((prev) => {
-              if (prev.status === "ready") {
-                return { status: "idle", errorMessage: "Changes since last render" };
-              }
-              return prev;
-            });
-          }} />
+          <Suspense
+            fallback={
+              <div className="w-full h-full flex items-center justify-center bg-[#0a0a0a]">
+                <div className="flex items-center gap-2 text-white/50">
+                  <Loader2 className="w-5 h-5 animate-spin" /> Loading editor...
+                </div>
+              </div>
+            }
+          >
+            <ArrangePhase ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} onEdited={() => {
+              editsSinceRenderRef.current += 1;
+              // Instant UI flip: if showing "Render Ready" and user edits, switch to idle immediately
+              setRenderStatus((prev) => {
+                if (prev.status === "ready") {
+                  return { status: "idle", errorMessage: "Changes since last render" };
+                }
+                return prev;
+              });
+            }} />
+          </Suspense>
         )}
 
         {phase === "ready" && cast && (

@@ -116,6 +116,8 @@ export function LibraryProductPicker({
                     src={product.cover_image_url}
                     alt={product.name}
                     className="h-14 w-14 rounded object-cover shrink-0"
+                    loading="lazy"
+                    decoding="async"
                   />
                 ) : (
                   <div className="h-14 w-14 rounded bg-card flex items-center justify-center shrink-0">
