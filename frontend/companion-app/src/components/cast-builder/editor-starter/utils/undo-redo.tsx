@@ -2,7 +2,11 @@ import {useCallback, useMemo, useRef, useSyncExternalStore} from 'react';
 import {EditorState, UndoableState} from '../state/types';
 import {filterSelectedItemstoOnlyReturnExistingItems} from './filter-selected-items-for-only-existing-items';
 
-const MAX_HISTORY_SIZE = 50;
+// Luminacast: lowered from 50. Each entry is a full deep snapshot of the
+// undoable state (items + assets + per-word caption token arrays); 50 of them
+// for a multi-block cast is tens of MB held for the whole session. 25 still
+// covers any realistic undo run.
+const MAX_HISTORY_SIZE = 25;
 
 interface HistoryState {
 	entries: UndoableState[];

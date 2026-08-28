@@ -1668,6 +1668,7 @@ function MusicSelector({
           );
         })}
       </div>
+      
       {activeMode === "track" && (
         <div className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.05] border border-white/10 px-3 py-2.5">
           <div className="min-w-0">

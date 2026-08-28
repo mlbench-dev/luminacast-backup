@@ -22,9 +22,19 @@ export const FEATURE_REDO_BUTTON = true;
 // Timeline
 // ============================================================
 export const FEATURE_TIMELINE_ZOOM_SLIDER = true;
-export const FEATURE_FILMSTRIP = true;
+// Luminacast: OFF. The filmstrip spins up a mediabunny/WebCodecs VideoDecoder
+// per video clip on the timeline (see timeline-item-film-strip/extract-frames.ts)
+// and the Input is never disposed while mounted. A cast with 8-15 baked avatar
+// segments + b-roll opens that many concurrent decoders on mount — enough to
+// OOM the tab ("Aw, Snap!" / SBOX_FATAL_MEMORY_EXCEEDED) before the editor
+// finishes loading. Timeline video clips now show a plain block; scrubbing
+// still works via the Player preview.
+export const FEATURE_FILMSTRIP = false;
 export const FEATURE_WAVEFORM = true;
-export const FEATURE_AUDIO_WAVEFORM_FOR_VIDEO_ITEM = true;
+// Luminacast: OFF for the same reason — this opens a second mediabunny Input
+// per *video* item just to draw an audio waveform under it. Audio-track items
+// (voiceover, music, sfx) still get their waveform via FEATURE_WAVEFORM.
+export const FEATURE_AUDIO_WAVEFORM_FOR_VIDEO_ITEM = false;
 export const FEATURE_TIMELINE_VOLUME_CONTROL = true;
 export const FEATURE_DROP_ASSETS_ON_TIMELINE = true;
 export const FEATURE_AUDIO_FADE_CONTROL = true;
