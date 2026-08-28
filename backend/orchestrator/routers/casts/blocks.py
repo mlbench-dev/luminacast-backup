@@ -559,12 +559,21 @@ async def update_block(
                 raise HTTPException(400, "User video asset has been deleted")
         block.user_video_asset_id = user_video_asset_id or None
 
-    # For voiceover/pip, ensure user_video_asset_id is set
-    effective_mode = render_mode if render_mode is not None else getattr(block, "render_mode", "avatar_full")
-    if effective_mode in ("voiceover", "pip"):
+    # Only enforce the user-video requirement when the caller is EXPLICITLY
+    # switching this block into voiceover/pip render mode in this request.
+    # Previously this checked the block's *existing* render_mode too, so a
+    # plain category change on a block that was already voiceover with
+    # stock/AI b-roll (a perfectly valid state) failed with an opaque
+    # "render_mode 'voiceover' requires a user_video_asset_id" error.
+    if render_mode in ("voiceover", "pip"):
         effective_vid = user_video_asset_id if user_video_asset_id is not None else getattr(block, "user_video_asset_id", None)
         if not effective_vid:
-            raise HTTPException(400, f"render_mode '{effective_mode}' requires a user_video_asset_id")
+            raise HTTPException(
+                400,
+                "Switching this block to voiceover/PIP needs an uploaded video "
+                "for the narration to play over. Add a clip first, or leave the "
+                "block as avatar / b-roll.",
+            )
 
     if sort_order is not None:
         block.sort_order = sort_order

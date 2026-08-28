@@ -86,11 +86,19 @@ export function CastBuilderPage() {
   }, [loadedCast?.id]);
 
   const initialLoadDoneRef = useRef(false);
+  // Route param changed → we've navigated to a DIFFERENT cast (e.g. "Duplicate
+  // as vertical/horizontal", opening a sibling). Reset the load guards so the
+  // effect below adopts the new cast instead of keeping the old one on screen.
+  useEffect(() => {
+    initialLoadDoneRef.current = false;
+    setError(null);
+  }, [castId]);
   useEffect(() => {
     if (loadedCast) {
       // Only overwrite cast state from React Query on initial load or if version is newer
       setCast((prev) => {
         if (!prev) return loadedCast; // initial load
+        if (prev.id !== loadedCast.id) return loadedCast; // navigated to a different cast — switch outright
         if (loadedCast.version && loadedCast.version > (prev.version ?? 0)) return loadedCast; // genuine update
         if (!initialLoadDoneRef.current) {
           initialLoadDoneRef.current = true;
@@ -511,11 +519,11 @@ export function CastBuilderPage() {
     setKebabOpen(false);
     try {
       const result = await castsApi.duplicateAs(cast.id, targetFormat);
-      toast({
-        title: `Created ${targetFormat} version`,
-        description: `"${cast.name || "Untitled"}" duplicated. Layout starts blank.`,
-      });
       navigate(`/cast-builder/${result.cast_id}`);
+      toast({
+        title: `Opened the ${targetFormat} version`,
+        description: `"${cast.name || "Untitled"}" was duplicated — you're now on the new ${targetFormat} cast. Its layout starts blank.`,
+      });
     } catch (err: any) {
       toast({
         title: "Duplication failed",
