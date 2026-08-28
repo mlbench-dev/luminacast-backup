@@ -514,6 +514,33 @@ async def generate_outline(
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
 
+    # Kick off background music the same way generate_smart_outline does.
+    # Previously this dispatch lived ONLY in the smart-outline endpoint, so a
+    # cast built WITHOUT Auto Cast (which runs this plain endpoint) got no
+    # music even with music_track_choice="auto" — the task was never queued.
+    # "custom" is already resolved via PATCH at pick time; "off" skips.
+    try:
+        from services import music_library
+        music_choice = getattr(cast, "music_track_choice", music_library.CHOICE_AUTO) or music_library.CHOICE_AUTO
+        if music_choice == music_library.CHOICE_OFF:
+            logger.info("Music choice 'off' — skipping auto-music for cast %s", cast_id)
+        elif music_choice == "custom":
+            logger.info("Music choice 'custom' — using already-set background_music_url for cast %s", cast_id)
+        elif music_choice.startswith(music_library.CHOICE_TRACK_PREFIX):
+            try:
+                cast.background_music_url = music_library.resolve_choice_url(music_choice)
+                await db.commit()
+            except Exception as exc:
+                sentry_sdk.capture_exception(exc)
+                from tasks.auto_music import generate_music_for_cast_task
+                generate_music_for_cast_task.delay(cast_id)
+        else:
+            from tasks.auto_music import generate_music_for_cast_task
+            generate_music_for_cast_task.delay(cast_id)
+    except Exception as exc:
+        # Non-fatal — the cast renders fine without music.
+        sentry_sdk.capture_exception(exc)
+
     outline_scenes = []
     total_duration = 0
     for s in scenes:
