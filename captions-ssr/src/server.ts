@@ -127,7 +127,9 @@ function buildInputProps(body: Record<string, unknown>): CaptionRenderProps {
 		fontStyleWeight: String(block.fontStyleWeight || ''),
 		lineHeight: Number(block.lineHeight) || 1.2,
 		letterSpacing: Number(block.letterSpacing) || 0,
-		maxLines: Math.max(1, Math.round(Number(block.maxLines) || 2)),
+		// Single caption line by default — a longer caption is re-split into
+		// one-line pages timed to the words. Explicit block.maxLines wins.
+		maxLines: Math.max(1, Math.round(Number(block.maxLines) || 1)),
 		captionWidth: Math.max(
 			1,
 			Math.round(Number(block.captionWidth) || width * 0.9),

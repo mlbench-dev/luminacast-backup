@@ -850,7 +850,8 @@ def _try_ssr_caption_overlay(
         # over-budget page into the next time window (token timestamps kept).
         _cap_font = int(props.get("fontSize") or 48)
         _cap_width = int(props.get("captionWidth") or int(canvas_width * 0.9))
-        _cap_lines = int(props.get("maxLines") or 2)
+        # Single line by default (see max_lines note in the FFmpeg-drawtext path).
+        _cap_lines = int(props.get("maxLines") or 1)
         block["maxCharsPerChunk"] = _chars_per_line(_cap_font, _cap_width) * max(
             1, _cap_lines
         )
@@ -1493,7 +1494,10 @@ def translate_timeline_to_ffmpeg(
             caption_width = min(int(requested_width), safe_caption_width)
         else:
             caption_width = safe_caption_width
-        max_lines = int(props.get("maxLines") or 2)
+        # Default to a SINGLE caption line — a longer caption is re-split into
+        # one-line pages timed to the words (the second line shows only once
+        # the first is spoken). Explicit props.maxLines still wins.
+        max_lines = int(props.get("maxLines") or 1)
         measure_font = _caption_font(font_file, font_size)
         budget = _chars_per_line(font_size, caption_width) * max(1, max_lines)
         capped_pages: list[dict] = []

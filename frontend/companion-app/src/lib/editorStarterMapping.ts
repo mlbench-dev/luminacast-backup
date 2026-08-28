@@ -1323,7 +1323,12 @@ export function castToEditorStarterTimeline(
         // 2× its intended frame and fell outside the parent Sequence's
         // duration — only block 1 (whose item.from ≈ 0) ever showed up.
         captionStartInSeconds: firstStartS,
-        maxLines: 2,
+        // One caption line at a time. A longer caption is split (by the SSR
+        // renderer / composer) into single-line pages timed to the words, so
+        // the second line only appears once the first has been spoken —
+        // instead of both lines showing at once. Users can still bump this
+        // per-caption in the inspector.
+        maxLines: 1,
         fadeInDurationInSeconds: 0,
         fadeOutDurationInSeconds: 0,
         metadata: {

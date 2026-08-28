@@ -64,7 +64,7 @@ export const DEFAULT_CAPTION_COMPOSITION_PROPS: CaptionCompositionProps = {
 	fontStyleWeight: '800',
 	lineHeight: 1.2,
 	letterSpacing: 0,
-	maxLines: 2,
+	maxLines: 1,
 	captionWidth: 900,
 	safeBottomPct: 18,
 	maxCharsPerChunk: 0,
