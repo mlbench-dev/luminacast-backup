@@ -921,6 +921,18 @@ class CastPatchRequest(BaseModel):
     # PR #162 — Stage-1 LIVE/Recorded toggle payload (see CastCreate).
     live_mode_defaults: Optional[dict] = None
     user_video_ids: Optional[List[str]] = None
+    # Structural fields — the ones that shape the generated outline/script.
+    # Historically these were create-only ("editing them means a new cast"),
+    # but the SetupPhase "Generate Script" button now re-submits them when the
+    # user goes back and changes something, then regenerates. Only applied
+    # while the cast is still pre-render/editable (status check below).
+    avatar_id: Optional[str] = None
+    quality: Optional[str] = None
+    cast_type: Optional[str] = None
+    production_level: Optional[str] = None
+    template_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
+    target_platforms: Optional[List[str]] = None
 
 @router.put("/{cast_id}", response_model=CastResponse)
 async def update_cast(
@@ -1008,6 +1020,7 @@ async def patch_cast(
         "music_volume",
         "caption_preset",
         "broll_media_source",
+        "target_platforms",
         # PR #162 — Stage-1 LIVE/Recorded toggle payload.
         "live_mode_defaults",
         "user_video_ids",
@@ -1015,6 +1028,82 @@ async def patch_cast(
         val = getattr(req, field)
         if val is not None:
             setattr(cast, field, val)
+
+    # ── Structural fields (avatar / products / quality / template / cast_type
+    # / production_level). These reshape the outline+script, so they're only
+    # accepted while the cast is still pre-render/editable and the caller is
+    # about to regenerate. Reject rather than silently drop so a stale edit
+    # on a finished cast is visible.
+    _structural = (
+        req.avatar_id,
+        req.quality,
+        req.cast_type,
+        req.production_level,
+        req.template_id,
+        req.product_ids,
+    )
+    if any(v is not None for v in _structural):
+        if cast.status not in (
+            CastStatus.DRAFT,
+            CastStatus.OUTLINE_REVIEW,
+            CastStatus.SCRIPT_REVIEW,
+            CastStatus.TEMPLATE_SELECT,
+        ):
+            raise HTTPException(
+                400,
+                "Avatar, products, quality, template, cast type and production "
+                "level can only be changed before audio/render. Start a new cast "
+                "to change them here.",
+            )
+
+        if req.avatar_id is not None and req.avatar_id != cast.avatar_id:
+            avatar = await db.get(Avatar, req.avatar_id)
+            if not avatar or avatar.user_id != ctx.workspace_owner_id:
+                raise HTTPException(404, "Avatar not found")
+            if (
+                avatar.status not in (AvatarStatus.APPROVED, AvatarStatus.READY)
+                and avatar.id != "default"
+            ):
+                raise HTTPException(400, "Only approved or ready avatars can be used.")
+            cast.avatar_id = req.avatar_id
+            # A look belongs to exactly one avatar — drop it on an avatar switch.
+            cast.default_avatar_look_id = None
+
+        if req.quality is not None:
+            cast.quality = CastQuality(req.quality)
+            cast.creation_fee_cents = {
+                "simple": 1499, "hd": 1999, "hd_plus": 2999,
+            }.get(req.quality, cast.creation_fee_cents)
+
+        if req.cast_type is not None:
+            cast.cast_type = req.cast_type
+
+        if req.production_level is not None:
+            cast.production_level = req.production_level
+
+        if req.template_id is not None:
+            # "" / unknown id → Auto (no template), mirroring create_cast.
+            cast.template_id = req.template_id if get_template(req.template_id) else None
+
+        if req.product_ids is not None:
+            from sqlalchemy import delete as _sa_delete
+            await db.execute(
+                _sa_delete(CastProduct).where(CastProduct.cast_id == cast.id)
+            )
+            dropped: list[str] = []
+            position = 0
+            for pid in req.product_ids:
+                product = await db.get(Product, pid)
+                if product and product.user_id == ctx.workspace_owner_id:
+                    db.add(CastProduct(
+                        id=f"cp_{uuid.uuid4().hex[:12]}",
+                        cast_id=cast.id, product_id=pid, position=position,
+                    ))
+                    position += 1
+                else:
+                    dropped.append(pid)
+            if dropped:
+                raise HTTPException(400, f"Products not found or not owned: {dropped}")
 
     # default_avatar_look_id needs validation: only allow setting it to a
     # look that belongs to this cast's avatar. Allow explicit empty string

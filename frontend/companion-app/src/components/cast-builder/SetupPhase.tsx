@@ -72,21 +72,34 @@ const TEMPLATE_ICONS: Record<string, LucideIcon> = {
   mic_on_creator_vlog: Camera,
 };
 
-// Stable string form of the fields that (a) shape the generated script AND
-// (b) can actually be persisted on an existing cast via PATCH — currently
-// the brief and the target duration. Structural fields (avatar, products,
-// quality, template, production level, cast type) are intentionally excluded:
-// the PATCH endpoint doesn't accept them on an existing cast, so changing one
-// then "regenerating" would rebuild from stale values. Those still require
-// starting a new cast.
+// Stable string form of every field that shapes the generated outline/script.
+// On a return trip to Setup we diff the current form against the snapshot
+// taken at hydration; if anything here changed, hitting "Generate Script"
+// re-submits these (PATCH now accepts the structural ones too, while the cast
+// is still pre-render) and regenerates. Layout/platforms/music/name/background
+// aren't here — they don't change the script text.
 function serializeRegenFields(f: {
   description: string;
   durationManual: boolean;
   durationTarget: number;
+  avatar: string | null;
+  products: string[];
+  quality: string;
+  productionLevel: string;
+  castType: string;
+  template: string | null;
+  brollMediaSource: string;
 }): string {
   return JSON.stringify({
     description: f.description.trim(),
     durationTarget: f.durationManual ? f.durationTarget : null,
+    avatar: f.avatar,
+    products: [...f.products].sort(),
+    quality: f.quality,
+    productionLevel: f.productionLevel,
+    castType: f.castType,
+    template: f.template,
+    brollMediaSource: f.brollMediaSource,
   });
 }
 
@@ -250,6 +263,13 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
       description: cast.description || "",
       durationManual: cast.duration_target_seconds != null,
       durationTarget: cast.duration_target_seconds ?? 60,
+      avatar: cast.avatar_id ?? null,
+      products: (cast.products || []).map((p) => p.id),
+      quality: cast.quality || "hd",
+      productionLevel: (cast.production_level as string) || "standard",
+      castType: cast.cast_type || "recorded",
+      template: cast.template_id ?? null,
+      brollMediaSource: cast.broll_media_source || "stock",
     });
   }, [cast]);
 
@@ -417,51 +437,74 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
         // only the fields that are safe to change post-creation and advance
         // forward with the SAME cast.
         //
-        // Deliberately NOT re-submitted here: avatar_id, product_ids,
-        // quality, cast_type, production_level, template_id. Those are
-        // structural — they already shaped whatever blocks/script/outline
-        // exist for this cast, and silently changing them via a plain PATCH
-        // would leave already-generated content inconsistent with the new
-        // setup. Editing those means starting a new cast, not patching this
-        // one.
+        // If any script-shaping field changed since we hydrated (brief,
+        // duration, avatar, products, quality, template, cast type,
+        // production level, b-roll source), the user came back specifically
+        // to rework the script — "Generate Script" should rebuild it after
+        // confirming, not silently no-op. Structural fields are only sent
+        // (and only accepted by the backend) in that regenerate case, while
+        // the cast is still pre-render.
+        const currentSnapshot = serializeRegenFields({
+          description,
+          durationManual,
+          durationTarget,
+          avatar: selectedAvatar ?? null,
+          products: selectedProducts,
+          quality,
+          productionLevel,
+          castType,
+          template: selectedTemplate ?? null,
+          brollMediaSource,
+        });
+        const somethingChanged =
+          regenSnapshotRef.current !== null &&
+          currentSnapshot !== regenSnapshotRef.current;
+        regenRequestedRef.current =
+          somethingChanged &&
+          (typeof window === "undefined" ||
+            window.confirm(
+              "Regenerate the script with your new settings? This replaces the current script and any edits you've made to it.",
+            ));
+
         const patched = await castsApi.patch(cast.id, {
           name: castName || undefined,
           description: description || undefined,
           output_format: outputFormat,
           duration_target_seconds: durationManual ? durationTarget : undefined,
           platform_target: targetPlatforms[0] || "tiktok",
+          target_platforms: targetPlatforms,
           default_avatar_look_id: selectedLookId || "",
           music_track_choice: musicChoice,
           broll_media_source: brollMediaSource,
           ...(musicChoice === "custom" && pickedTrack
             ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || null }
             : {}),
-        });
+          ...(regenRequestedRef.current
+            ? {
+                avatar_id: selectedAvatar || undefined,
+                quality,
+                cast_type: castType,
+                production_level: productionLevel,
+                template_id: selectedTemplate || "",
+                product_ids: selectedProducts,
+              }
+            : {}),
+        } as any);
 
-        // If the brief or target duration changed since we hydrated, the
-        // user came back specifically to rework the script — hitting
-        // "Generate Script" should rebuild it, not silently no-op (the old
-        // behavior, which forced them to the Script tab's Regenerate button).
-        regenRequestedRef.current = false;
-        const currentSnapshot = serializeRegenFields({
-          description,
-          durationManual,
-          durationTarget,
-        });
-        if (
-          regenSnapshotRef.current !== null &&
-          currentSnapshot !== regenSnapshotRef.current
-        ) {
-          const proceed =
-            typeof window === "undefined" ||
-            window.confirm(
-              "Regenerate the script with your new settings? This replaces the current script and any edits you've made to it.",
-            );
-          if (proceed) {
-            regenRequestedRef.current = true;
-            // Keep the baseline in sync so a second Continue without further
-            // edits doesn't prompt again.
-            regenSnapshotRef.current = currentSnapshot;
+        if (regenRequestedRef.current) {
+          // Keep the baseline in sync so a second Continue without further
+          // edits doesn't prompt again.
+          regenSnapshotRef.current = currentSnapshot;
+          // Rebuild the outline now (smart vs plain, matching Auto Cast) so
+          // it reflects the just-patched settings; the caller then runs
+          // generateScripts behind the "Generating Script" phase.
+          try {
+            await (autoCast
+              ? castsApi.generateSmartOutline(cast.id)
+              : castsApi.generateOutline(cast.id));
+            qc.invalidateQueries({ queryKey: ["cast", cast.id] });
+          } catch (err) {
+            console.error("Setup-triggered outline regen failed:", err);
           }
         }
         return patched;

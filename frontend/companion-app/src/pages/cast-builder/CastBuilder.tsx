@@ -163,24 +163,19 @@ export function CastBuilderPage() {
     // outline + script already exist and may have been reviewed/edited, so
     // don't regenerate and clobber them. Only fresh casts get a script run.
     //
-    // forceRegenerate = the user changed the brief/duration back in Setup and
-    // explicitly confirmed a rebuild (SetupPhase prompts first). Run the same
-    // outline + script pass the Script tab's "Regenerate" button uses.
-    if (!wasExisting) {
+    // forceRegenerate = the user changed a script-shaping field back in Setup
+    // and confirmed a rebuild (SetupPhase prompts, and has already re-run the
+    // outline against the new settings). Both cases here just need the script
+    // pass, behind the "Generating Script" phase.
+    if (!wasExisting || forceRegenerate) {
       setPhase("generating_script");
       try {
         await castsApi.generateScripts(newCast.id);
+        if (forceRegenerate) {
+          queryClient.invalidateQueries({ queryKey: ["cast", newCast.id] });
+        }
       } catch (err) {
-        console.error("Auto script gen failed:", err);
-      }
-    } else if (forceRegenerate) {
-      setPhase("generating_script");
-      try {
-        await castsApi.generateOutline(newCast.id);
-        await castsApi.generateScripts(newCast.id);
-        queryClient.invalidateQueries({ queryKey: ["cast", newCast.id] });
-      } catch (err) {
-        console.error("Setup-triggered script regen failed:", err);
+        console.error("Script gen failed:", err);
       }
     }
     setPhase("script");
