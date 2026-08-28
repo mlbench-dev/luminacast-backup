@@ -20,6 +20,7 @@ import { scriptApi, castsApi, avatarApi } from "@/lib/api";
 import { RewriteDiffModal } from "@/components/cast-builder/RewriteDiffModal";
 import { BlockType } from "@/lib/types";
 import { toast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 import { cn } from "@/lib/cn";
 import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
@@ -193,8 +194,15 @@ function SortableBlockCard({
 
   const charCount = variant?.script_text.length ?? 0;
 
-  const handleDeleteClick = () => {
-    if (!window.confirm("Delete this block? This cannot be undone.")) return;
+  const handleDeleteClick = async () => {
+    const ok = await confirmAction({
+      title: "Delete this block?",
+      text: "This cannot be undone.",
+      confirmButtonText: "Delete",
+      cancelButtonText: "Cancel",
+      icon: "warning",
+    });
+    if (!ok) return;
     onDelete(block.id);
   };
 

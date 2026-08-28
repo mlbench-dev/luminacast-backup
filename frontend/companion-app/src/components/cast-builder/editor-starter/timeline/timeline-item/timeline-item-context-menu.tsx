@@ -19,6 +19,7 @@ import {
 } from '../../utils/use-context';
 import {LuminacastEditorContext} from '../../luminacast-context';
 import {castsApi} from '@/lib/api';
+import {confirmAction} from '@/lib/swal';
 import {toast} from 'sonner';
 
 export const TimelineItemContextMenu: React.FC<{
@@ -124,8 +125,14 @@ export const TimelineItemContextMenu: React.FC<{
 		async (renderAction: string) => {
 			if (!luminacastCtx || !blockId) return;
 			const quality = luminacastCtx.cast.quality || 'simple';
-			const costMsg = `This will re-render the block at quality ${quality.toUpperCase()}. Continue?`;
-			if (!window.confirm(costMsg)) return;
+			const ok = await confirmAction({
+				title: 'Re-render this block?',
+				text: `The block will be re-rendered at ${quality.toUpperCase()} quality.`,
+				confirmButtonText: 'Re-render',
+				cancelButtonText: 'Cancel',
+				icon: 'warning',
+			});
+			if (!ok) return;
 			setRendering(true);
 			try {
 				const result = await castsApi.renderBlock(luminacastCtx.castId, blockId, {

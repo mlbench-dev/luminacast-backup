@@ -20,6 +20,7 @@ import { BlockTimeline } from "@/components/cast-builder/scriptphase/BlockTimeli
 import { RefineInput } from "@/components/cast-builder/scriptphase/RefineInput";
 import { BlockType, BlockCategory, type Cast, type Block, type Variant, type AvatarLook } from "@/lib/types";
 import { toast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
 import { BLOCK_CATEGORIES, CATEGORY_MAP, getCategoryInfo } from "@/lib/blockCategories";
@@ -674,7 +675,14 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   }, [focusBlockId, blocks]);
 
   const handleDeleteBlock = useCallback(async (blockId: string) => {
-    if (!confirm(`Delete Block? This removes the script text and any generated audio.`)) return;
+    const ok = await confirmAction({
+      title: "Delete block?",
+      text: "This removes the script text and any generated audio.",
+      confirmButtonText: "Delete",
+      cancelButtonText: "Cancel",
+      icon: "warning",
+    });
+    if (!ok) return;
     try {
       await castsApi.deleteBlock(cast.id, blockId);
       setBlocks(prev => prev.filter(b => b.id !== blockId));
@@ -1016,16 +1024,35 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
       .replace(/\{(\w+)\}/g, '<span style="color: #06b6d4; font-weight: 600">{$1}</span>');
   };
 
+  const jumpToBlock = useCallback((blockId: string) => {
+    document
+      .querySelector(`[data-block-id="${blockId}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
   return (
     <>
       {renderInProgress && <RenderLockBanner onCancelRender={onCancelRender} />}
       <div
         className={cn(
-          "max-w-3xl mx-auto p-6 space-y-6 relative transition-opacity",
+          "flex justify-center gap-5 p-6 relative transition-opacity",
           renderInProgress && "opacity-60",
         )}
         inert={renderInProgress}
       >
+      {!generating && blocks.length > 1 && (
+        <BlockOrderRail
+          blocks={blocks}
+          dragSrcIdx={dragSrcIdx}
+          dropTargetIdx={dropTargetIdx}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+          onDragEnd={handleDragEnd}
+          onJumpTo={jumpToBlock}
+        />
+      )}
+      <div className="w-full min-w-0 max-w-3xl space-y-6 relative">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -1828,7 +1855,105 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         </div>
       )}
       </div>
+      </div>
     </>
+  );
+}
+
+/**
+ * BlockOrderRail — compact left sidebar (desktop) for reordering script
+ * blocks without dragging the tall block cards. Shares the exact
+ * drag-src/drop-target state and handlers with the main list, so a drag
+ * started here (or dropped here) reorders identically and persists via the
+ * same castsApi.reorderBlocks call. Clicking a row scrolls to that block.
+ */
+function BlockOrderRail({
+  blocks,
+  dragSrcIdx,
+  dropTargetIdx,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onJumpTo,
+}: {
+  blocks: Block[];
+  dragSrcIdx: number | null;
+  dropTargetIdx: number | null;
+  onDragStart: (e: React.DragEvent, idx: number) => void;
+  onDragOver: (e: React.DragEvent, idx: number) => void;
+  onDrop: (e: React.DragEvent) => void;
+  onDragEnd: () => void;
+  onJumpTo: (blockId: string) => void;
+}) {
+  return (
+    <aside className="hidden lg:block w-44 shrink-0">
+      <div className="sticky top-4 rounded-xl border border-white/10 bg-white/[0.03] p-2">
+        <div className="px-1.5 pb-1.5 text-[10px] font-medium uppercase tracking-wider text-white/40">
+          Block order
+        </div>
+        <div className="flex flex-col gap-0.5" onDrop={onDrop} onDragEnd={onDragEnd}>
+          {blocks.map((block, idx) => {
+            const cat =
+              CATEGORY_MAP[(block.category || "avatar_speaking") as string] ||
+              CATEGORY_MAP.avatar_speaking;
+            const label = String(block.type || cat?.label || "Block").replace(/_/g, " ");
+            const isDragging = dragSrcIdx === idx;
+            const showAbove =
+              dropTargetIdx === idx && dragSrcIdx !== null && dragSrcIdx !== idx;
+            const showBelow =
+              dropTargetIdx === idx + 1 && dragSrcIdx !== null && dragSrcIdx !== idx;
+            return (
+              <div
+                key={block.id}
+                className="relative"
+                onDragOver={(e) => onDragOver(e, idx)}
+              >
+                {showAbove && (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-1 -top-[3px] h-[2px] rounded-full bg-accent"
+                  />
+                )}
+                {showBelow && (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-1 -bottom-[3px] h-[2px] rounded-full bg-accent"
+                  />
+                )}
+                <button
+                  type="button"
+                  draggable
+                  onDragStart={(e) => onDragStart(e, idx)}
+                  onClick={() => onJumpTo(block.id)}
+                  title={`${label} — click to jump, drag to reorder`}
+                  className={cn(
+                    "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors cursor-grab active:cursor-grabbing",
+                    isDragging
+                      ? "bg-accent/15 ring-1 ring-accent/40"
+                      : "hover:bg-white/[0.06]",
+                  )}
+                >
+                  <GripVertical className="w-3 h-3 shrink-0 text-white/30" />
+                  <span className="w-4 shrink-0 text-center text-[11px] font-semibold tabular-nums text-white/50">
+                    {idx + 1}
+                  </span>
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      cat?.dotClass || "bg-white/30",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[11px] capitalize text-white/70">
+                    {label.toLowerCase()}
+                  </span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </aside>
   );
 }
 

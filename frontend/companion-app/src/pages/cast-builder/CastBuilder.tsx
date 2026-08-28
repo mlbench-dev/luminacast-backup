@@ -22,6 +22,7 @@ import { ReadyPhase } from "@/components/cast-builder/ReadyPhase";
 import { VersionPicker } from "@/components/cast-builder/VersionPicker";
 import { RenderStatusPill } from "@/components/cast-builder/RenderStatusPill";
 import { RendersCollection, type RendersCollectionHandle } from "@/components/cast-builder/RendersCollection";
+import { confirmAction } from "@/lib/swal";
 
 function statusToPhase(status: string): WizardPhase {
   switch (status?.toLowerCase()) {
@@ -362,12 +363,14 @@ export function CastBuilderPage() {
 
     // Phase 3.0.3 — Stale audio warning: only warn if audio is truly stale AND not a retry
     if ((cast as any).audio_stale_since && renderStatus.status !== "failed") {
-      try {
-        const proceed = confirm(
-          "Audio has been updated but not re-generated. Continue with current audio?"
-        );
-        if (!proceed) return;
-      } catch { /* confirm blocked — proceed anyway */ }
+      const proceed = await confirmAction({
+        title: "Audio is out of date",
+        text: "Audio has been updated but not re-generated. Continue with the current audio?",
+        confirmButtonText: "Continue",
+        cancelButtonText: "Cancel",
+        icon: "warning",
+      });
+      if (!proceed) return;
     }
 
     const MIN_SPEAKING_SLOT_S = 1.5;
@@ -465,7 +468,14 @@ export function CastBuilderPage() {
 
   const handleDeleteCast = useCallback(async () => {
     if (!cast) return;
-    if (!confirm("Delete this cast? All clips will be lost.")) return;
+    const ok = await confirmAction({
+      title: "Delete this cast?",
+      text: "All clips will be lost. This cannot be undone.",
+      confirmButtonText: "Delete",
+      cancelButtonText: "Cancel",
+      icon: "warning",
+    });
+    if (!ok) return;
     try {
       await castsApi.delete(cast.id);
       toast({ title: "Cast deleted" });
