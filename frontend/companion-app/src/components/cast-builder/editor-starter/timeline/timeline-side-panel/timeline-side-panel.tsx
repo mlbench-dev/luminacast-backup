@@ -1,9 +1,8 @@
-import {memo, useCallback, useMemo} from 'react';
+import {memo, useMemo} from 'react';
 import {TRACK_DIVIDER_HEIGHT} from '../../state/items';
 import {clsx} from '../../utils/clsx';
-import {generateRandomId} from '../../utils/generate-random-id';
 import {sidePanelRef} from '../../utils/restore-scroll-after-zoom';
-import {useTimelineHeight, useWriteContext} from '../../utils/use-context';
+import {useTimelineHeight} from '../../utils/use-context';
 import {Z_INDEX_SIDE_PANEL} from '../../z-indices';
 import {TICKS_HEIGHT} from '../ticks/constants';
 import {
@@ -18,8 +17,6 @@ export const SidePanel: React.FC<{
 	tracks: TimelineTrackAndLayout[];
 	inbetweenTrackDropTrackIndex: number | null;
 }> = memo(({tracks: tracksAndLayout, inbetweenTrackDropTrackIndex}) => {
-	const {setState} = useWriteContext();
-
 	const sidePanelStyle = useMemo(
 		() => ({
 			minWidth: SIDE_PANEL_WIDTH,
@@ -53,27 +50,6 @@ export const SidePanel: React.FC<{
 		};
 	}, []);
 
-	// Phase 4.8.5 — Add track affordances
-	const addTrack = useCallback(
-		(label: string) => {
-			const trackId = generateRandomId();
-			setState({
-				update: (state) => ({
-					...state,
-					undoableState: {
-						...state.undoableState,
-						tracks: [
-							...state.undoableState.tracks,
-							{id: trackId, items: [], hidden: false, muted: false},
-						],
-					},
-				}),
-				commitToUndoStack: true,
-			});
-		},
-		[setState],
-	);
-
 	return (
 		<>
 			<div
@@ -104,33 +80,6 @@ export const SidePanel: React.FC<{
 							/>
 						</div>
 					))}
-					{/* Phase 4.8.5 — Add track buttons */}
-					<div className="flex flex-wrap gap-1 px-2 py-1.5 border-t border-white/5">
-						<button
-							onClick={() => addTrack('video')}
-							className="text-[8px] text-white/30 hover:text-white/60 hover:bg-white/5 px-1.5 py-0.5 rounded"
-						>
-							+ Video
-						</button>
-						<button
-							onClick={() => addTrack('audio')}
-							className="text-[8px] text-white/30 hover:text-white/60 hover:bg-white/5 px-1.5 py-0.5 rounded"
-						>
-							+ Audio
-						</button>
-						<button
-							onClick={() => addTrack('text')}
-							className="text-[8px] text-white/30 hover:text-white/60 hover:bg-white/5 px-1.5 py-0.5 rounded"
-						>
-							+ Text
-						</button>
-						<button
-							onClick={() => addTrack('caption')}
-							className="text-[8px] text-white/30 hover:text-white/60 hover:bg-white/5 px-1.5 py-0.5 rounded"
-						>
-							+ Caption
-						</button>
-					</div>
 				</div>
 			</div>
 			<div
