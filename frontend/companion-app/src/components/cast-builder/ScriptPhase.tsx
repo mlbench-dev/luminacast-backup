@@ -1273,18 +1273,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                 {/* Block header */}
                 <div className="flex items-center justify-between flex-wrap gap-y-1.5">
                   <div className="flex items-center gap-2 shrink-0">
-                    {/* Drag handle: ONLY this icon is draggable so the rest of the
-                        card (textarea, selects) stays interactive. The icon's parent
-                        div absorbs onDragOver so the visual indicator updates. */}
-                    <span
-                      draggable
-                      onDragStart={e => handleDragStart(e, idx)}
-                      className="inline-flex cursor-grab active:cursor-grabbing rounded p-1 -m-1 hover:bg-white/10 transition-colors"
-                      aria-label="Drag to reorder"
-                      title="Drag to reorder"
-                    >
-                      <GripVertical className="w-4 h-4 text-white/40 hover:text-white/80 transition-colors" />
-                    </span>
+                    {/* Reordering now lives in the Block Order rail (left
+                        sidebar) — no per-card drag handle. The card is still a
+                        drop target so a drag from the rail can land on it. */}
                     <span className="text-xs font-medium text-white/60">Block {idx + 1}</span>
 
                     {/* 4.7.1 — Category dropdown */}

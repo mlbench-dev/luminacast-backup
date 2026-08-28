@@ -135,22 +135,34 @@ async def _generate_async(cast_id: str) -> dict:
             cast_id, dominant_mood, prompt, total_duration, intensity,
         )
 
+        track_url: str | None = None
+        source = "generated"
         try:
             result = await mubert.generate_for_user(
                 db=db, user=user, prompt=prompt,
                 duration_seconds=total_duration, intensity=intensity,
             )
-        except (MubertConfigurationError, MubertGenerationError) as e:
-            sentry_sdk.capture_exception(e)
-            logger.warning("Auto-music failed for cast %s: %s", cast_id, e)
-            return {"skipped": True, "reason": "generation_failed"}
+            track_url = result.get("url")
         except Exception as e:
+            # On-demand generation failed. The common case in production is the
+            # Mubert monthly track-generation cap (HTTP 403
+            # LicenseLimitTracksCount) — but a config/network error lands here
+            # too. Fall back to Mubert's curated 12K-track library (no
+            # generation quota), then to the fixed self-hosted set, so "Auto"
+            # still lands music instead of silently doing nothing.
             sentry_sdk.capture_exception(e)
-            logger.warning("Auto-music unexpected error for cast %s: %s", cast_id, e)
-            return {"skipped": True, "reason": "unexpected"}
+            logger.warning(
+                "Auto-music generation failed for cast %s (%s) — falling back to curated library",
+                cast_id, e,
+            )
+            track_url = await _pick_library_track(mubert, db, user, dominant_mood)
+            source = "library"
+
+        if not track_url:
+            logger.warning("Auto-music: no track available for cast %s (generation + library both failed)", cast_id)
+            return {"skipped": True, "reason": "no_track_available"}
 
         # Download and re-host on R2 so the URL doesn't expire.
-        track_url = result["url"]
         music_key = f"music/casts/{cast_id}/background.mp3"
         public_url = f"https://media.luminacast.com/{music_key}"
         try:
@@ -171,12 +183,75 @@ async def _generate_async(cast_id: str) -> dict:
         cast.background_music_tags = prompt.split() if prompt else None
         await db.commit()
         logger.info(
-            "Auto-music attached cast=%s mood=%s url=%s",
-            cast_id, dominant_mood, public_url[:80],
+            "Auto-music attached cast=%s mood=%s source=%s url=%s",
+            cast_id, dominant_mood, source, public_url[:80],
         )
         return {
             "cast_id": cast_id,
             "url": public_url,
             "mood": dominant_mood,
             "duration": total_duration,
+            "source": source,
         }
+
+
+def _extract_track_url(t: dict) -> str | None:
+    """Pull a playable URL out of a raw Mubert curated-library track row."""
+    if not isinstance(t, dict):
+        return None
+    gens = t.get("generations") or []
+    if gens and isinstance(gens[0], dict) and gens[0].get("url"):
+        return gens[0]["url"]
+    return t.get("url") or None
+
+
+# Fixed-library moods are coarse buckets — map the block-level mood vocabulary
+# onto them for the last-resort self-hosted set.
+_FIXED_LIBRARY_MOOD_MAP = {
+    "energetic": "energetic", "playful": "energetic",
+    "excited": "high-energy", "urgent": "high-energy", "hype": "high-energy", "triumphant": "high-energy",
+    "calm": "calm", "intimate": "calm", "emotional": "calm", "dreamy": "calm", "mysterious": "calm",
+    "informative": "neutral", "trustworthy": "neutral", "confident": "neutral", "corporate": "neutral",
+    "cinematic": "dramatic", "dramatic": "dramatic",
+}
+
+
+async def _pick_library_track(mubert, db, user, mood: str) -> str | None:
+    """Best-effort music URL when on-demand generation is unavailable.
+
+    Order: Mubert's curated library filtered by mood → curated library
+    unfiltered → the fixed self-hosted set (loosely mood-matched) → None.
+    Every step is wrapped so one failure just moves to the next.
+    """
+    # 1 + 2: Mubert curated library (no generation quota).
+    try:
+        customer_id, access_token = await mubert.ensure_user_customer(db, user)
+        for moods_filter in ([mood] if mood else None, None):
+            try:
+                data = await mubert.search_library(
+                    customer_id, access_token, moods=moods_filter, limit=30,
+                )
+            except Exception as e:  # noqa: BLE001 — try the next variant
+                sentry_sdk.capture_exception(e)
+                continue
+            for row in (data.get("tracks") or []):
+                url = _extract_track_url(row)
+                if url:
+                    logger.info("Auto-music fallback: using curated library track (mood=%s)", mood)
+                    return url
+    except Exception as e:  # noqa: BLE001
+        sentry_sdk.capture_exception(e)
+
+    # 3: fixed self-hosted library.
+    try:
+        from services.music_library import list_tracks
+        tracks = list_tracks()
+        if tracks:
+            want = _FIXED_LIBRARY_MOOD_MAP.get((mood or "").lower(), "")
+            match = next((t for t in tracks if t.mood == want), tracks[0])
+            logger.info("Auto-music fallback: using fixed library track %s", match.id)
+            return match.url
+    except Exception as e:  # noqa: BLE001
+        sentry_sdk.capture_exception(e)
+
+    return None

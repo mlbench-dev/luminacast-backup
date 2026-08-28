@@ -35,6 +35,15 @@ function useAudioPreview() {
   const [playingUrl, setPlayingUrl] = useState<string | null>(null);
   const { toast } = useToast();
 
+  const stop = useCallback(() => {
+    const a = audioRef.current;
+    if (a) {
+      a.pause();
+      try { a.currentTime = 0; } catch { /* src may not be set yet */ }
+    }
+    setPlayingUrl(null);
+  }, []);
+
   const toggle = useCallback((url: string) => {
     if (!audioRef.current) {
       const el = new Audio();
@@ -63,7 +72,7 @@ function useAudioPreview() {
     audioRef.current = null;
   }, []);
 
-  return { playingUrl, toggle };
+  return { playingUrl, toggle, stop };
 }
 
 function TrackRow({
@@ -277,7 +286,22 @@ export function MusicTrackPickerModal({
   onSelect: (track: PickedMusicTrack) => void;
 }) {
   const [tab, setTab] = useState<"library" | "mine">("library");
-  const { playingUrl, toggle } = useAudioPreview();
+  const { playingUrl, toggle, stop } = useAudioPreview();
+
+  // Radix unmounts DialogContent when closed, but this component stays
+  // mounted (SetupPhase always renders it), so useAudioPreview's own
+  // unmount-cleanup never fires — the preview kept playing after the modal
+  // closed. Stop it whenever `open` goes false.
+  useEffect(() => {
+    if (!open) stop();
+  }, [open, stop]);
+
+  // Selecting a track ("Use this") should also cut the preview immediately —
+  // the track is now the chosen background music, not something to audition.
+  const handleSelect = useCallback((track: PickedMusicTrack) => {
+    stop();
+    onSelect(track);
+  }, [stop, onSelect]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -306,9 +330,9 @@ export function MusicTrackPickerModal({
         </div>
 
         {tab === "library" ? (
-          <LibraryTab playingUrl={playingUrl} toggle={toggle} onSelect={onSelect} />
+          <LibraryTab playingUrl={playingUrl} toggle={toggle} onSelect={handleSelect} />
         ) : (
-          <MyAiTracksTab playingUrl={playingUrl} toggle={toggle} onSelect={onSelect} />
+          <MyAiTracksTab playingUrl={playingUrl} toggle={toggle} onSelect={handleSelect} />
         )}
       </DialogContent>
     </Dialog>
