@@ -13,6 +13,8 @@ import { AvatarStatus, type Avatar, type AvatarLook, type ProductWithAssets, typ
 import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
 import { toast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
+import { RenderLockBanner } from "@/components/cast-builder/RenderLockBanner";
 
 const QUALITY_OPTIONS = [
   { value: "simple", label: "Simple", price: "$14.99", desc: "Fast generation" },
@@ -461,10 +463,13 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           currentSnapshot !== regenSnapshotRef.current;
         regenRequestedRef.current =
           somethingChanged &&
-          (typeof window === "undefined" ||
-            window.confirm(
-              "Regenerate the script with your new settings? This replaces the current script and any edits you've made to it.",
-            ));
+          (await confirmAction({
+            title: "Regenerate script?",
+            text: "This replaces the current script and any edits you've made to it, using your new settings.",
+            confirmButtonText: "Regenerate",
+            cancelButtonText: "Keep current",
+            icon: "warning",
+          }));
 
         const patched = await castsApi.patch(cast.id, {
           name: castName || undefined,
@@ -627,23 +632,15 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   }, [tierDurationCapSeconds]);
 
   return (
-    <div className="max-w-5xl mx-auto px-6 pt-5 pb-10 space-y-5 relative">
-      {renderInProgress && (
-        <div className="absolute inset-0 z-50 flex items-start justify-center bg-[#0f0f14]/90 backdrop-blur-sm pt-24 px-6">
-          <div className="max-w-md w-full rounded-lg border border-white/10 bg-[#1c1c28] p-5 text-center space-y-3">
-            <p className="text-sm text-white/80">
-              A render is currently in progress. Editing is locked until it finishes.
-            </p>
-            <button
-              type="button"
-              onClick={onCancelRender}
-              className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-4 py-2 text-sm text-white hover:bg-white/10 transition-colors"
-            >
-              Cancel Render
-            </button>
-          </div>
-        </div>
-      )}
+    <>
+      {renderInProgress && <RenderLockBanner onCancelRender={onCancelRender} />}
+      <div
+        className={cn(
+          "max-w-5xl mx-auto px-6 pt-5 pb-10 space-y-5 relative transition-opacity",
+          renderInProgress && "opacity-60",
+        )}
+        inert={renderInProgress}
+      >
       {/* HERO CHOICE — the first decision of Stage 1. Two big cards make the
           Recorded vs LIVE pick visually unmissable; LIVE pre-configures the
           cast for long-form voiceover + b-roll. Sits ABOVE everything else. */}
@@ -1306,7 +1303,8 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           )
         }
       />
-    </div>
+      </div>
+    </>
   );
 }
 

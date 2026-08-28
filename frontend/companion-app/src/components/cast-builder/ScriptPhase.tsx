@@ -26,6 +26,7 @@ import { BLOCK_CATEGORIES, CATEGORY_MAP, getCategoryInfo } from "@/lib/blockCate
 import { ActionFrameCarousel } from "@/components/cast-builder/ActionFrameCarousel";
 import { ClipMicToggle } from "@/components/avatar/ClipMicToggle";
 import { LiveReferenceCard } from "@/components/avatar/LiveReferenceCard";
+import { RenderLockBanner } from "@/components/cast-builder/RenderLockBanner";
 
 interface ScriptPhaseProps {
   cast: Cast;
@@ -1016,23 +1017,15 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6 relative">
-      {renderInProgress && (
-        <div className="absolute inset-0 z-50 flex items-start justify-center bg-[#0f0f14]/90 backdrop-blur-sm pt-24 px-6">
-          <div className="max-w-md w-full rounded-lg border border-white/10 bg-[#1c1c28] p-5 text-center space-y-3">
-            <p className="text-sm text-white/80">
-              A render is currently in progress. Editing is locked until it finishes.
-            </p>
-            <button
-              type="button"
-              onClick={onCancelRender}
-              className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-4 py-2 text-sm text-white hover:bg-white/10 transition-colors"
-            >
-              Cancel Render
-            </button>
-          </div>
-        </div>
-      )}
+    <>
+      {renderInProgress && <RenderLockBanner onCancelRender={onCancelRender} />}
+      <div
+        className={cn(
+          "max-w-3xl mx-auto p-6 space-y-6 relative transition-opacity",
+          renderInProgress && "opacity-60",
+        )}
+        inert={renderInProgress}
+      >
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -1834,7 +1827,8 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
           </Button>
         </div>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
