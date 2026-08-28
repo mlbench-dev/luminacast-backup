@@ -744,7 +744,12 @@ function MediaCard({
       >
         {isVideo ? (
           <>
-            {posterUrl && (
+            {/* At rest: poster image if one exists, else a plain icon. The
+                <video> element is only mounted WHILE hovering — mounting it at
+                rest (even preload="metadata" + seek-to-first-frame) forced a
+                VideoToolbox decode per card, so opening the editor with N
+                uploaded clips spiked VTDecoderXPCService / memory instantly. */}
+            {posterUrl ? (
               <img
                 src={posterUrl}
                 alt={item.name || ""}
@@ -754,35 +759,26 @@ function MediaCard({
                 )}
                 loading="lazy"
               />
+            ) : (
+              <div
+                className={cn(
+                  "absolute inset-0 flex items-center justify-center bg-neutral-900 transition-opacity duration-200",
+                  hovering ? "opacity-0" : "opacity-100"
+                )}
+              >
+                <Film className="w-5 h-5 text-neutral-500" />
+              </div>
             )}
-            {videoUrl && (
+            {hovering && videoUrl && (
               <video
                 ref={videoRef}
                 src={videoUrl}
                 muted
                 playsInline
-                preload="metadata"
-                onLoadedMetadata={(e) => {
-                  // Seek to first frame so the resting <video> shows a poster-
-                  // like frame instead of a black rectangle. Only do this when
-                  // there is no separate image poster covering the video.
-                  if (!posterUrl) {
-                    const v = e.currentTarget;
-                    try { v.currentTime = 0.1; } catch { /* ignore */ }
-                  }
-                }}
-                className={cn(
-                  "absolute inset-0 w-full h-full object-cover transition-opacity duration-200",
-                  // When we have no image poster, the <video> IS the poster —
-                  // keep it visible at rest and let hover trigger playback.
-                  posterUrl ? (hovering ? "opacity-100" : "opacity-0") : "opacity-100"
-                )}
+                autoPlay
+                preload="auto"
+                className="absolute inset-0 w-full h-full object-cover"
               />
-            )}
-            {!posterUrl && !videoUrl && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <Film className="w-5 h-5 text-neutral-500" />
-              </div>
             )}
           </>
         ) : isImage && imageUrl ? (

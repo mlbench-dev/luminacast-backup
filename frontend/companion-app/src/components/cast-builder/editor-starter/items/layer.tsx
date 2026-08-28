@@ -54,7 +54,12 @@ export const Layer: React.FC<{
 				style={sequenceStyle}
 				durationInFrames={item.durationInFrames}
 				styleWhilePremounted={styleWhilePremounted}
-				premountFor={1.5 * fps}
+				// Luminacast: lowered from 1.5s. Each premounted video sequence
+				// mounts a real <video> and starts a decoder ahead of the
+				// playhead; 1.5s premounted several baked 1080x1920 avatar
+				// segments at once. 0.5s still avoids a hitch when the playhead
+				// reaches a clip.
+				premountFor={Math.round(0.5 * fps)}
 			>
 				{itemIsBeingCropped && FEATURE_CROP_BACKGROUNDS ? (
 					// https://www.remotion.dev/docs/editor-starter/cropping#crop-backgrounds

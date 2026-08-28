@@ -146,9 +146,15 @@ type ContextProviderProps = {
 	initialUndoableState?: UndoableState;
 	/** Callback fired when undoableState changes — used by ArrangePhaseRemotion for auto-save */
 	onUndoableStateChange?: (undoableState: UndoableState) => void;
+	/** Live background-music bed volume (0..1) from the Arrange-tab slider.
+	 *  When set, the provider reconciles every `metadata.kind === "music"`
+	 *  audio item's volume to it — on mount and on every change — WITHOUT a
+	 *  history push and without remounting, so the preview volume updates
+	 *  while playback continues. */
+	musicVolume?: number;
 };
 
-export const ContextProvider = ({children, initialUndoableState, onUndoableStateChange}: ContextProviderProps) => {
+export const ContextProvider = ({children, initialUndoableState, onUndoableStateChange, musicVolume}: ContextProviderProps) => {
 	const [state, setStateWithoutHistory] = useState<EditorState>(() => {
 		const base = getInitialState();
 		if (initialUndoableState) {
@@ -242,6 +248,39 @@ export const ContextProvider = ({children, initialUndoableState, onUndoableState
 			onUndoableStateChangeRef.current(state.undoableState);
 		}
 	}, [state.undoableState, state.initialized]);
+
+	// Reconcile the background-music bed volume to the live `musicVolume` prop
+	// (Arrange-tab slider). Runs on mount (heals a stale saved timeline whose
+	// music item predates the volume stamp) and on every slider change, so the
+	// preview volume updates DURING playback — no history entry, no remount.
+	// Idempotent: returns the same state object when nothing needs changing,
+	// and the deps don't include `state.undoableState`, so it can't loop.
+	useEffect(() => {
+		if (musicVolume == null || !state.initialized) return;
+		const v = Math.max(0, Math.min(1, musicVolume));
+		const db = v <= 0 ? -60 : Math.max(-60, Math.min(20, 20 * Math.log10(v)));
+		setStateWithoutHistory((prev) => {
+			let changed = false;
+			const items = {...prev.undoableState.items};
+			for (const [id, it] of Object.entries(items)) {
+				const view = it as {
+					type?: string;
+					decibelAdjustment?: number;
+					metadata?: {kind?: string; volume?: number};
+				};
+				if (view.type !== 'audio' || view.metadata?.kind !== 'music') continue;
+				if (view.decibelAdjustment === db && view.metadata?.volume === v) continue;
+				items[id] = {
+					...it,
+					decibelAdjustment: db,
+					metadata: {...view.metadata, volume: v},
+				} as unknown as (typeof items)[string];
+				changed = true;
+			}
+			if (!changed) return prev;
+			return {...prev, undoableState: {...prev.undoableState, items}};
+		});
+	}, [musicVolume, state.initialized]);
 
 	const isItemBeingTrimmed = state.itemsBeingTrimmed.length > 0;
 

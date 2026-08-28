@@ -29,16 +29,18 @@ export interface EditorProps {
   initialUndoableState?: UndoableState;
   /** Callback fired when undoableState changes — used for auto-save */
   onUndoableStateChange?: (undoableState: UndoableState) => void;
+  /** Live background-music bed volume (0..1) — see ContextProvider. */
+  musicVolume?: number;
 }
 
-export const Editor: React.FC<EditorProps> = ({initialUndoableState, onUndoableStateChange}) => {
+export const Editor: React.FC<EditorProps> = ({initialUndoableState, onUndoableStateChange, musicVolume}) => {
   const playerRef = useRef<PlayerRef | null>(null);
 
   return (
     <div className="bg-editor-starter-bg flex h-full w-full flex-col items-center justify-between">
       <SafeZoneProvider>
         <LayerPanelProvider>
-        <ContextProvider initialUndoableState={initialUndoableState} onUndoableStateChange={onUndoableStateChange}>
+        <ContextProvider initialUndoableState={initialUndoableState} onUndoableStateChange={onUndoableStateChange} musicVolume={musicVolume}>
           <WaitForInitialized>
             <PreviewSizeProvider>
               <ActionRow playerRef={playerRef} />

@@ -35,6 +35,10 @@ export interface LuminacastEditorProps {
   initialUndoableState?: UndoableState;
   /** Callback fired when undoableState changes — used for auto-save */
   onUndoableStateChange?: (undoableState: UndoableState) => void;
+  /** Live background-music bed volume (0..1) from the Arrange-tab slider.
+   *  The ContextProvider reconciles the timeline's music item(s) to this
+   *  without remounting, so the preview volume changes during playback. */
+  musicVolume?: number;
 }
 
 export const LuminacastEditor: React.FC<LuminacastEditorProps> = ({
@@ -42,6 +46,7 @@ export const LuminacastEditor: React.FC<LuminacastEditorProps> = ({
   className = "",
   initialUndoableState,
   onUndoableStateChange,
+  musicVolume,
 }) => {
   const ctxValue = useMemo(
     () => (cast ? { castId: cast.id, cast } : null),
@@ -53,6 +58,7 @@ export const LuminacastEditor: React.FC<LuminacastEditorProps> = ({
       <Editor
         initialUndoableState={initialUndoableState}
         onUndoableStateChange={onUndoableStateChange}
+        musicVolume={musicVolume}
       />
     </div>
   );
