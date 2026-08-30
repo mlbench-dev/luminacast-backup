@@ -3133,6 +3133,7 @@ def _apply_preferred_broll(
 async def auto_populate_stock_media(
     outline: list[dict], cast_id: str, products: list[dict] | None = None,
     preferred_broll_urls: list[str] | None = None,
+    orientation: str = "portrait",
 ) -> list[dict]:
     """For each outline block with a stock_media_query, search Pexels and
     attach the top result to the block in place.
@@ -3176,7 +3177,7 @@ async def auto_populate_stock_media(
     async def _fetch_video_clip(queries, beat_text: str, i: int) -> tuple[dict, dict] | None:
         """Resolve `queries` (specific→generic) to a (video, file) pair, or None."""
         best = await _select_video_candidate(
-            client, queries, beat_text, "portrait", cast_id, i,
+            client, queries, beat_text, orientation, cast_id, i,
         )
         if not best:
             return None
@@ -3226,7 +3227,9 @@ async def auto_populate_stock_media(
 
         try:
             if wants_photo:
-                results = await client.safe_search_photos(query, per_page=3)
+                results = await client.safe_search_photos(
+                    query, per_page=3, orientation=orientation,
+                )
                 photos = (results or {}).get("photos") or []
                 if not photos:
                     return

@@ -1315,8 +1315,13 @@ def translate_timeline_to_ffmpeg(
         start = el.get("s", 0)
         end = el.get("e", 5)
         out_label = f"ov_vid_{idx}"
+        # Cover-fit (object-fit: cover): scale to fill the box, then centre-crop
+        # the overflow. A plain `scale=w:h` here stretched b-roll whose source
+        # aspect didn't match the box — e.g. a portrait Pexels clip on a 16:9
+        # cast came out horizontally squished.
         filters.append(
-            f"[{real_idx}:v]scale={w}:{h}[{label}_scaled]"
+            f"[{real_idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},setsar=1[{label}_scaled]"
         )
         filters.append(
             f"[{label}_scaled]setpts=PTS-STARTPTS+{start}/TB[{label}_shifted]"

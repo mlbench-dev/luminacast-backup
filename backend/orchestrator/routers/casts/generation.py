@@ -299,9 +299,15 @@ async def generate_outline(
         db, getattr(cast, "user_video_ids", None), ctx.workspace_owner_id,
     )
     if preferred_broll_urls:
+        _broll_orientation = (
+            "landscape"
+            if getattr(cast, "format_family", "vertical") == "horizontal"
+            else "portrait"
+        )
         scenes = await auto_populate_stock_media(
             scenes, cast_id=cast_id, products=products,
             preferred_broll_urls=preferred_broll_urls,
+            orientation=_broll_orientation,
         )
 
     # Replace any existing blocks before re-persisting. Without this a second
@@ -697,6 +703,11 @@ async def generate_smart_outline_endpoint(
     outline = await auto_populate_stock_media(
         outline, cast_id=cast_id, products=products,
         preferred_broll_urls=preferred_broll_urls,
+        orientation=(
+            "landscape"
+            if getattr(cast, "format_family", "vertical") == "horizontal"
+            else "portrait"
+        ),
     )
 
     # 3. Wipe any existing blocks for this cast (they'll be replaced).
