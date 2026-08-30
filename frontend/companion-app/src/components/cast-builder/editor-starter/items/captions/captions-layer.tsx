@@ -1,4 +1,4 @@
-import {createTikTokStyleCaptions} from '@remotion/captions';
+import {createTikTokStyleCaptions, type TikTokPage} from '@remotion/captions';
 import React, {useContext, useMemo} from 'react';
 import {Sequence, useCurrentFrame, useVideoConfig} from 'remotion';
 import {CaptionAsset} from '../../assets/assets';
@@ -15,6 +15,49 @@ import {CaptionPage} from './caption-page';
 import {overrideCaptionsItemWithHoverPreview} from './override-captions-item-with-hover-preview';
 
 const SWITCH_CAPTIONS_EVERY_MS = 1200;
+
+// Rough single-line character estimate — mirrors the backend composer's
+// _chars_per_line (_AVG_GLYPH_EM = 0.52) so the preview and the render split
+// pages the same way.
+const AVG_GLYPH_EM = 0.52;
+
+/**
+ * Re-split a time-windowed caption page whose text is longer than one visible
+ * chunk (`maxChars`) so each chunk fits `maxLines` at the current font size /
+ * width — the SAME re-chunk the SSR renderer (capPageToCharBudget) and backend
+ * composer (cap_tokens_to_line_budget) do. Without this the editor preview
+ * showed a whole multi-second page wrapped onto 2+ lines while the final video
+ * paged one line at a time. Each chunk keeps its source token timestamps, so it
+ * starts exactly when its first word is spoken.
+ */
+function capPageToCharBudget(page: TikTokPage, maxChars: number): TikTokPage[] {
+	if (!maxChars || maxChars <= 0 || page.text.length <= maxChars) {
+		return [page];
+	}
+	const out: TikTokPage[] = [];
+	let current: TikTokPage['tokens'] = [];
+	let currentLen = 0;
+	const flush = () => {
+		if (current.length === 0) return;
+		out.push({
+			text: current.map((t) => t.text).join('').trim(),
+			startMs: current[0].fromMs,
+			durationMs: current[current.length - 1].toMs - current[0].fromMs,
+			tokens: current,
+		});
+	};
+	for (const tok of page.tokens) {
+		if (current.length > 0 && currentLen + tok.text.length > maxChars) {
+			flush();
+			current = [];
+			currentLen = 0;
+		}
+		current.push(tok);
+		currentLen += tok.text.length;
+	}
+	flush();
+	return out.length > 0 ? out : [page];
+}
 
 export const CaptionsLayer = ({
 	item: itemWithoutHoverPreview,
@@ -84,10 +127,17 @@ export const CaptionsLayer = ({
 		};
 	}, [item, opacity]);
 
-	const {pages} = createTikTokStyleCaptions({
+	const {pages: rawPages} = createTikTokStyleCaptions({
 		captions: captionAsset.captions,
 		combineTokensWithinMilliseconds: item.pageDurationInMilliseconds,
 	});
+	// Split each time-windowed page down to what fits `maxLines` at this font
+	// size / width, so the preview pages one line at a time exactly like the
+	// final render (SSR capPageToCharBudget / composer cap_tokens_to_line_budget).
+	const maxCharsPerChunk =
+		Math.max(1, Math.floor(item.width / Math.max(1, item.fontSize * AVG_GLYPH_EM))) *
+		Math.max(1, item.maxLines || 1);
+	const pages = rawPages.flatMap((p) => capPageToCharBudget(p, maxCharsPerChunk));
 
 	if (!loaded) {
 		return null;

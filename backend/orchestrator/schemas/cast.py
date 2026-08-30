@@ -55,7 +55,10 @@ class BlockResponse(BaseModel):
 
 
 class CastCreate(BaseModel):
-    name: Optional[str] = Field(default=None, max_length=200)
+    # Short label — capped so a pasted essay can't break card/header layout
+    # in the UI. Kept in sync with CAST_NAME_MAX_LENGTH on the frontend and
+    # CastPatchRequest.name.
+    name: Optional[str] = Field(default=None, max_length=80)
     avatar_id: str
     template_name: Optional[str] = None
     # Stage-1 creative template the user picked (see services.cast_templates).

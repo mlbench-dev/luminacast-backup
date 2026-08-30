@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from database import get_db
 from models.user import User, TeamRole
 from models.cast import Cast, CastStatus, CastProduct, CastQuality, CastVersion, CastApprovalStatus
@@ -899,7 +899,8 @@ async def get_cast(
     }
 
 class CastPatchRequest(BaseModel):
-    name: Optional[str] = None
+    # 80-char cap — matches CastCreate.name and the frontend field limit.
+    name: Optional[str] = Field(default=None, max_length=80)
     description: Optional[str] = None
     duration_target_seconds: Optional[int] = None
     platform_target: Optional[str] = None

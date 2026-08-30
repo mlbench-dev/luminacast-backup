@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, Plus, Sparkles, X, ZoomIn } from "lucide-react";
+import { Check, Loader2, Plus, Sparkles, Trash2, X, ZoomIn } from "lucide-react";
 import { castsApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 
 type Frame = {
   id: string;
@@ -102,6 +103,31 @@ export function ActionFrameCarousel({
     queryClient.invalidateQueries({ queryKey });
   }, [queryClient, queryKey]);
 
+  const handleDeleteFrame = useCallback(
+    async (frameId: string) => {
+      const ok = await confirmAction({
+        title: "Delete this frame?",
+        text: "The generated frame is removed from the carousel. This can't be undone.",
+        confirmButtonText: "Delete",
+        cancelButtonText: "Cancel",
+        icon: "warning",
+      });
+      if (!ok) return;
+      try {
+        await castsApi.deleteActionFrame(castId, blockId, frameId);
+        toast({ title: "Frame deleted" });
+        refresh();
+      } catch (err: any) {
+        toast({
+          title: "Couldn't delete frame",
+          description: err?.response?.data?.detail || err?.message || "",
+          variant: "destructive",
+        });
+      }
+    },
+    [castId, blockId, refresh],
+  );
+
   const handlePin = useCallback(
     async (kind: "start" | "end", lookId: string) => {
       setPendingSelect((p) => ({ ...p, [kind]: lookId }));
@@ -172,6 +198,7 @@ export function ActionFrameCarousel({
                     seedPrompt: frame.background_prompt || seed,
                   })
                 }
+                onDelete={() => handleDeleteFrame(frame.id)}
                 error={frame.error_message}
               />
             ))
@@ -217,6 +244,7 @@ function FrameTile({
   selected,
   onSelect,
   onZoom,
+  onDelete,
   error,
   hint,
 }: {
@@ -226,6 +254,7 @@ function FrameTile({
   selected?: boolean;
   onSelect?: () => void;
   onZoom?: () => void;
+  onDelete?: () => void;
   error?: string | null;
   hint?: string;
 }) {
@@ -251,7 +280,7 @@ function FrameTile({
   if (state === "failed") {
     return (
       <div
-        className={`${baseClass} border border-red-500/40`}
+        className={`${baseClass} group border border-red-500/40`}
         title={error || "Generation failed"}
         data-testid={`af-tile-${kind}-failed`}
       >
@@ -259,6 +288,16 @@ function FrameTile({
           <X className="w-4 h-4 mb-1" />
           Failed
         </div>
+        {onDelete && (
+          <div
+            className="absolute top-1 right-1 p-1 rounded bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity"
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            role="button"
+            aria-label="Delete frame"
+          >
+            <Trash2 className="w-3 h-3 text-red-300" />
+          </div>
+        )}
       </div>
     );
   }
@@ -301,16 +340,31 @@ function FrameTile({
           <Check className="w-3 h-3" strokeWidth={3} />
         </div>
       )}
-      <div
-        className="absolute top-1 right-1 p-1 rounded bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity"
-        onClick={(e) => {
-          e.stopPropagation();
-          onZoom?.();
-        }}
-        role="button"
-        aria-label="Zoom"
-      >
-        <ZoomIn className="w-3 h-3 text-white" />
+      <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div
+          className="p-1 rounded bg-black/50"
+          onClick={(e) => {
+            e.stopPropagation();
+            onZoom?.();
+          }}
+          role="button"
+          aria-label="Zoom"
+        >
+          <ZoomIn className="w-3 h-3 text-white" />
+        </div>
+        {onDelete && (
+          <div
+            className="p-1 rounded bg-black/50 hover:bg-red-600/70"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            role="button"
+            aria-label="Delete frame"
+          >
+            <Trash2 className="w-3 h-3 text-white" />
+          </div>
+        )}
       </div>
     </button>
   );
@@ -353,6 +407,34 @@ function FrameZoomModal({
     look?.background_prompt || seedPrompt || "",
   );
   const [submitting, setSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = useCallback(async () => {
+    if (!look) return;
+    const ok = await confirmAction({
+      title: "Delete this frame?",
+      text: "The generated frame is removed from the carousel. This can't be undone.",
+      confirmButtonText: "Delete",
+      cancelButtonText: "Cancel",
+      icon: "warning",
+    });
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await castsApi.deleteActionFrame(castId, blockId, look.id);
+      toast({ title: "Frame deleted" });
+      onGenerated();
+      onClose();
+    } catch (err: any) {
+      toast({
+        title: "Couldn't delete frame",
+        description: err?.response?.data?.detail || err?.message || "",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, [look, castId, blockId, onGenerated, onClose]);
 
   useEffect(() => {
     setPrompt(look?.background_prompt || seedPrompt || "");
@@ -395,7 +477,7 @@ function FrameZoomModal({
       onClick={onClose}
     >
       <div
-        className="bg-zinc-900 border border-white/10 rounded-lg max-w-lg w-full p-4 space-y-3"
+        className="bg-zinc-900 border border-white/10 rounded-lg max-w-md w-full p-4 space-y-3 max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
         data-testid={`af-zoom-${kind}`}
       >
@@ -412,15 +494,15 @@ function FrameZoomModal({
           </button>
         </div>
         {look?.image_url ? (
-          <div className="rounded bg-zinc-800 aspect-[3/4] overflow-hidden">
+          <div className="rounded bg-zinc-800 overflow-hidden flex items-center justify-center">
             <img
               src={look.image_url}
               alt="frame"
-              className="w-full h-full object-contain"
+              className="max-h-[45vh] w-auto max-w-full object-contain"
             />
           </div>
         ) : (
-          <div className="rounded bg-zinc-800 aspect-[3/4] flex items-center justify-center text-white/30 text-xs">
+          <div className="rounded bg-zinc-800 h-24 flex items-center justify-center text-white/30 text-xs text-center px-4">
             New frame preview will appear after AI render finishes.
           </div>
         )}
@@ -445,7 +527,22 @@ function FrameZoomModal({
             </p>
           ) : null}
         </div>
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            {look && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleting || submitting}
+                className="px-2 py-1.5 text-xs text-red-400 hover:text-red-300 inline-flex items-center gap-1 disabled:opacity-50"
+                data-testid={`af-delete-${kind}`}
+              >
+                {deleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                Delete
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -467,6 +564,7 @@ function FrameZoomModal({
             )}
             {look ? "Regenerate" : "Generate"}
           </button>
+          </div>
         </div>
       </div>
     </div>

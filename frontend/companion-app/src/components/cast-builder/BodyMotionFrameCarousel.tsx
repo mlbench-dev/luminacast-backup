@@ -388,7 +388,7 @@ function FrameZoomModal({
       onClick={onClose}
     >
       <div
-        className="bg-zinc-900 border border-white/10 rounded-lg max-w-lg w-full p-4 space-y-3"
+        className="bg-zinc-900 border border-white/10 rounded-lg max-w-md w-full p-4 space-y-3 max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
         data-testid={`bmf-zoom-${kind}`}
       >
@@ -405,15 +405,15 @@ function FrameZoomModal({
           </button>
         </div>
         {look?.image_url ? (
-          <div className="rounded bg-zinc-800 aspect-[3/4] overflow-hidden">
+          <div className="rounded bg-zinc-800 overflow-hidden flex items-center justify-center">
             <img
               src={look.image_url}
               alt="frame"
-              className="w-full h-full object-contain"
+              className="max-h-[45vh] w-auto max-w-full object-contain"
             />
           </div>
         ) : (
-          <div className="rounded bg-zinc-800 aspect-[3/4] flex items-center justify-center text-white/30 text-xs">
+          <div className="rounded bg-zinc-800 h-24 flex items-center justify-center text-white/30 text-xs text-center px-4">
             New frame preview will appear after AI render finishes.
           </div>
         )}

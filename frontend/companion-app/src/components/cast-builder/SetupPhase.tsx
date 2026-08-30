@@ -16,6 +16,10 @@ import { toast } from "@/hooks/useToast";
 import { confirmAction } from "@/lib/swal";
 import { RenderLockBanner } from "@/components/cast-builder/RenderLockBanner";
 
+// Cap the cast name so a pasted essay can't break page/card/header layout.
+// Kept in sync with the backend (CastCreate/CastPatchRequest name max_length).
+const CAST_NAME_MAX_LENGTH = 80;
+
 const QUALITY_OPTIONS = [
   { value: "simple", label: "Simple", price: "$14.99", desc: "Fast generation" },
   { value: "hd", label: "HD", price: "$19.99", desc: "High quality" },
@@ -231,7 +235,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   useEffect(() => {
     if (!cast || hydratedFromCastRef.current) return;
     hydratedFromCastRef.current = true;
-    if (cast.name) setCastName(cast.name);
+    if (cast.name) setCastName(cast.name.slice(0, CAST_NAME_MAX_LENGTH));
     if (cast.cast_type) setCastType(cast.cast_type);
     setSelectedTemplate(cast.template_id ?? null);
     setSelectedAvatar(cast.avatar_id ?? null);
@@ -650,14 +654,20 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           can lead with the prompt below. */}
       <div className="flex items-center gap-3">
         <div className="relative group flex-1 min-w-0">
-          <label className="text-[11px] text-white/40 mb-1 block">
-            Cast name <span className="text-white/25">(optional — auto-named if left blank)</span>
+          <label className="text-[11px] text-white/40 mb-1 flex items-center justify-between">
+            <span>Cast name <span className="text-white/25">(optional — auto-named if left blank)</span></span>
+            {nameEditing && (
+              <span className={cn("tabular-nums", castName.length >= CAST_NAME_MAX_LENGTH ? "text-amber-400/80" : "text-white/25")}>
+                {castName.length}/{CAST_NAME_MAX_LENGTH}
+              </span>
+            )}
           </label>
           <Input
             ref={nameInputRef}
             placeholder="Untitled cast"
             value={castName}
-            onChange={(e) => setCastName(e.target.value)}
+            maxLength={CAST_NAME_MAX_LENGTH}
+            onChange={(e) => setCastName(e.target.value.slice(0, CAST_NAME_MAX_LENGTH))}
             onFocus={() => setNameEditing(true)}
             onBlur={() => setNameEditing(false)}
             className="bg-transparent border-0 border-b border-white/10 rounded-none px-0 text-lg font-semibold text-white placeholder-white/30 focus-visible:ring-0 focus-visible:border-accent"

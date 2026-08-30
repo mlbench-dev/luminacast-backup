@@ -245,6 +245,13 @@ export const castsApi = {
         created_at: string | null;
       }>(`/casts/${castId}/blocks/${blockId}/action_frame`, payload)
       .then((r) => r.data),
+  /** Delete one AI scene frame from an avatar_action block's carousel. */
+  deleteActionFrame: (castId: string, blockId: string, frameId: string) =>
+    api
+      .delete<{ deleted: boolean; frame_id: string }>(
+        `/casts/${castId}/blocks/${blockId}/action_frame/${frameId}`,
+      )
+      .then((r) => r.data),
   /** Upload first or last frame image for a generated_video block. */
   uploadBlockFrame: (castId: string, blockId: string, slot: "first" | "last", file: File) => {
     const fd = new FormData();

@@ -550,3 +550,59 @@ async def list_action_frames(
         "end_prompt_seed": getattr(block, "action_end_prompt", None),
         "frames": by_kind,
     }
+
+
+@router.delete("/{cast_id}/blocks/{block_id}/action_frame/{frame_id}")
+async def delete_action_frame(
+    cast_id: str,
+    block_id: str,
+    frame_id: str,
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete one AI scene frame from an avatar_action block's carousel.
+
+    ``frame_id`` is the AvatarLook row id. Validated to belong to this
+    cast's avatar and this block's ``action_block_<id>_<kind>`` prefix so a
+    caller can't delete an unrelated look. If the frame was the one pinned
+    on the block, the selection is cleared too.
+    """
+    cast = await db.get(Cast, cast_id)
+    if not cast or cast.user_id != ctx.workspace_owner_id:
+        raise HTTPException(404, "Cast not found")
+    block = await db.get(Block, block_id)
+    if not block or block.cast_id != cast_id:
+        raise HTTPException(404, "Block not found")
+
+    from models.avatar_look import AvatarLook
+
+    look = await db.get(AvatarLook, frame_id)
+    prefix = f"action_block_{block_id}_"
+    if (
+        not look
+        or look.avatar_id != cast.avatar_id
+        or not (look.look_type or "").startswith(prefix)
+    ):
+        raise HTTPException(404, "Frame not found")
+
+    # Clear the pin if this frame was the selected start/end.
+    if block.body_motion_start_look_id == frame_id:
+        block.body_motion_start_look_id = None
+    if block.body_motion_end_look_id == frame_id:
+        block.body_motion_end_look_id = None
+
+    await db.delete(look)
+    await db.commit()
+
+    try:
+        await audit_log.record(
+            db, user_id=user.id, action="block.action_frame.delete",
+            entity_type="block", entity_id=block_id, cast_id=cast_id,
+            after={"frame_id": frame_id},
+        )
+        await db.commit()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+    return {"deleted": True, "frame_id": frame_id}

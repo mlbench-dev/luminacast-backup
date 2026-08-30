@@ -93,6 +93,26 @@ async def duplicate_cast_as(
             script_direction=source.script_direction,
             cast_type=getattr(source, "cast_type", "recorded"),
             description=getattr(source, "description", None),
+            # Format-agnostic content settings — these must survive a
+            # cross-format duplicate, otherwise the sibling comes out silent
+            # (no background music) and stripped of the b-roll / scene / caption
+            # choices the user already made on the source. Bug: duplicating a
+            # cast with music produced a music-less copy, and there's no
+            # in-place format toggle so "convert back" just re-duplicates and
+            # loses it again.
+            # NOT NULL columns — coalesce to their defaults in case a legacy
+            # source row predates the column backfill.
+            music_track_choice=getattr(source, "music_track_choice", None) or "auto",
+            broll_media_source=getattr(source, "broll_media_source", None) or "stock",
+            production_level=getattr(source, "production_level", None) or "standard",
+            # Nullable columns — a plain copy (None is fine).
+            music_volume=getattr(source, "music_volume", None),
+            background_music_url=getattr(source, "background_music_url", None),
+            background_music_mood=getattr(source, "background_music_mood", None),
+            background_music_tags=getattr(source, "background_music_tags", None),
+            default_avatar_look_id=getattr(source, "default_avatar_look_id", None),
+            caption_preset=getattr(source, "caption_preset", None),
+            duration_target_seconds=getattr(source, "duration_target_seconds", None),
             base_price=source.base_price,
             effects_price=source.effects_price,
             total_price=source.total_price,

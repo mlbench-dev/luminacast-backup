@@ -32,6 +32,10 @@ import { toast } from "@/hooks/useToast";
 import { useAuthStore } from "@/stores/authStore";
 import { TeamRole } from "@/lib/types";
 
+// Kept in sync with CAST_NAME_MAX_LENGTH in SetupPhase.tsx and the backend
+// CastCreate/CastPatchRequest name max_length.
+const CAST_NAME_MAX_LENGTH = 80;
+
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: typeof Clock }> = {
   draft: { label: "Draft", color: "bg-gray-500/10 text-gray-400", icon: Clock },
   outline_review: { label: "Outline", color: "bg-blue-500/10 text-blue-400", icon: Clock },
@@ -149,7 +153,7 @@ export function MyCastsPage() {
   });
 
   const commitRename = (castId: string) => {
-    const trimmed = renameValue.trim();
+    const trimmed = renameValue.trim().slice(0, CAST_NAME_MAX_LENGTH);
     setRenamingId(null);
     renameMutation.mutate({ castId, name: trimmed });
   };
@@ -352,7 +356,8 @@ export function MyCastsPage() {
                           <input
                             autoFocus
                             value={renameValue}
-                            onChange={(e) => setRenameValue(e.target.value)}
+                            maxLength={CAST_NAME_MAX_LENGTH}
+                            onChange={(e) => setRenameValue(e.target.value.slice(0, CAST_NAME_MAX_LENGTH))}
                             onKeyDown={(e) => {
                               if (e.key === "Enter") commitRename(cast.id);
                               if (e.key === "Escape") setRenamingId(null);
