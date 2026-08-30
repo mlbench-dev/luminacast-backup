@@ -111,3 +111,111 @@ async def _import_async(cast_id: str) -> dict:
 
     logger.info("Smart Cast stock import for %s: %d imported, %d failed", cast_id, imported, failed)
     return {"cast_id": cast_id, "imported": imported, "failed": failed}
+
+
+@celery_app.task(name="tasks.smart_cast_tasks.repopulate_stock_media", queue="default")
+def repopulate_stock_media_task(cast_id: str) -> dict:
+    """Re-run Pexels b-roll selection for a cast in ITS aspect orientation.
+
+    Used after a cross-format "Duplicate as" — the copy inherits the source's
+    stock_media_url / parallel_media, which were fetched for the SOURCE
+    orientation (e.g. portrait clips on a now-16:9 cast → they get
+    cover-cropped hard at render). This re-searches each block's
+    stock_media_query as landscape / portrait to match the new format and
+    writes the fresh picks back onto the block rows.
+    """
+    return asyncio.run(_repopulate_stock_async(cast_id))
+
+
+async def _repopulate_stock_async(cast_id: str) -> dict:
+    from database import async_session_factory
+    from models.block import Block
+    from models.cast import Cast, CastProduct
+    from models.product import Product
+    from engine.cast_generator import auto_populate_stock_media
+
+    async with async_session_factory() as db:
+        cast = await db.get(Cast, cast_id)
+        if cast is None:
+            return {"error": "cast_not_found"}
+
+        orientation = (
+            "landscape"
+            if getattr(cast, "format_family", "vertical") == "horizontal"
+            else "portrait"
+        )
+
+        blk_rows = (
+            await db.execute(
+                select(Block)
+                .where(
+                    Block.cast_id == cast_id,
+                    Block.deleted_at.is_(None),
+                    Block.stock_media_query.isnot(None),
+                )
+                .order_by(Block.position.asc())
+            )
+        ).scalars().all()
+        if not blk_rows:
+            return {"skipped": "no_stock_blocks", "cast_id": cast_id}
+
+        cp_rows = (
+            await db.execute(
+                select(CastProduct)
+                .where(CastProduct.cast_id == cast_id)
+                .order_by(CastProduct.position.asc())
+            )
+        ).scalars().all()
+        products: list[dict] = []
+        for cp in cp_rows:
+            p = await db.get(Product, cp.product_id)
+            if p:
+                products.append({"name": p.name, "description": p.description or ""})
+
+        # `auto_populate_stock_media` mutates a list of outline-shaped dicts in
+        # place; keep a ref to each source Block so we can write the picks back.
+        outline: list[dict] = []
+        for b in blk_rows:
+            outline.append({
+                "stock_media_query": b.stock_media_query,
+                "category": b.category,
+                "background_type": b.background_type,
+                "product_name": None,
+                "key_points": b.key_points,
+                "_blk": b,
+            })
+
+        try:
+            await auto_populate_stock_media(
+                outline, cast_id, products=products or None, orientation=orientation,
+            )
+        except Exception as exc:
+            import sentry_sdk
+            sentry_sdk.capture_exception(exc)
+            logger.warning("repopulate_stock_media failed for %s: %s", cast_id, exc)
+            return {"error": "populate_failed", "cast_id": cast_id}
+
+        updated = 0
+        for od in outline:
+            b = od["_blk"]
+            new_url = od.get("stock_media_url")
+            if new_url:
+                b.stock_media_url = new_url
+                b.stock_media_thumbnail = od.get("stock_media_thumbnail")
+                b.stock_media_pexels_id = od.get("stock_media_pexels_id")
+                b.stock_media_kind = od.get("stock_media_kind")
+                updated += 1
+            if od.get("parallel_media") is not None:
+                b.parallel_media = od.get("parallel_media")
+            # A cross-format re-fetch replaces the source's imported copy —
+            # clear the stale R2 import pointer so the renderer uses the fresh
+            # Pexels URL (import_smart_stock_task can re-host it later).
+            if new_url:
+                b.user_video_asset_id = None
+
+        await db.commit()
+        logger.info(
+            "repopulate_stock_media for %s: %d blocks updated (orientation=%s)",
+            cast_id, updated, orientation,
+        )
+        return {"cast_id": cast_id, "orientation": orientation, "blocks_updated": updated}

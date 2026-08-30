@@ -256,6 +256,17 @@ async def duplicate_cast_as(
 
         await db.commit()
 
+        # Re-fetch Pexels b-roll in the NEW format's orientation. The copied
+        # blocks carry the source's stock clips, which were portrait/landscape
+        # for the OTHER aspect ratio — rendering them in this format meant a
+        # hard cover-crop (or, before the composer fix, a stretch). This
+        # re-searches each stock_media_query as landscape/portrait to match.
+        try:
+            from tasks.smart_cast_tasks import repopulate_stock_media_task
+            repopulate_stock_media_task.delay(new_cast_id)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+
         # Regenerate scene/action frames for the copied action & body-motion
         # blocks so they're framed for the NEW aspect ratio. Best-effort — the
         # block already carries the prompts, so the user can also (re)generate
