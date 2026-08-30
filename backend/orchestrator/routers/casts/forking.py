@@ -125,11 +125,28 @@ async def duplicate_cast_as(
         if not getattr(source, "parent_cast_id", None):
             source.parent_cast_id = source.id
 
-        # Copy blocks with their variants (reuse, not clone)
+        # Copy blocks with their variants (reuse, not clone).
+        #
+        # A duplicate is "the same video, different layout" — so every
+        # CREATIVE decision on the block is carried over: which category /
+        # render mode it is, the AI-picked b-roll (parallel_media), the stock
+        # clip, the scene / action / motion prompts, framing, overlays, PIP
+        # settings, carousel metadata, pinned product media. Without this the
+        # copied blocks reverted to the column default (avatar_speaking /
+        # avatar_full) and the horizontal version came out as a different
+        # video — talking-head + freshly generated avatar scenes instead of
+        # the original's stock-b-roll mix.
+        #
+        # Deliberately NOT copied — these are baked at the SOURCE aspect ratio
+        # and are regenerated for the new format below:
+        #   body_motion_start/end_look_id, scene_image_key,
+        #   gen_video_first/last_frame_key, acting_video_r2_key
         active_blocks = sorted(
             [b for b in source.blocks if b.deleted_at is None],
             key=lambda b: b.position or 0,
         )
+        # (new_block_id, kind) → prompt, for scene-frame regeneration after commit.
+        frame_regen: list[tuple[str, str, str, str]] = []  # (block_id, "action"|"body_motion", start_prompt, end_prompt)
         for block in active_blocks:
             new_blk_id = f"blk_{uuid.uuid4().hex[:12]}"
             new_block = Block(
@@ -140,8 +157,70 @@ async def duplicate_cast_as(
                 position=block.position,
                 mood=block.mood,
                 key_points=block.key_points,
+                # ── creative composition (format-agnostic) ──
+                # NOT NULL columns are coalesced to their defaults in case a
+                # legacy source row predates the column.
+                category=block.category or "avatar_speaking",
+                render_mode=block.render_mode or "avatar_full",
+                block_type=block.block_type or "speaking",
+                framing=block.framing or "MEDIUM",
+                pip_engine=block.pip_engine or "infinitetalk_rendered",
+                voicing_mode=block.voicing_mode or "tts_dialogue",
+                sort_order=block.sort_order or 0,
+                layout_mode=block.layout_mode,
+                mic_on=block.mic_on,
+                background_id=block.background_id,
+                user_video_asset_id=block.user_video_asset_id,
+                avatar_look_id=block.avatar_look_id,
+                avatar_angle=block.avatar_angle,
+                hook_type=block.hook_type,
+                background_type=block.background_type,
+                transition_in=block.transition_in,
+                energy_level=block.energy_level,
+                # b-roll / stock picks
+                parallel_media=block.parallel_media,
+                stock_media_query=block.stock_media_query,
+                stock_media_url=block.stock_media_url,
+                stock_media_thumbnail=block.stock_media_thumbnail,
+                stock_media_kind=block.stock_media_kind,
+                stock_media_pexels_id=block.stock_media_pexels_id,
+                # scene / action / motion prompts (frames regenerate from these)
+                acting_prompt=block.acting_prompt,
+                acting_first_frame_angle=block.acting_first_frame_angle,
+                acting_last_frame_angle=block.acting_last_frame_angle,
+                body_motion_prompt=block.body_motion_prompt,
+                body_motion_start_prompt=block.body_motion_start_prompt,
+                body_motion_end_prompt=block.body_motion_end_prompt,
+                action_start_prompt=block.action_start_prompt,
+                action_end_prompt=block.action_end_prompt,
+                # overlays / layout / pinned product media / misc
+                overlay_type=block.overlay_type,
+                overlay_config=block.overlay_config,
+                layout_template_ids=block.layout_template_ids,
+                block_metadata=block.block_metadata,
+                video_asset_id=block.video_asset_id,
+                image_asset_id=block.image_asset_id,
+                auto_basket_enabled=block.auto_basket_enabled,
+                auto_basket_timeout=block.auto_basket_timeout,
+                chat_rules=block.chat_rules,
             )
             db.add(new_block)
+
+            # Queue scene-frame regeneration for action / body-motion blocks so
+            # the new cast gets frames at ITS aspect ratio (mirrors what the
+            # smart-outline endpoint does after generating an outline).
+            if (block.action_start_prompt or "").strip() or (block.action_end_prompt or "").strip():
+                frame_regen.append((
+                    new_blk_id, "action",
+                    (block.action_start_prompt or "").strip(),
+                    (block.action_end_prompt or "").strip(),
+                ))
+            elif (block.body_motion_start_prompt or "").strip() or (block.body_motion_end_prompt or "").strip():
+                frame_regen.append((
+                    new_blk_id, "body_motion",
+                    (block.body_motion_start_prompt or "").strip(),
+                    (block.body_motion_end_prompt or "").strip(),
+                ))
 
             # Copy variants — reuse audio data (audio is format-agnostic)
             for v in (block.variants or []):
@@ -176,6 +255,29 @@ async def duplicate_cast_as(
             db.add(new_cp)
 
         await db.commit()
+
+        # Regenerate scene/action frames for the copied action & body-motion
+        # blocks so they're framed for the NEW aspect ratio. Best-effort — the
+        # block already carries the prompts, so the user can also (re)generate
+        # from the Script-tab carousel if a task fails to dispatch.
+        if frame_regen:
+            try:
+                from tasks.avatar_looks import (
+                    generate_action_frame_task,
+                    generate_body_motion_frame_task,
+                )
+                for blk_id, mode, start_p, end_p in frame_regen:
+                    task = (
+                        generate_action_frame_task
+                        if mode == "action"
+                        else generate_body_motion_frame_task
+                    )
+                    if start_p:
+                        task.delay(blk_id, "start", start_p)
+                    if end_p:
+                        task.delay(blk_id, "end", end_p)
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
 
         try:
             await audit_log.record(
