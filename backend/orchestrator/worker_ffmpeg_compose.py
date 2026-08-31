@@ -467,14 +467,7 @@ def _build_overlay_filter_parts(overlay_elements, current_label):
 
 
 def _font_line_height(font, font_size: int) -> float:
-    """Line box height (ascent + descent) for a loaded PIL font.
-
-    This is what drawtext uses as `text_h` for a single line, and it's the
-    SAME for every word of the font/size — so per-word highlight drawtexts can
-    all share one constant `y` instead of `h-text_h-40` (which varies per word
-    because a word with a descender has a taller glyph box, and was making the
-    rendered words jitter up and down).
-    """
+    """Line box height (ascent + descent) for a loaded PIL font."""
     if font is not None:
         try:
             ascent, descent = font.getmetrics()
@@ -483,6 +476,36 @@ def _font_line_height(font, font_size: int) -> float:
         except Exception:  # noqa: BLE001 — fall through to the estimate
             pass
     return float(font_size) * 1.3
+
+
+def _ink_bounds(text: str, font) -> tuple:
+    """(top, bottom) pixel offsets of ``text``'s ink from its baseline.
+
+    ``top`` is negative (ink rises above the baseline), ``bottom`` positive.
+    drawtext anchors a text's ink-top to its ``y``, so a lone word with no
+    ascender ("warm,") has a smaller |top| than the full line and, drawn at
+    the same ``y``, its baseline lands higher — that's the up/down jitter.
+    The caller offsets each highlight word's ``y`` by (word_top - line_top)
+    so every word's baseline lands on the line's baseline instead.
+    """
+    if not text or font is None:
+        return (0.0, 0.0)
+    try:  # Pillow ≥ 8: baseline-relative box.
+        b = font.getbbox(text, anchor="ls")
+        return (float(b[1]), float(b[3]))
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # Older Pillow: ascender-relative box → shift by the ascent.
+        asc = float(font.getmetrics()[0])
+        b = font.getbbox(text)
+        return (float(b[1]) - asc, float(b[3]) - asc)
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # Last resort: font-wide metrics (no per-word distinction).
+        asc, desc = font.getmetrics()
+        return (-float(asc), float(desc))
+    except Exception:  # noqa: BLE001
+        return (0.0, 0.0)
 
 
 def _text_advance(text: str, font) -> float:
@@ -742,69 +765,79 @@ def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, ca
                     produced = True
                     continue
 
-                # Karaoke highlight. drawtext can't recolor a sub-string of a
-                # text run, so the line is drawn WORD BY WORD: each word gets a
-                # base-color drawtext for the whole page window, and the spoken
-                # word gets a highlight-color drawtext for its own [start, end]
-                # window at the EXACT SAME x. Because base and highlight of a
-                # word share one computed x, the highlight replaces the word in
-                # place instead of floating a second copy beside it. Word x is
-                # the real PIL pen-advance to that word's left edge within the
-                # centred line (`x=(w-LINE_W)/2 + OFFSET`) — a glyph-advance
-                # guess and drawtext's own `text_w` are what caused the overlap.
+                # Karaoke highlight. drawtext can't recolor a sub-string, so:
+                #  1. the whole line is drawn ONCE, base colour — FFmpeg's own
+                #     layout keeps the words on one baseline and correctly
+                #     spaced;
+                #  2. each spoken word is redrawn on top in the highlight
+                #     colour for its [start, end] window, at the SAME x it
+                #     occupies in the base line (measured pen-advance) and a
+                #     y nudged so ITS baseline lands on the LINE's baseline.
+                #
+                # The y nudge matters: drawtext anchors a text's ink-top to y,
+                # and a lone word with no ascender ("warm,") has a shorter ink
+                # box than the full line, so at a shared y its baseline floats
+                # up. Offsetting by (word_ink_top - line_ink_top) drops it back
+                # onto the line. Word x/y are numeric off the SAME measured
+                # line box as the base draw, so the two never drift apart —
+                # any PIL-vs-FFmpeg metric error just shifts the whole caption
+                # a pixel, base and highlight together.
                 line = wrapped[0]
                 line_w = _text_advance(line, measure_font)
-                words = [_xform((t.get("text") or "").strip()) for t in page_tokens]
-
-                # ONE constant y for every word in the page. Per-word drawtext
-                # can't use `h-text_h-40`: `text_h` is the word's own glyph-box
-                # height, so words with a descender ("heavy", "y") sat higher
-                # than words without ("but", "or") — the rendered line jittered
-                # up and down. The font's line height is the same for all words,
-                # so their baselines line up.
-                line_h = _font_line_height(measure_font, style["font_size"])
+                line_top, line_bot = _ink_bounds(line, measure_font)
+                line_h = line_bot - line_top
+                if line_h <= 1:
+                    line_h = _font_line_height(measure_font, style["font_size"])
                 if style["position_y_frac"] is not None:
-                    word_y = round((canvas_h - line_h) * style["position_y_frac"])
+                    base_line_y = round((canvas_h - line_h) * style["position_y_frac"])
                 else:
-                    word_y = round(canvas_h - line_h - 40)
-                word_y = str(max(0, word_y))
+                    base_line_y = round(canvas_h - line_h - 40)
+                base_line_y = max(0, base_line_y)
+                base_x = f"(w-{line_w:.1f})/2"
 
+                base_path = os.path.join(tmpdir, f"caption_{seq}.txt")
+                with open(base_path, "w", encoding="utf-8") as f:
+                    f.write(line)
+                base_label = f"[cap{seq}]"
+                filter_parts.append(
+                    _caption_drawtext(
+                        current_label, base_label, base_path, style,
+                        pg_start, pg_end, color=style["font_color"],
+                        x_override=base_x, y_override=str(base_line_y),
+                    )
+                )
+                current_label = base_label
+                seq += 1
+                produced = True
+
+                words = [_xform((t.get("text") or "").strip()) for t in page_tokens]
                 for wi, (tok, word) in enumerate(zip(page_tokens, words)):
                     if not word:
                         continue
-                    # Left edge of this word within the line = advance of the
-                    # line up to and including it, minus the word itself (the
-                    # joining spaces are internal to that measured substring).
-                    prefix_with_word = " ".join(w for w in words[: wi + 1] if w)
-                    offset = _text_advance(prefix_with_word, measure_font) \
-                        - _text_advance(word, measure_font)
-                    word_x = f"(w-{line_w:.1f})/2+{max(0.0, offset):.1f}"
-
-                    word_path = os.path.join(tmpdir, f"caption_{seq}.txt")
-                    with open(word_path, "w", encoding="utf-8") as f:
-                        f.write(word)
-                    base_label = f"[cap{seq}]"
-                    filter_parts.append(
-                        _caption_drawtext(
-                            current_label, base_label, word_path, style,
-                            pg_start, pg_end, color=style["font_color"],
-                            x_override=word_x, y_override=word_y, with_box=False,
-                        )
-                    )
-                    current_label = base_label
-                    seq += 1
-                    produced = True
-
                     t0 = max(int(tok.get("startMs", 0)) / 1000.0, pg_start)
                     t1 = min(int(tok.get("endMs", 0)) / 1000.0, pg_end)
                     if t1 <= t0:
                         continue
+                    # x: left edge of this word within the line = advance of
+                    # the line up to and including it, minus the word itself.
+                    prefix_with_word = " ".join(w for w in words[: wi + 1] if w)
+                    offset = _text_advance(prefix_with_word, measure_font) \
+                        - _text_advance(word, measure_font)
+                    word_x = f"(w-{line_w:.1f})/2+{max(0.0, offset):.1f}"
+                    # y: drop a short word so its baseline meets the line's.
+                    word_top, _ = _ink_bounds(word, measure_font)
+                    word_y = base_line_y + max(0, round(word_top - line_top))
+
+                    hl_path = os.path.join(tmpdir, f"caption_{seq}.txt")
+                    with open(hl_path, "w", encoding="utf-8") as f:
+                        f.write(word)
                     hl_label = f"[cap{seq}]"
                     filter_parts.append(
                         _caption_drawtext(
-                            current_label, hl_label, word_path, style, t0, t1,
+                            current_label, hl_label, hl_path, style, t0, t1,
                             color=style["highlight_color"],
-                            x_override=word_x, y_override=word_y, with_box=False,
+                            x_override=word_x, y_override=str(word_y),
+                            with_box=False,
                         )
                     )
                     current_label = hl_label

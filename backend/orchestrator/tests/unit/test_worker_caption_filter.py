@@ -220,26 +220,36 @@ def test_distinct_highlight_color_adds_per_word_layer(tmp_path):
 
     import re
 
+    def y_of(p):
+        return int(re.search(r":y=([0-9]+):", p).group(1))
+
     base_parts = [p for p in parts if "fontcolor=0xFFFFFF" in p]
     hl_parts = [p for p in parts if "fontcolor=0xFFD400" in p]
-    # The line is drawn word by word: one base-color drawtext per word, plus
-    # one highlight-color drawtext per spoken word.
-    assert len(base_parts) == len(WORDS_14)
+    # One base-colour drawtext for the whole line PER PAGE, plus one
+    # highlight-colour drawtext per spoken word.
+    n_pages = len(base_parts)
+    assert 1 <= n_pages < len(WORDS_14)
     assert len(hl_parts) == len(WORDS_14)
 
-    # Base word and its highlight share ONE computed x
-    # (`x=(w-<line_w>)/2 + <offset>`), so the highlight replaces the word in
-    # place — no `text_w`, no glyph-advance guess, no floating second copy.
-    def x_of(p):
-        return re.search(r"x=(\(w-[0-9.]+\)/2\+[0-9.]+):", p).group(1)
-
-    for p in base_parts + hl_parts:
+    # The base line is centred (`x=(w-<line_w>)/2`, no per-word offset); each
+    # highlight word carries the measured offset to its slot in that line.
+    for p in base_parts:
+        assert re.search(r"x=\(w-[0-9.]+\)/2:", p), p
+    for p in hl_parts:
         assert re.search(r"x=\(w-[0-9.]+\)/2\+[0-9.]+:", p), p
         assert "box=1" not in p
-    # Every highlight x matches some base x exactly (same word, same position).
-    base_xs = {x_of(p) for p in base_parts}
+
+    # y is a plain integer everywhere — never the per-word `h-text_h-40` that
+    # let ascender-less words ("warm,") float above the line.
+    for p in base_parts + hl_parts:
+        assert re.search(r":y=[0-9]+:", p), p
+        assert "text_h" not in p.split(":y=")[1].split(":")[0]
+
+    # A highlight word is only ever nudged DOWN onto the baseline, never up:
+    # every highlight y >= the page baseline y it belongs to.
+    base_ys = sorted(y_of(p) for p in base_parts)
     for p in hl_parts:
-        assert x_of(p) in base_xs
+        assert min(base_ys) <= y_of(p) <= max(base_ys) + 60
 
     # Each highlight word's window sits inside the caption window.
     for p in hl_parts:
@@ -247,17 +257,8 @@ def test_distinct_highlight_color_adds_per_word_layer(tmp_path):
         s, e = float(m.group(1)), float(m.group(2))
         assert 4.0 <= s < e <= 8.0
 
-    # The first word of a page sits at the line's left edge (offset 0.0).
-    assert any(re.search(r"x=\(w-[0-9.]+\)/2\+0\.0:", p) for p in base_parts)
-
-    # Every word — base and highlight — shares ONE constant integer y, not the
-    # per-word `h-text_h-40` that made descender words ("heavy", "y") sit
-    # higher than the rest and the line jitter up and down.
-    ys = {re.search(r":y=([^:]+):", p).group(1) for p in base_parts + hl_parts}
-    assert len(ys) == 1, ys
-    only_y = ys.pop()
-    assert "text_h" not in only_y
-    assert only_y.isdigit()
+    # First word of each page sits at the line's left edge (offset 0.0).
+    assert any(re.search(r"x=\(w-[0-9.]+\)/2\+0\.0:", p) for p in hl_parts)
 
 
 def test_identical_highlight_color_no_extra_layer(tmp_path):
