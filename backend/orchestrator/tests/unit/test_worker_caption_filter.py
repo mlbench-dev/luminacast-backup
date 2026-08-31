@@ -175,7 +175,10 @@ def test_tokens_paged_into_word_windows(tmp_path):
     assert label == f"[cap{len(parts) - 1}]"
 
     # Each page's sidecar holds at most _MAX_WORDS_PER_PAGE words.
-    page_files = sorted(tmp_path.glob("caption_*.txt"))
+    page_files = sorted(
+        tmp_path.glob("caption_*.txt"),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
     assert len(page_files) == len(parts)
     for pf in page_files:
         assert len(pf.read_text(encoding="utf-8").split()) <= wfc._MAX_WORDS_PER_PAGE
@@ -214,24 +217,37 @@ def test_distinct_highlight_color_adds_per_word_layer(tmp_path):
     )
     assert drawn == 1
 
-    base_parts = [p for p in parts if "fontcolor=0xFFFFFF" in p]
-    hl_parts = [p for p in parts if "fontcolor=0xFFD400" in p]
-    # One base drawtext per page, one highlight drawtext per spoken word.
-    assert len(base_parts) >= 2
-    assert len(hl_parts) == len(WORDS_14)
-
-    # Highlight words are horizontally offset from centre and box-free.
-    for p in hl_parts:
-        assert "x=(w-text_w)/2+" in p or "x=(w-text_w)/2-" in p
-        assert "box=1" not in p
-
-    # Each highlight word's window sits inside the caption window.
     import re
 
+    base_parts = [p for p in parts if "fontcolor=0xFFFFFF" in p]
+    hl_parts = [p for p in parts if "fontcolor=0xFFD400" in p]
+    # The line is drawn word by word: one base-color drawtext per word, plus
+    # one highlight-color drawtext per spoken word.
+    assert len(base_parts) == len(WORDS_14)
+    assert len(hl_parts) == len(WORDS_14)
+
+    # Base word and its highlight share ONE computed x
+    # (`x=(w-<line_w>)/2 + <offset>`), so the highlight replaces the word in
+    # place — no `text_w`, no glyph-advance guess, no floating second copy.
+    def x_of(p):
+        return re.search(r"x=(\(w-[0-9.]+\)/2\+[0-9.]+):", p).group(1)
+
+    for p in base_parts + hl_parts:
+        assert re.search(r"x=\(w-[0-9.]+\)/2\+[0-9.]+:", p), p
+        assert "box=1" not in p
+    # Every highlight x matches some base x exactly (same word, same position).
+    base_xs = {x_of(p) for p in base_parts}
+    for p in hl_parts:
+        assert x_of(p) in base_xs
+
+    # Each highlight word's window sits inside the caption window.
     for p in hl_parts:
         m = re.search(r"between\(t,([0-9.]+),([0-9.]+)\)", p)
         s, e = float(m.group(1)), float(m.group(2))
         assert 4.0 <= s < e <= 8.0
+
+    # The first word of a page sits at the line's left edge (offset 0.0).
+    assert any(re.search(r"x=\(w-[0-9.]+\)/2\+0\.0:", p) for p in base_parts)
 
 
 def test_identical_highlight_color_no_extra_layer(tmp_path):

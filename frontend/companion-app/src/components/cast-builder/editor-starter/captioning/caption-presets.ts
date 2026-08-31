@@ -8,8 +8,9 @@
  * gets stored on metadata.caption_preset so the FFmpeg renderer reads
  * the same animation hooks the preview uses.
  *
- * Per-block override is honored by `applyPresetToAll` — if an item has
- * `metadata.preset_override === true` it is skipped.
+ * Per-block override: the CaptionStyleBar skips any item with
+ * `metadata.preset_override === true` when a style is picked, so a block
+ * locked from the inspector keeps its own style.
  */
 import type {CaptionsItem} from '../items/captions/captions-item-type';
 import {
@@ -113,24 +114,6 @@ export function applyPresetToCaptionItem(
 			caption_preset: presetId,
 		},
 	};
-}
-
-/**
- * Apply a preset to every caption item in the items map. Items whose
- * metadata.preset_override === true are skipped — they keep their
- * locked-in style.
- */
-export function applyPresetToAll(
-	presetId: CaptionPresetId,
-	items: Record<string, any>,
-): Record<string, any> {
-	const updated = {...items};
-	for (const [id, item] of Object.entries(updated)) {
-		if (item?.type !== 'captions') continue;
-		if (item?.metadata?.preset_override) continue;
-		updated[id] = applyPresetToCaptionItem(item, presetId);
-	}
-	return updated;
 }
 
 export {DEFAULT_CAPTION_PRESET_ID};

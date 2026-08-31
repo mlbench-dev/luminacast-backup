@@ -73,7 +73,7 @@ const CaptionsInspectorUnmemoized: React.FC<{
 
 	// Caption preset state for THIS block. presetId comes from
 	// metadata.caption_preset; presetOverride is a sticky flag that, when
-	// true, makes the global "Apply to all" skip this item.
+	// true, makes the CaptionStyleBar skip this item when a style is picked.
 	const currentPresetId =
 		(item.metadata?.caption_preset as CaptionPresetId | undefined) ||
 		DEFAULT_CAPTION_PRESET_ID;
@@ -240,7 +240,7 @@ const CaptionsInspectorUnmemoized: React.FC<{
 						onChange={handleToggleOverride}
 						className="h-3.5 w-3.5 rounded border-neutral-600 bg-transparent text-blue-500 focus:ring-0 focus:ring-offset-0"
 					/>
-					Lock this block&apos;s style (skip Apply to all)
+					Lock this block&apos;s style (ignore the style bar)
 				</label>
 				{presetOverride && (
 					<p className="mt-1 text-[10px] text-white/40">

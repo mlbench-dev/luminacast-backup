@@ -3,9 +3,9 @@
  *
  * Persistent horizontally-scrollable strip above the timeline. When the
  * cast has any caption items it shows 15 preset chips (live-styled
- * samples) plus an "Apply to all" action. Clicking a chip selects the
- * preset locally; clicking "Apply to all" spreads that preset onto every
- * caption item EXCEPT items where metadata.preset_override === true.
+ * samples). Clicking a chip applies that preset to every caption item
+ * EXCEPT items where metadata.preset_override === true (blocks the user
+ * locked from the inspector).
  *
  * The active preset id is stored on each item's metadata.caption_preset
  * so the FFmpeg renderer (Fix 3 Phase A) reads the same values for the
@@ -18,7 +18,6 @@ import {
 	CAPTION_PRESET_LIST,
 	type CaptionPreset,
 	type CaptionPresetId,
-	applyPresetToAll,
 	applyPresetToCaptionItem,
 } from './caption-presets';
 import {DEFAULT_CAPTION_PRESET_ID} from '@/lib/captionPresets';
@@ -95,30 +94,8 @@ export const CaptionStyleBar: React.FC = () => {
 		return counts;
 	}, [captionItems]);
 
-	const applyToAll = useCallback(() => {
-		if (captionItems.length === 0) return;
-		setState({
-			update: (state) => {
-				const newItems = applyPresetToAll(
-					selectedPreset,
-					state.undoableState.items,
-				);
-				return {
-					...state,
-					undoableState: {
-						...state.undoableState,
-						items: newItems,
-					},
-				};
-			},
-			commitToUndoStack: true,
-		});
-	}, [captionItems, selectedPreset, setState]);
-
-	// Selecting a chip ALSO immediately writes the preset id onto every
-	// non-overridden caption item so the preview updates without an
-	// extra click. "Apply to all" is still useful when the user has
-	// fine-tuned a single block and now wants to broadcast the chip.
+	// Selecting a chip immediately writes the preset id onto every
+	// non-overridden caption item — there is no separate "apply" step.
 	const handleSelect = useCallback(
 		(presetId: CaptionPresetId) => {
 			setSelectedPreset(presetId);
@@ -198,19 +175,11 @@ export const CaptionStyleBar: React.FC = () => {
 			{lockedCount > 0 && (
 				<span
 					className="shrink-0 text-[10px] text-white/40"
-					title={`${lockedCount} block(s) locked — Apply to all skips them`}
+					title={`${lockedCount} block(s) locked from the inspector — picking a style here skips them`}
 				>
 					{lockedCount} locked
 				</span>
 			)}
-
-			<button
-				onClick={applyToAll}
-				className="shrink-0 rounded bg-editor-starter-accent px-3 py-1.5 text-xs font-medium text-black hover:bg-editor-starter-accent/85"
-				title={`Apply ${selectedPreset} to all caption items (locked blocks are skipped)`}
-			>
-				Apply to all
-			</button>
 		</div>
 	);
 };

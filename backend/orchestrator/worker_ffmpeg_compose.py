@@ -26,6 +26,7 @@ from services.cast_ffmpeg_composer import (
     _caption_safe_width,
     _caption_font,
     _wrap_text_to_width,
+    _measure_text_width,
     _chars_per_line,
     _group_caption_tokens_into_pages,
     cap_tokens_to_line_budget,
@@ -465,6 +466,24 @@ def _build_overlay_filter_parts(overlay_elements, current_label):
     return filter_parts, current_label
 
 
+def _text_advance(text: str, font) -> float:
+    """Pen-advance width of ``text`` for a loaded PIL font.
+
+    ``getlength`` (Pillow ≥ 8) is the horizontal pen movement — exactly what
+    decides where the next glyph starts — so it's the right measure for lining
+    a per-word highlight drawtext up with its place in the base line. Falls
+    back to the ink-bbox helper, then to a glyph-advance estimate.
+    """
+    if not text:
+        return 0.0
+    if font is not None:
+        try:
+            return float(font.getlength(text))
+        except Exception:  # noqa: BLE001 — any failure → coarser measure
+            return _measure_text_width(text, font)
+    return _measure_text_width(text, font)
+
+
 def _resolve_caption_style(cap):
     """Resolve the shared per-caption drawtext style from an overlay dict.
 
@@ -673,56 +692,86 @@ def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tm
                 if pg_end <= pg_start:
                     continue
 
-                path = os.path.join(tmpdir, f"caption_{seq}.txt")
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(wrapped))
-                out_label = f"[cap{seq}]"
-                filter_parts.append(
-                    _caption_drawtext(
-                        current_label, out_label, path, style, pg_start, pg_end,
-                        color=style["font_color"],
-                    )
+                page_tokens = pg.get("tokens") or []
+                want_highlight = bool(
+                    style["highlight_color"]
+                    and style["highlight_color"] != style["font_color"]
+                    and len(wrapped) == 1
+                    and not style["box_args"]
+                    and page_tokens
                 )
-                current_label = out_label
-                seq += 1
-                produced = True
 
-                # Karaoke highlight: restate each spoken word in the highlight
-                # color for its own [startMs, endMs] window, offset to roughly
-                # sit over its place in the centered page text. drawtext can't
-                # recolor a sub-string, so it's a stacked per-word layer.
-                if style["highlight_color"] and style["highlight_color"] != style["font_color"]:
-                    pg_full_len = max(len(pg["text"]), 1)
-                    char_w = style["font_size"] * 0.55
-                    cursor = 0
-                    for tok in pg.get("tokens") or []:
-                        tw = _xform((tok.get("text") or "").strip())
-                        if not tw:
-                            cursor += 1
-                            continue
-                        t0 = max(int(tok.get("startMs", 0)) / 1000.0, pg_start)
-                        t1 = min(int(tok.get("endMs", 0)) / 1000.0, pg_end)
-                        if t1 <= t0:
-                            cursor += len(tw) + 1
-                            continue
-                        center_chars = cursor + len(tw) / 2.0
-                        px = (center_chars - pg_full_len / 2.0) * char_w
-                        sign = "+" if px >= 0 else "-"
-                        hl_path = os.path.join(tmpdir, f"caption_{seq}.txt")
-                        with open(hl_path, "w", encoding="utf-8") as f:
-                            f.write(tw)
-                        hl_label = f"[cap{seq}]"
-                        filter_parts.append(
-                            _caption_drawtext(
-                                current_label, hl_label, hl_path, style, t0, t1,
-                                color=style["highlight_color"],
-                                x_override=f"(w-text_w)/2{sign}{abs(px):.1f}",
-                                with_box=False,
-                            )
+                if not want_highlight:
+                    # One centered drawtext for the whole page.
+                    path = os.path.join(tmpdir, f"caption_{seq}.txt")
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write("\n".join(wrapped))
+                    out_label = f"[cap{seq}]"
+                    filter_parts.append(
+                        _caption_drawtext(
+                            current_label, out_label, path, style,
+                            pg_start, pg_end, color=style["font_color"],
                         )
-                        current_label = hl_label
-                        seq += 1
-                        cursor += len(tw) + 1
+                    )
+                    current_label = out_label
+                    seq += 1
+                    produced = True
+                    continue
+
+                # Karaoke highlight. drawtext can't recolor a sub-string of a
+                # text run, so the line is drawn WORD BY WORD: each word gets a
+                # base-color drawtext for the whole page window, and the spoken
+                # word gets a highlight-color drawtext for its own [start, end]
+                # window at the EXACT SAME x. Because base and highlight of a
+                # word share one computed x, the highlight replaces the word in
+                # place instead of floating a second copy beside it. Word x is
+                # the real PIL pen-advance to that word's left edge within the
+                # centred line (`x=(w-LINE_W)/2 + OFFSET`) — a glyph-advance
+                # guess and drawtext's own `text_w` are what caused the overlap.
+                line = wrapped[0]
+                line_w = _text_advance(line, measure_font)
+                words = [_xform((t.get("text") or "").strip()) for t in page_tokens]
+
+                for wi, (tok, word) in enumerate(zip(page_tokens, words)):
+                    if not word:
+                        continue
+                    # Left edge of this word within the line = advance of the
+                    # line up to and including it, minus the word itself (the
+                    # joining spaces are internal to that measured substring).
+                    prefix_with_word = " ".join(w for w in words[: wi + 1] if w)
+                    offset = _text_advance(prefix_with_word, measure_font) \
+                        - _text_advance(word, measure_font)
+                    word_x = f"(w-{line_w:.1f})/2+{max(0.0, offset):.1f}"
+
+                    word_path = os.path.join(tmpdir, f"caption_{seq}.txt")
+                    with open(word_path, "w", encoding="utf-8") as f:
+                        f.write(word)
+                    base_label = f"[cap{seq}]"
+                    filter_parts.append(
+                        _caption_drawtext(
+                            current_label, base_label, word_path, style,
+                            pg_start, pg_end, color=style["font_color"],
+                            x_override=word_x, with_box=False,
+                        )
+                    )
+                    current_label = base_label
+                    seq += 1
+                    produced = True
+
+                    t0 = max(int(tok.get("startMs", 0)) / 1000.0, pg_start)
+                    t1 = min(int(tok.get("endMs", 0)) / 1000.0, pg_end)
+                    if t1 <= t0:
+                        continue
+                    hl_label = f"[cap{seq}]"
+                    filter_parts.append(
+                        _caption_drawtext(
+                            current_label, hl_label, word_path, style, t0, t1,
+                            color=style["highlight_color"],
+                            x_override=word_x, with_box=False,
+                        )
+                    )
+                    current_label = hl_label
+                    seq += 1
 
         if produced:
             drawn += 1
