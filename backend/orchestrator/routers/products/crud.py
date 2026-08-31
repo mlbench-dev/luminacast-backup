@@ -359,10 +359,31 @@ async def import_from_url(
     De-duplicates by source_product_id (TikTok) or product_url (others).
     Returns existing product if already imported.
     """
-    from services.url_product_resolver import resolve_product_url, TikTokBlockedError, GenericSiteBlockedError
+    from services.url_product_resolver import (
+        resolve_product_url,
+        TikTokBlockedError,
+        GenericSiteBlockedError,
+        AmazonBlockedError,
+    )
 
     try:
         resolved = await resolve_product_url(req.url)
+    except AmazonBlockedError as exc:
+        sentry_sdk.capture_exception(exc)
+        logger.info(
+            "[from-url-blocked] amazon manual-entry fallback url=%s reason=%s",
+            exc.source_url, exc.reason,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "needs_manual_entry",
+                "source": "amazon",
+                "source_product_id": None,
+                "source_url": exc.source_url,
+                "message": exc.reason,
+            },
+        )
     except TikTokBlockedError as exc:
         sentry_sdk.capture_exception(exc)
         logger.info(
@@ -399,8 +420,16 @@ async def import_from_url(
             },
         )
     except Exception as exc:
+        # Unknown / unclassified failure. Keep the raw detail in logs + Sentry;
+        # give the user a plain, actionable message instead of an exception dump.
         sentry_sdk.capture_exception(exc)
-        raise HTTPException(400, f"Could not resolve product from URL: {str(exc)[:200]}")
+        logger.error("[from-url] unresolved url=%s error=%s", req.url, str(exc)[:500])
+        raise HTTPException(
+            400,
+            "We couldn't import this product automatically. The link may be "
+            "unsupported, or the site is blocking us right now. Try a different "
+            "link, or add the product details manually.",
+        )
 
     # De-duplicate: check if user already has this product
     existing = None

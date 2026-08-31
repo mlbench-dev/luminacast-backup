@@ -71,6 +71,21 @@ class GenericSiteBlockedError(Exception):
         super().__init__(reason)
 
 
+class AmazonBlockedError(Exception):
+    """Raised when an Amazon product URL is valid but we couldn't pull the
+    product data — the Apify Amazon actor run failed / timed out / was
+    rate-limited / returned nothing, or the marketplace region-locked the
+    scrape. The URL is (almost always) a real product, so the caller should
+    fall back to the manual-entry flow with ``reason`` as a plain-English
+    explanation, exactly like TikTokBlockedError / GenericSiteBlockedError.
+    """
+
+    def __init__(self, source_url: str, reason: str):
+        self.source_url = source_url
+        self.reason = reason
+        super().__init__(reason)
+
+
 def _extract_tiktok_product_id(url: str) -> Optional[str]:
     """Pull the numeric product id out of a TikTok Shop PDP URL.
 
@@ -775,27 +790,92 @@ async def _resolve_amazon(url: str, client: httpx.AsyncClient) -> ResolvedProduc
         "maxItems": 1,
         "proxyConfiguration": _build_proxy_configuration(country),
     }
-    resp = await client.post(
-        run_url,
-        params={"token": token},
-        json=payload,
-        timeout=120,
+    # A short, plain-English line the user can act on. Everything below funnels
+    # transient / upstream failures into AmazonBlockedError so the caller shows
+    # the same "add it manually" fallback used for TikTok / generic sites,
+    # instead of a raw "Apify actor returned 400: {...}" toast.
+    _MANUAL_HINT = " You can still add this product by entering the details below."
+    logger.info(
+        "amazon_resolver.run_start actor=%s country=%s url=%s", actor_id, country, url
     )
-    if resp.status_code == 404:
-        # A 404 almost always means the actor id was renamed/removed on
-        # Apify's side, not a bad product URL — surface it the same way the
-        # TikTok chain does so the catalog gets fixed via settings.
-        sentry_sdk.capture_exception(ApifyActorNotFoundError(actor_id))
-        logger.error(
-            "amazon_resolver.actor_not_found engine=%s status=404 url=%s",
-            actor_id, run_url,
+    try:
+        resp = await client.post(
+            run_url,
+            params={"token": token},
+            json=payload,
+            timeout=120,
         )
-    if resp.status_code not in (200, 201):
-        raise RuntimeError(f"Apify Amazon actor returned {resp.status_code}: {resp.text[:300]}")
+    except httpx.TimeoutException:
+        logger.warning("amazon_resolver.upstream_fail reason=timeout url=%s", url)
+        raise AmazonBlockedError(
+            url,
+            "Amazon took too long to respond. This usually clears up within a "
+            "minute — try again." + _MANUAL_HINT,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("amazon_resolver.upstream_fail reason=network err=%s url=%s", exc, url)
+        raise AmazonBlockedError(
+            url,
+            "We couldn't reach Amazon's data service just now. Try again in a "
+            "moment." + _MANUAL_HINT,
+        )
 
-    items = resp.json()
+    if resp.status_code not in (200, 201):
+        # Pull the Apify run id / status out of the error body for the log line
+        # (never shown to the user).
+        run_id = apify_status = None
+        try:
+            body = resp.json()
+            err_obj = body.get("error") if isinstance(body, dict) else None
+            msg = (err_obj or {}).get("message") if isinstance(err_obj, dict) else None
+            if msg:
+                m = re.search(r"run ID:\s*([A-Za-z0-9]+).*?status:\s*([A-Z_]+)", msg)
+                if m:
+                    run_id, apify_status = m.group(1), m.group(2)
+        except Exception:
+            pass
+        logger.warning(
+            "amazon_resolver.upstream_fail reason=http_%s apify_run=%s apify_status=%s url=%s body=%s",
+            resp.status_code, run_id, apify_status, url, resp.text[:300],
+        )
+        if resp.status_code == 404:
+            # Actor id renamed / removed on Apify's side — an ops problem, not a
+            # bad product URL. Capture so the catalog gets fixed.
+            sentry_sdk.capture_exception(ApifyActorNotFoundError(actor_id))
+            raise AmazonBlockedError(
+                url,
+                "Amazon import is temporarily unavailable while we fix a "
+                "connection on our side." + _MANUAL_HINT,
+            )
+        if resp.status_code == 429:
+            raise AmazonBlockedError(
+                url,
+                "Amazon is rate-limiting product imports right now. Wait a "
+                "minute and try again." + _MANUAL_HINT,
+            )
+        raise AmazonBlockedError(
+            url,
+            "Amazon didn't return this product. The listing may be region-"
+            "locked, out of stock, or temporarily blocking automated lookups. "
+            "Try a different link." + _MANUAL_HINT,
+        )
+
+    try:
+        items = resp.json()
+    except Exception:
+        logger.warning("amazon_resolver.upstream_fail reason=bad_json url=%s", url)
+        raise AmazonBlockedError(
+            url,
+            "Amazon returned an unexpected response for this link." + _MANUAL_HINT,
+        )
     if not items:
-        raise ValueError("Amazon actor returned no items")
+        logger.warning("amazon_resolver.upstream_fail reason=no_items url=%s", url)
+        raise AmazonBlockedError(
+            url,
+            "We reached Amazon but got no product back for this link. Make sure "
+            "it points to a single product page (a '/dp/' or '/gp/product/' "
+            "URL)." + _MANUAL_HINT,
+        )
 
     item = items[0] if isinstance(items, list) else items
 

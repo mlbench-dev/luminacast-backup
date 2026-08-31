@@ -266,9 +266,18 @@ export function UrlImportBar() {
       queryClient.invalidateQueries({ queryKey: ["products"] });
       setUrl("");
     } catch (err: any) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail;
+      // 502/504 = a gateway timeout in front of our API (the upstream scrape
+      // ran long), not something the user can read a stack trace out of.
+      const description =
+        status === 502 || status === 504
+          ? "The import service took too long to respond. Wait a minute and try again, or add the product details manually."
+          : (typeof detail === "string" && detail) ||
+            "We couldn't import this product automatically. Try a different link, or add the product details manually.";
       toast({
         title: "Import failed",
-        description: err?.response?.data?.detail || err.message || "Could not resolve product",
+        description,
         variant: "destructive",
       });
     } finally {

@@ -180,7 +180,12 @@ async def test_resolve_amazon_actor_not_found_captured(monkeypatch):
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.return_value = httpx.Response(404, json={"error": "not found"})
 
-    with pytest.raises(RuntimeError):
+    # A 404 (actor renamed/removed) is still an ops problem — captured to
+    # Sentry — but surfaced to the caller as AmazonBlockedError so the user
+    # gets the manual-entry fallback instead of a raw 500.
+    with pytest.raises(resolver.AmazonBlockedError) as excinfo:
         await _resolve_amazon("https://www.amazon.com/dp/B000000000", client)
 
     assert any(isinstance(e, ApifyActorNotFoundError) for e in captured)
+    assert "apify" not in str(excinfo.value).lower()
+    assert "actor" not in str(excinfo.value).lower()

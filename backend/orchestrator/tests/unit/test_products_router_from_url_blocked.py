@@ -15,7 +15,11 @@ from httpx import AsyncClient, ASGITransport
 from main import app
 from database import get_db
 from routers.auth import get_current_user
-from services.url_product_resolver import ResolvedProduct, TikTokBlockedError
+from services.url_product_resolver import (
+    ResolvedProduct,
+    TikTokBlockedError,
+    AmazonBlockedError,
+)
 
 BLOCKED_URL = "https://shop.tiktok.com/gb/pdp/1729774361469163960?source=x"
 
@@ -89,6 +93,38 @@ async def test_from_url_returns_202_when_tiktok_blocked():
     assert body["source_product_id"] == "1729774361469163960"
     assert body["source_url"] == BLOCKED_URL
     # User-facing message must not leak engine terminology.
+    assert "actor" not in body["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_from_url_returns_202_when_amazon_blocked():
+    """A failed / timed-out / region-locked Apify Amazon run must land the
+    user in the same manual-entry fallback as TikTok — not a raw 400 with
+    'Apify actor returned ...' in it."""
+    session = _FakeSession()
+    amazon_url = "https://www.amazon.com/dp/B0EXAMPLE"
+    reason = (
+        "Amazon didn't return this product. The listing may be region-locked, "
+        "out of stock, or temporarily blocking automated lookups. Try a "
+        "different link. You can still add this product by entering the "
+        "details below."
+    )
+    with patch(
+        "services.url_product_resolver.resolve_product_url",
+        new=AsyncMock(side_effect=AmazonBlockedError(amazon_url, reason)),
+    ):
+        async with _make_client(session) as ac:
+            resp = await ac.post("/api/products/from-url", json={"url": amazon_url})
+    _teardown()
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "needs_manual_entry"
+    assert body["source"] == "amazon"
+    assert body["source_url"] == amazon_url
+    assert body["message"] == reason
+    # No engine terminology leaks to the user.
+    assert "apify" not in body["message"].lower()
     assert "actor" not in body["message"].lower()
 
 
