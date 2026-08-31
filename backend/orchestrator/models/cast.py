@@ -197,6 +197,10 @@ class Cast(Base):
     version = Column(Integer, default=1, nullable=False, server_default="1")
 
     # Phase 2.5 — Linked cascading update across format siblings
+    # Naive UTC column (TIMESTAMP WITHOUT TIME ZONE). Writers MUST store a
+    # naive value — see _mark_variant_audio_stale in routers/casts/variants.py,
+    # which strips tzinfo. Passing an offset-aware datetime here makes asyncpg
+    # raise "can't subtract offset-naive and offset-aware datetimes" at commit.
     audio_stale_since = Column(DateTime, nullable=True)
     # set when a sibling cascade updates audio; cleared when user refreshes
 

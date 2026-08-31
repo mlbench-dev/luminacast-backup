@@ -55,7 +55,10 @@ def _mark_variant_audio_stale(variant: Variant, cast: Cast | None) -> None:
     variant.status = VariantStatus.PENDING
     if cast is not None:
         try:
-            cast.audio_stale_since = datetime.now(tz.utc)
+            # casts.audio_stale_since is TIMESTAMP WITHOUT TIME ZONE — asyncpg
+            # rejects an offset-aware value ("can't subtract offset-naive and
+            # offset-aware datetimes") at commit. Store naive UTC.
+            cast.audio_stale_since = datetime.now(tz.utc).replace(tzinfo=None)
         except Exception as e:
             sentry_sdk.capture_exception(e)
 
@@ -157,9 +160,10 @@ async def _cascade_audio_to_siblings(
                 )
                 db.add(cascade_var)
 
-                # Mark sibling cast as having stale audio (Phase 2.5.2)
+                # Mark sibling cast as having stale audio (Phase 2.5.2).
+                # Naive UTC — the column is TIMESTAMP WITHOUT TIME ZONE.
                 from datetime import datetime, timezone
-                sibling.audio_stale_since = datetime.now(timezone.utc)
+                sibling.audio_stale_since = datetime.now(timezone.utc).replace(tzinfo=None)
 
                 results.append({
                     "sibling_cast_id": sibling.id,
