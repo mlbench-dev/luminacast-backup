@@ -3496,6 +3496,18 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
                 overlay["ffmpegBoxEnabled"] = bool(props.get("ffmpegBoxEnabled"))
                 overlay["ffmpegBoxColor"] = props.get("ffmpegBoxColor") or "black@0.5"
                 overlay["textTransform"] = props.get("textTransform") or "none"
+                # Per-word timing — one caption element per block carries
+                # props._captions_tokens = [{text, startMs, endMs}, ...] in
+                # ABSOLUTE timeline ms (routers/casts/timeline.py builds it;
+                # the editor's editorStarterMapping.ts forwards it on save).
+                # The compose step needs these to page a long caption ~6-7
+                # words at a time and to karaoke-highlight the spoken word —
+                # without them it can only burn the whole block's caption as
+                # one static line. (overlay["width"] is already forwarded and
+                # scaled above.)
+                overlay["_captions_tokens"] = props.get("_captions_tokens") or []
+                overlay["pageDurationInMilliseconds"] = props.get("pageDurationInMilliseconds")
+                overlay["maxLines"] = props.get("maxLines")
 
             # Static media fields
             if normalized_type in ("image", "overlay", "sticker", "logo", "gif"):

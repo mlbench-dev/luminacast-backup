@@ -1,20 +1,24 @@
-"""Regression coverage for burnt-in caption escaping in worker_ffmpeg_compose.
+"""Regression coverage for burnt-in captions in worker_ffmpeg_compose.
 
-Bug: the in-process composer (``worker_ffmpeg_compose._run_ffmpeg_compose``,
-Path 2 in tasks/cast_render.py) inlined each caption as ``text='<words>'`` in
-the ``-filter_complex`` string, with shell-style ``'\\''`` apostrophe escaping
-and wrapped lines joined by a real newline. On the production FFmpeg build a
-wrapped caption containing an apostrophe ("shouldn't", "it's") desynced the
-filtergraph quote parser, so the ``text=`` value swallowed the filter's own
-trailing options and drawtext burned
-``:fontsize=42:...:enable=between(t,4.7333333333333333,10.8)`` into the frame
-as literal text — confirmed live on cst_26b60791fd7c.
+Two bugs on the in-process compose path
+(``worker_ffmpeg_compose._run_ffmpeg_compose``, Path 2 in tasks/cast_render.py):
 
-Fix: the caption body now goes to a ``tmpdir/caption_<n>.txt`` sidecar and is
-referenced with ``textfile=`` + ``expansion=none``. No caption character ever
-reaches the filtergraph string, so nothing can desync the parser.
+1. Caption text was inlined into ``-filter_complex`` as ``text='<words>'`` with
+   shell-style ``'\\''`` apostrophe escaping and real-newline line joins. On the
+   production FFmpeg build a wrapped caption containing an apostrophe
+   ("shouldn't", "it's") desynced the filtergraph quote parser, so the ``text=``
+   value swallowed the filter's own trailing options and drawtext burned
+   ``:fontsize=42:...:enable=between(t,4.7333333333333333,10.8)`` into the frame
+   as literal text (confirmed live on cst_26b60791fd7c). Fix: the caption body
+   goes to a ``tmpdir/caption_<n>.txt`` sidecar referenced with ``textfile=`` +
+   ``expansion=none``.
 
-These tests inspect the constructed filtergraph directly via the extracted
+2. This path burned the whole block's caption as one static line — no
+   ~6-7-word paging and no karaoke word highlight, unlike the editor preview.
+   Fix: when the overlay carries ``_captions_tokens`` (per-word timing), page it
+   like cast_ffmpeg_composer / the preview and stack a per-word highlight layer.
+
+These tests inspect the constructed filtergraph via the extracted
 ``_build_caption_filter_parts`` helper — no real FFmpeg invocation.
 """
 from __future__ import annotations
@@ -50,6 +54,19 @@ def _caption(text=OFFENDING, start=4.75, end=10.8, **extra):
     return ov
 
 
+def _tokens(words, *, start_ms, step_ms=250, dur_ms=240):
+    return [
+        {
+            "text": w,
+            "startMs": start_ms + i * step_ms,
+            "endMs": start_ms + i * step_ms + dur_ms,
+        }
+        for i, w in enumerate(words)
+    ]
+
+
+# ── Bug 1: no filter syntax burned as text ──────────────────────────────────
+
 def test_caption_uses_textfile_not_inlined_text(tmp_path):
     parts, label, drawn = wfc._build_caption_filter_parts(
         [_caption()], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
@@ -58,25 +75,20 @@ def test_caption_uses_textfile_not_inlined_text(tmp_path):
     assert label == "[cap0]"
     graph = ";".join(parts)
 
-    # The caption body is referenced by file, never inlined.
     assert "textfile='" in graph
     assert "expansion=none" in graph
     assert "text='" not in graph
 
-    # No fragment of the caption prose leaks into the filtergraph string —
-    # this is what used to get swallowed and burned as literal text.
+    # No fragment of the caption prose leaks into the filtergraph string.
     for fragment in ("built to last", "recycled fibers", "it's soft", "shouldn"):
         assert fragment not in graph
 
-    # The sidecar file exists and holds the wrapped caption (newline-joined),
-    # with the apostrophe and commas intact and unescaped.
     txt = (tmp_path / "caption_0.txt").read_text(encoding="utf-8")
     assert "it's soft" in txt
     assert "'\\''" not in txt  # no shell-style escaping in the file
     assert "\\," not in txt  # no filtergraph comma-escaping in the file
-    # Word-wrapped onto >1 line, but every word preserved and in order.
-    assert "\n" in txt
-    assert txt.split() == OFFENDING.split()
+    assert "\n" in txt  # wrapped onto >1 line
+    assert txt.split() == OFFENDING.split()  # every word preserved, in order
 
 
 def test_caption_filter_options_survive_after_textfile(tmp_path):
@@ -84,11 +96,10 @@ def test_caption_filter_options_survive_after_textfile(tmp_path):
         [_caption()], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
     )
     part = parts[0]
-    # Style / timing options still present and outside any quoted text value.
     assert ":fontsize=" in part
     assert ":fix_bounds=1:" in part
     assert "x=(w-text_w)/2:y=h-text_h-40:" in part
-    assert "enable='between(t,4.75,10.8)'" in part
+    assert "enable='between(t,4.750,10.800)'" in part
 
 
 def test_multiple_captions_chain_in_start_order(tmp_path):
@@ -101,7 +112,6 @@ def test_multiple_captions_chain_in_start_order(tmp_path):
     )
     assert drawn == 2
     assert label == "[cap1]"
-    # Sorted by start_s: cap0 chains off [0:v], cap1 chains off [cap0].
     assert parts[0].startswith("[0:v]drawtext=")
     assert parts[1].startswith("[cap0]drawtext=")
     assert (tmp_path / "caption_0.txt").read_text(encoding="utf-8").startswith("First up")
@@ -139,3 +149,103 @@ def test_no_captions_returns_passthrough(tmp_path):
     assert parts == []
     assert label == "[0:v]"
     assert drawn == 0
+
+
+# ── Bug 2: word-windowed paging + karaoke highlight in the render ────────────
+
+WORDS_14 = (
+    "your hoodie should not fall apart after ten washes but this one is "
+    "different"
+).split()
+
+
+def test_tokens_paged_into_word_windows(tmp_path):
+    cap = _caption(
+        text=" ".join(WORDS_14),
+        start=4.0,
+        end=8.0,
+        _captions_tokens=_tokens(WORDS_14, start_ms=4000),
+    )
+    parts, label, drawn = wfc._build_caption_filter_parts(
+        [cap], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+    )
+    # One caption element, but split into >=2 timed pages.
+    assert drawn == 1
+    assert len(parts) >= 2
+    assert label == f"[cap{len(parts) - 1}]"
+
+    # Each page's sidecar holds at most _MAX_WORDS_PER_PAGE words.
+    page_files = sorted(tmp_path.glob("caption_*.txt"))
+    assert len(page_files) == len(parts)
+    for pf in page_files:
+        assert len(pf.read_text(encoding="utf-8").split()) <= wfc._MAX_WORDS_PER_PAGE
+
+    # Concatenated pages reproduce the caption, in order, nothing lost.
+    rejoined = " ".join(
+        pf.read_text(encoding="utf-8").replace("\n", " ") for pf in page_files
+    ).split()
+    assert rejoined == WORDS_14
+
+    # Pages advance in time — page 2 enables strictly after page 1.
+    import re
+
+    starts = [
+        float(re.search(r"between\(t,([0-9.]+),", p).group(1)) for p in parts
+    ]
+    assert starts == sorted(starts)
+    assert starts[1] > starts[0]
+
+    # No highlight layer when highlightColor is absent (defaults to base
+    # color) — every filter part is a base page, one per sidecar file.
+    assert len(parts) == len(page_files)
+
+
+def test_distinct_highlight_color_adds_per_word_layer(tmp_path):
+    cap = _caption(
+        text=" ".join(WORDS_14),
+        start=4.0,
+        end=8.0,
+        fontColor="#FFFFFF",
+        highlightColor="#FFD400",
+        _captions_tokens=_tokens(WORDS_14, start_ms=4000),
+    )
+    parts, _label, drawn = wfc._build_caption_filter_parts(
+        [cap], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+    )
+    assert drawn == 1
+
+    base_parts = [p for p in parts if "fontcolor=0xFFFFFF" in p]
+    hl_parts = [p for p in parts if "fontcolor=0xFFD400" in p]
+    # One base drawtext per page, one highlight drawtext per spoken word.
+    assert len(base_parts) >= 2
+    assert len(hl_parts) == len(WORDS_14)
+
+    # Highlight words are horizontally offset from centre and box-free.
+    for p in hl_parts:
+        assert "x=(w-text_w)/2+" in p or "x=(w-text_w)/2-" in p
+        assert "box=1" not in p
+
+    # Each highlight word's window sits inside the caption window.
+    import re
+
+    for p in hl_parts:
+        m = re.search(r"between\(t,([0-9.]+),([0-9.]+)\)", p)
+        s, e = float(m.group(1)), float(m.group(2))
+        assert 4.0 <= s < e <= 8.0
+
+
+def test_identical_highlight_color_no_extra_layer(tmp_path):
+    cap = _caption(
+        text=" ".join(WORDS_14),
+        start=4.0,
+        end=8.0,
+        fontColor="#FFFFFF",
+        highlightColor="#FFFFFF",
+        _captions_tokens=_tokens(WORDS_14, start_ms=4000),
+    )
+    parts, _label, _drawn = wfc._build_caption_filter_parts(
+        [cap], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+    )
+    # Only the base pages, no per-word layer.
+    assert all("fontcolor=0xFFFFFF" in p for p in parts)
+    assert len(parts) < len(WORDS_14)

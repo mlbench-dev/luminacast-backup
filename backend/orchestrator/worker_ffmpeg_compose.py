@@ -26,6 +26,10 @@ from services.cast_ffmpeg_composer import (
     _caption_safe_width,
     _caption_font,
     _wrap_text_to_width,
+    _chars_per_line,
+    _group_caption_tokens_into_pages,
+    cap_tokens_to_line_budget,
+    _MAX_WORDS_PER_PAGE,
 )
 
 
@@ -461,26 +465,108 @@ def _build_overlay_filter_parts(overlay_elements, current_label):
     return filter_parts, current_label
 
 
+def _resolve_caption_style(cap):
+    """Resolve the shared per-caption drawtext style from an overlay dict.
+
+    Returns a dict of the pieces every drawtext for this caption reuses
+    (font / colors / stroke / box / x / y expressions).
+    """
+    font_path = _resolve_caption_font_file(cap.get("fontFamily") or "", 700)
+    font_size = int(cap.get("fontSize") or 42)
+    font_color = _drawtext_color(cap.get("fontColor"), default="white")
+    stroke_width = int(cap.get("strokeWidth") or 0)
+    stroke_color = _drawtext_color(cap.get("strokeColor"), default="black")
+    # Karaoke highlight color; default to the base color (→ no highlight layer).
+    highlight_color = _drawtext_color(cap.get("highlightColor"), default=font_color)
+
+    # Horizontal: honour textAlign; default matches the old hardcoded ASS
+    # Alignment=2 (bottom-center).
+    align = (cap.get("textAlign") or "center").lower()
+    if align == "left":
+        x_expr = "40"
+    elif align == "right":
+        x_expr = "w-text_w-40"
+    else:
+        x_expr = "(w-text_w)/2"
+
+    # Vertical: positionY is a 0..1 fraction of canvas height from the top,
+    # set by the caption preset (editorStarterMapping.ts presetPositionFraction).
+    # Falls back to a fixed bottom margin for legacy items.
+    position_y = cap.get("positionY")
+    if isinstance(position_y, (int, float)):
+        frac = max(0.0, min(1.0, float(position_y)))
+        y_expr = f"(h-text_h)*{frac:.4f}"
+    else:
+        y_expr = "h-text_h-40"
+
+    box_args = ""
+    if cap.get("ffmpegBoxEnabled"):
+        box_color = _drawtext_color(cap.get("ffmpegBoxColor"), default="black@0.5")
+        box_args = f"box=1:boxcolor={box_color}:boxborderw=12:"
+
+    return {
+        "font_path": font_path,
+        "font_size": font_size,
+        "font_color": font_color,
+        "stroke_width": stroke_width,
+        "stroke_color": stroke_color,
+        "highlight_color": highlight_color,
+        "x_expr": x_expr,
+        "y_expr": y_expr,
+        "box_args": box_args,
+    }
+
+
+def _caption_drawtext(in_label, out_label, textfile_path, style, start, end,
+                      *, color, x_override=None, with_box=True):
+    """One drawtext filter for a caption page (or a highlighted word).
+
+    The text lives in ``textfile_path`` and is referenced with ``textfile=`` +
+    ``expansion=none`` — it is NEVER inlined as ``text='...'``. Inlining forced
+    every apostrophe / colon / comma / newline in the caption to survive
+    FFmpeg's filtergraph quote parser, and a wrapped caption containing an
+    apostrophe desynced it: the ``text=`` value swallowed the filter's own
+    trailing options and drawtext burned ``:fontsize=42:...:enable=between(...)``
+    into the frame as literal text. A sidecar file sidesteps all filtergraph
+    escaping; ``expansion=none`` also stops drawtext interpreting ``%{...}`` /
+    backslash sequences in the caption body. Real newlines in the file stay
+    hard line breaks.
+    """
+    box = style["box_args"] if with_box else ""
+    x = x_override or style["x_expr"]
+    return (
+        f"{in_label}drawtext="
+        f"fontfile='{style['font_path']}':"
+        f"textfile='{textfile_path}':expansion=none:"
+        f"fontsize={style['font_size']}:"
+        f"fontcolor={color}:"
+        f"{box}"
+        f"line_spacing=6:fix_bounds=1:"
+        f"borderw={style['stroke_width']}:bordercolor={style['stroke_color']}:"
+        f"x={x}:y={style['y_expr']}:"
+        f"enable='between(t,{start:.3f},{end:.3f})'"
+        f"{out_label}"
+    )
+
+
 def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tmpdir):
     """Build the drawtext filtergraph parts that burn styled captions in.
 
-    Each caption gets its own drawtext filter carrying its own resolved
-    font / color / stroke / box / position (from the editor's caption preset),
-    rather than one hardcoded style for all of them.
+    When the caption overlay carries per-word timing (``_captions_tokens``,
+    forwarded by tasks/cast_render.extract_overlay_elements from
+    routers/casts/timeline.py), a long caption is paged ~6-7 words at a time —
+    each page enabled only for its own spoken window — and, if a distinct
+    ``highlightColor`` is set, the currently-spoken word is restated on top in
+    that color. This mirrors the editor preview (captions-layer.tsx) and
+    cast_ffmpeg_composer's drawtext path. Without word timing it falls back to
+    one static drawtext for the whole caption window.
 
-    The caption's wrapped text is written to ``tmpdir/caption_<n>.txt`` and
-    referenced with ``textfile=`` — it is NEVER inlined as ``text='...'`` in
-    the filtergraph string. Inlining forced every apostrophe / colon / comma /
-    newline in the caption to survive FFmpeg's filtergraph quote parser, and a
-    wrapped (multi-line) caption containing an apostrophe desynced it: the
-    ``text=`` value swallowed the filter's own trailing options and drawtext
-    burned ``:fontsize=42:...:enable=between(t,...)`` into the frame as literal
-    text. A sidecar file sidesteps all filtergraph escaping; ``expansion=none``
-    additionally stops drawtext interpreting ``%{...}`` / backslash sequences in
-    the caption body. Real newlines in the file are still hard line breaks.
+    Every caption gets its own drawtext carrying its own resolved style (from
+    the editor's caption preset) rather than one hardcoded style for all.
 
-    Returns ``(filter_parts, current_label, drawn_count)``. Pulled out of
-    ``_run_ffmpeg_compose`` so the filter chain can be unit-tested without
+    Returns ``(filter_parts, current_label, drawn_count)`` where drawn_count is
+    the number of caption *elements* that produced at least one filter. Pulled
+    out of ``_run_ffmpeg_compose`` so the chain can be unit-tested without
     invoking FFmpeg, matching ``_build_overlay_filter_parts``.
     """
     filter_parts: list[str] = []
@@ -488,91 +574,158 @@ def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tm
         return filter_parts, current_label, 0
 
     sorted_caps = sorted(caption_overlays, key=lambda c: c.get("start_s", 0))
+    safe_width = _caption_safe_width(canvas_w)
+    seq = 0  # unique drawtext label counter across every page / highlight
     drawn = 0
-    for i, cap in enumerate(sorted_caps):
-        text = (cap.get("text") or "").strip()
-        if not text:
-            continue
+
+    for cap in sorted_caps:
+        raw_text = (cap.get("text") or "").strip()
         try:
-            start = float(cap.get("start_s", 0))
-            end = float(cap.get("end_s", start + 1))
+            cap_start = float(cap.get("start_s", 0))
+            cap_end = float(cap.get("end_s", cap_start + 1))
         except (TypeError, ValueError) as ex:
             sentry_sdk.capture_exception(ex)
             continue
-        if end <= start:
+        if cap_end <= cap_start:
             continue
 
         transform = (cap.get("textTransform") or "none").lower()
-        if transform == "uppercase":
-            text = text.upper()
-        elif transform == "lowercase":
-            text = text.lower()
 
-        font_path = _resolve_caption_font_file(cap.get("fontFamily") or "", 700)
-        font_size = int(cap.get("fontSize") or 42)
-        font_color = _drawtext_color(cap.get("fontColor"), default="white")
-        stroke_width = int(cap.get("strokeWidth") or 0)
-        stroke_color = _drawtext_color(cap.get("strokeColor"), default="black")
+        def _xform(s: str) -> str:
+            if transform == "uppercase":
+                return s.upper()
+            if transform == "lowercase":
+                return s.lower()
+            return s
 
-        # drawtext never wraps text on its own — a caption drawn as one
-        # unbroken line runs straight off the frame edges on any canvas
-        # narrower than the text (confirmed live: correct on a wide 16:9
-        # test, but a normal-length caption clipped hard off both edges on a
-        # 4:5 render). Measure and wrap against this caption's own resolved
-        # font before drawing, the same way cast_ffmpeg_composer's own
-        # (separately-used) drawtext path already does for its captions.
-        safe_width = _caption_safe_width(canvas_w)
-        measure_font = _caption_font(font_path, font_size)
-        wrapped_lines = _wrap_text_to_width(text, measure_font, float(safe_width))
-        if not wrapped_lines:
-            continue
-        caption_txt_path = os.path.join(tmpdir, f"caption_{i}.txt")
-        with open(caption_txt_path, "w", encoding="utf-8") as _cf:
-            _cf.write("\n".join(wrapped_lines))
+        style = _resolve_caption_style(cap)
+        measure_font = _caption_font(style["font_path"], style["font_size"])
+        req_w = cap.get("captionWidth") or cap.get("width")
+        caption_width = min(int(req_w), safe_width) if req_w else safe_width
+        max_lines = int(cap.get("maxLines") or 1)
+        page_ms = max(500, int(cap.get("pageDurationInMilliseconds") or 3500))
 
-        # Horizontal: honour textAlign; default matches the old hardcoded
-        # ASS Alignment=2 (bottom-center).
-        align = (cap.get("textAlign") or "center").lower()
-        if align == "left":
-            x_expr = "40"
-        elif align == "right":
-            x_expr = "w-text_w-40"
+        # Time-windowed pages from per-word timing, then re-split so each page
+        # fits BOTH the one-line char budget and the _MAX_WORDS_PER_PAGE (~7)
+        # ceiling — identical to cast_ffmpeg_composer / the editor preview.
+        tokens = cap.get("_captions_tokens") or []
+        pages = _group_caption_tokens_into_pages(tokens, page_ms)
+        budget = _chars_per_line(style["font_size"], caption_width) * max(1, max_lines)
+        capped: list[dict] = []
+        for pg in pages:
+            if (
+                len(pg["text"]) <= budget
+                and len(pg.get("tokens") or []) <= _MAX_WORDS_PER_PAGE
+            ):
+                capped.append(pg)
+            else:
+                capped.extend(
+                    cap_tokens_to_line_budget(
+                        pg["tokens"],
+                        font_size=style["font_size"],
+                        caption_width=caption_width,
+                        max_lines=max_lines,
+                    )
+                )
+        pages = capped
+        produced = False
+
+        if not pages:
+            # No word timing — one static line for the whole caption window.
+            if not raw_text:
+                continue
+            wrapped = _wrap_text_to_width(
+                _xform(raw_text), measure_font, float(caption_width)
+            )
+            if not wrapped:
+                continue
+            path = os.path.join(tmpdir, f"caption_{seq}.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(wrapped))
+            out_label = f"[cap{seq}]"
+            filter_parts.append(
+                _caption_drawtext(
+                    current_label, out_label, path, style, cap_start, cap_end,
+                    color=style["font_color"],
+                )
+            )
+            current_label = out_label
+            seq += 1
+            produced = True
         else:
-            x_expr = "(w-text_w)/2"
+            for idx, pg in enumerate(pages):
+                pg_text = _xform(pg["text"])
+                if not pg_text.strip():
+                    continue
+                wrapped = _wrap_text_to_width(
+                    pg_text, measure_font, float(caption_width)
+                )
+                if not wrapped:
+                    continue
+                pg_start = max(pg["start_ms"] / 1000.0, cap_start)
+                # Keep each page on screen until the NEXT page appears (last
+                # page until the block ends), so the caption doesn't blink off
+                # during inter-word pauses — matches the editor preview.
+                if idx + 1 < len(pages):
+                    pg_end = min(pages[idx + 1]["start_ms"] / 1000.0, cap_end)
+                else:
+                    pg_end = cap_end
+                if pg_end <= pg_start:
+                    continue
 
-        # Vertical: positionY is a 0..1 fraction of canvas height from the
-        # top, set by the caption preset (see editorStarterMapping.ts's
-        # presetPositionFraction). Falls back to a fixed bottom margin —
-        # close to the old hardcoded ASS MarginV=30 look — for legacy items
-        # saved before presets carried this field.
-        position_y = cap.get("positionY")
-        if isinstance(position_y, (int, float)):
-            frac = max(0.0, min(1.0, float(position_y)))
-            y_expr = f"(h-text_h)*{frac:.4f}"
-        else:
-            y_expr = "h-text_h-40"
+                path = os.path.join(tmpdir, f"caption_{seq}.txt")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(wrapped))
+                out_label = f"[cap{seq}]"
+                filter_parts.append(
+                    _caption_drawtext(
+                        current_label, out_label, path, style, pg_start, pg_end,
+                        color=style["font_color"],
+                    )
+                )
+                current_label = out_label
+                seq += 1
+                produced = True
 
-        box_args = ""
-        if cap.get("ffmpegBoxEnabled"):
-            box_color = _drawtext_color(cap.get("ffmpegBoxColor"), default="black@0.5")
-            box_args = f"box=1:boxcolor={box_color}:boxborderw=12:"
+                # Karaoke highlight: restate each spoken word in the highlight
+                # color for its own [startMs, endMs] window, offset to roughly
+                # sit over its place in the centered page text. drawtext can't
+                # recolor a sub-string, so it's a stacked per-word layer.
+                if style["highlight_color"] and style["highlight_color"] != style["font_color"]:
+                    pg_full_len = max(len(pg["text"]), 1)
+                    char_w = style["font_size"] * 0.55
+                    cursor = 0
+                    for tok in pg.get("tokens") or []:
+                        tw = _xform((tok.get("text") or "").strip())
+                        if not tw:
+                            cursor += 1
+                            continue
+                        t0 = max(int(tok.get("startMs", 0)) / 1000.0, pg_start)
+                        t1 = min(int(tok.get("endMs", 0)) / 1000.0, pg_end)
+                        if t1 <= t0:
+                            cursor += len(tw) + 1
+                            continue
+                        center_chars = cursor + len(tw) / 2.0
+                        px = (center_chars - pg_full_len / 2.0) * char_w
+                        sign = "+" if px >= 0 else "-"
+                        hl_path = os.path.join(tmpdir, f"caption_{seq}.txt")
+                        with open(hl_path, "w", encoding="utf-8") as f:
+                            f.write(tw)
+                        hl_label = f"[cap{seq}]"
+                        filter_parts.append(
+                            _caption_drawtext(
+                                current_label, hl_label, hl_path, style, t0, t1,
+                                color=style["highlight_color"],
+                                x_override=f"(w-text_w)/2{sign}{abs(px):.1f}",
+                                with_box=False,
+                            )
+                        )
+                        current_label = hl_label
+                        seq += 1
+                        cursor += len(tw) + 1
 
-        out_label = f"[cap{i}]"
-        filter_parts.append(
-            f"{current_label}drawtext="
-            f"fontfile='{font_path}':"
-            f"textfile='{caption_txt_path}':expansion=none:"
-            f"fontsize={font_size}:"
-            f"fontcolor={font_color}:"
-            f"{box_args}"
-            f"line_spacing=6:fix_bounds=1:"
-            f"borderw={stroke_width}:bordercolor={stroke_color}:"
-            f"x={x_expr}:y={y_expr}:"
-            f"enable='between(t,{start},{end})'"
-            f"{out_label}"
-        )
-        current_label = out_label
-        drawn += 1
+        if produced:
+            drawn += 1
 
     return filter_parts, current_label, drawn
 
