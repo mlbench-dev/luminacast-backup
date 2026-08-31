@@ -466,6 +466,25 @@ def _build_overlay_filter_parts(overlay_elements, current_label):
     return filter_parts, current_label
 
 
+def _font_line_height(font, font_size: int) -> float:
+    """Line box height (ascent + descent) for a loaded PIL font.
+
+    This is what drawtext uses as `text_h` for a single line, and it's the
+    SAME for every word of the font/size — so per-word highlight drawtexts can
+    all share one constant `y` instead of `h-text_h-40` (which varies per word
+    because a word with a descender has a taller glyph box, and was making the
+    rendered words jitter up and down).
+    """
+    if font is not None:
+        try:
+            ascent, descent = font.getmetrics()
+            if ascent + descent > 0:
+                return float(ascent + descent)
+        except Exception:  # noqa: BLE001 — fall through to the estimate
+            pass
+    return float(font_size) * 1.3
+
+
 def _text_advance(text: str, font) -> float:
     """Pen-advance width of ``text`` for a loaded PIL font.
 
@@ -513,9 +532,10 @@ def _resolve_caption_style(cap):
     # Falls back to a fixed bottom margin for legacy items.
     position_y = cap.get("positionY")
     if isinstance(position_y, (int, float)):
-        frac = max(0.0, min(1.0, float(position_y)))
-        y_expr = f"(h-text_h)*{frac:.4f}"
+        position_y_frac = max(0.0, min(1.0, float(position_y)))
+        y_expr = f"(h-text_h)*{position_y_frac:.4f}"
     else:
+        position_y_frac = None
         y_expr = "h-text_h-40"
 
     box_args = ""
@@ -532,12 +552,15 @@ def _resolve_caption_style(cap):
         "highlight_color": highlight_color,
         "x_expr": x_expr,
         "y_expr": y_expr,
+        # Raw 0..1 fraction (None = bottom-anchor default) so the per-word
+        # highlight path can resolve ONE constant pixel y for the whole line.
+        "position_y_frac": position_y_frac,
         "box_args": box_args,
     }
 
 
 def _caption_drawtext(in_label, out_label, textfile_path, style, start, end,
-                      *, color, x_override=None, with_box=True):
+                      *, color, x_override=None, y_override=None, with_box=True):
     """One drawtext filter for a caption page (or a highlighted word).
 
     The text lives in ``textfile_path`` and is referenced with ``textfile=`` +
@@ -553,6 +576,7 @@ def _caption_drawtext(in_label, out_label, textfile_path, style, start, end,
     """
     box = style["box_args"] if with_box else ""
     x = x_override or style["x_expr"]
+    y = y_override or style["y_expr"]
     return (
         f"{in_label}drawtext="
         f"fontfile='{style['font_path']}':"
@@ -562,13 +586,13 @@ def _caption_drawtext(in_label, out_label, textfile_path, style, start, end,
         f"{box}"
         f"line_spacing=6:fix_bounds=1:"
         f"borderw={style['stroke_width']}:bordercolor={style['stroke_color']}:"
-        f"x={x}:y={style['y_expr']}:"
+        f"x={x}:y={y}:"
         f"enable='between(t,{start:.3f},{end:.3f})'"
         f"{out_label}"
     )
 
 
-def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tmpdir):
+def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, canvas_h, tmpdir):
     """Build the drawtext filtergraph parts that burn styled captions in.
 
     When the caption overlay carries per-word timing (``_captions_tokens``,
@@ -732,6 +756,19 @@ def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tm
                 line_w = _text_advance(line, measure_font)
                 words = [_xform((t.get("text") or "").strip()) for t in page_tokens]
 
+                # ONE constant y for every word in the page. Per-word drawtext
+                # can't use `h-text_h-40`: `text_h` is the word's own glyph-box
+                # height, so words with a descender ("heavy", "y") sat higher
+                # than words without ("but", "or") — the rendered line jittered
+                # up and down. The font's line height is the same for all words,
+                # so their baselines line up.
+                line_h = _font_line_height(measure_font, style["font_size"])
+                if style["position_y_frac"] is not None:
+                    word_y = round((canvas_h - line_h) * style["position_y_frac"])
+                else:
+                    word_y = round(canvas_h - line_h - 40)
+                word_y = str(max(0, word_y))
+
                 for wi, (tok, word) in enumerate(zip(page_tokens, words)):
                     if not word:
                         continue
@@ -751,7 +788,7 @@ def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tm
                         _caption_drawtext(
                             current_label, base_label, word_path, style,
                             pg_start, pg_end, color=style["font_color"],
-                            x_override=word_x, with_box=False,
+                            x_override=word_x, y_override=word_y, with_box=False,
                         )
                     )
                     current_label = base_label
@@ -767,7 +804,7 @@ def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tm
                         _caption_drawtext(
                             current_label, hl_label, word_path, style, t0, t1,
                             color=style["highlight_color"],
-                            x_override=word_x, with_box=False,
+                            x_override=word_x, y_override=word_y, with_box=False,
                         )
                     )
                     current_label = hl_label
@@ -1253,7 +1290,8 @@ def _run_ffmpeg_compose(req):
         # caption now gets its own drawtext filter using its own resolved
         # style instead of one style for all of them.
         caption_parts, current_label, drawn = _build_caption_filter_parts(
-            caption_overlays, current_label, canvas_w=canvas_w, tmpdir=tmpdir
+            caption_overlays, current_label,
+            canvas_w=canvas_w, canvas_h=canvas_h, tmpdir=tmpdir,
         )
         filter_parts.extend(caption_parts)
         logger.info(

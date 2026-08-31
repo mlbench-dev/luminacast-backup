@@ -69,7 +69,7 @@ def _tokens(words, *, start_ms, step_ms=250, dur_ms=240):
 
 def test_caption_uses_textfile_not_inlined_text(tmp_path):
     parts, label, drawn = wfc._build_caption_filter_parts(
-        [_caption()], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        [_caption()], "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     assert drawn == 1
     assert label == "[cap0]"
@@ -93,7 +93,7 @@ def test_caption_uses_textfile_not_inlined_text(tmp_path):
 
 def test_caption_filter_options_survive_after_textfile(tmp_path):
     parts, _label, _drawn = wfc._build_caption_filter_parts(
-        [_caption()], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        [_caption()], "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     part = parts[0]
     assert ":fontsize=" in part
@@ -108,7 +108,7 @@ def test_multiple_captions_chain_in_start_order(tmp_path):
         _caption(text="First up — it's early!", start=0.0, end=4.0),
     ]
     parts, label, drawn = wfc._build_caption_filter_parts(
-        caps, "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        caps, "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     assert drawn == 2
     assert label == "[cap1]"
@@ -125,7 +125,7 @@ def test_blank_and_zero_length_captions_are_skipped(tmp_path):
         _caption(text="kept", start=4.0, end=6.0),
     ]
     parts, _label, drawn = wfc._build_caption_filter_parts(
-        caps, "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        caps, "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     assert drawn == 1
     assert len(parts) == 1
@@ -136,6 +136,7 @@ def test_uppercase_transform_applied_to_sidecar(tmp_path):
         [_caption(text="stay cozy", start=0.0, end=2.0, textTransform="uppercase")],
         "[0:v]",
         canvas_w=480,
+        canvas_h=848,
         tmpdir=str(tmp_path),
     )
     assert parts
@@ -144,7 +145,7 @@ def test_uppercase_transform_applied_to_sidecar(tmp_path):
 
 def test_no_captions_returns_passthrough(tmp_path):
     parts, label, drawn = wfc._build_caption_filter_parts(
-        [], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        [], "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     assert parts == []
     assert label == "[0:v]"
@@ -167,7 +168,7 @@ def test_tokens_paged_into_word_windows(tmp_path):
         _captions_tokens=_tokens(WORDS_14, start_ms=4000),
     )
     parts, label, drawn = wfc._build_caption_filter_parts(
-        [cap], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        [cap], "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     # One caption element, but split into >=2 timed pages.
     assert drawn == 1
@@ -213,7 +214,7 @@ def test_distinct_highlight_color_adds_per_word_layer(tmp_path):
         _captions_tokens=_tokens(WORDS_14, start_ms=4000),
     )
     parts, _label, drawn = wfc._build_caption_filter_parts(
-        [cap], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        [cap], "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     assert drawn == 1
 
@@ -249,6 +250,15 @@ def test_distinct_highlight_color_adds_per_word_layer(tmp_path):
     # The first word of a page sits at the line's left edge (offset 0.0).
     assert any(re.search(r"x=\(w-[0-9.]+\)/2\+0\.0:", p) for p in base_parts)
 
+    # Every word — base and highlight — shares ONE constant integer y, not the
+    # per-word `h-text_h-40` that made descender words ("heavy", "y") sit
+    # higher than the rest and the line jitter up and down.
+    ys = {re.search(r":y=([^:]+):", p).group(1) for p in base_parts + hl_parts}
+    assert len(ys) == 1, ys
+    only_y = ys.pop()
+    assert "text_h" not in only_y
+    assert only_y.isdigit()
+
 
 def test_identical_highlight_color_no_extra_layer(tmp_path):
     cap = _caption(
@@ -260,7 +270,7 @@ def test_identical_highlight_color_no_extra_layer(tmp_path):
         _captions_tokens=_tokens(WORDS_14, start_ms=4000),
     )
     parts, _label, _drawn = wfc._build_caption_filter_parts(
-        [cap], "[0:v]", canvas_w=480, tmpdir=str(tmp_path)
+        [cap], "[0:v]", canvas_w=480, canvas_h=848, tmpdir=str(tmp_path)
     )
     # Only the base pages, no per-word layer.
     assert all("fontcolor=0xFFFFFF" in p for p in parts)
