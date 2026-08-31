@@ -83,6 +83,10 @@ services:
     env_file: .env
     environment:
       - PYTHONPATH=/app
+      # NullPool DB engine — a Celery task's asyncio.run loop closes
+      # between tasks; a pooled connection outliving it raises
+      # "Future attached to a different loop" on the next task.
+      - ORCHESTRATOR_RUNTIME=celery_worker
       - WAVESPEED_API_KEY=${WAVESPEED_API_KEY:-}
       - FISH_AUDIO_API_KEY=${FISH_AUDIO_API_KEY:-}
       - FAL_KEY=${FAL_KEY:-}
@@ -110,6 +114,10 @@ services:
     env_file: .env
     environment:
       - PYTHONPATH=/app
+      # NullPool DB engine — a Celery task's asyncio.run loop closes
+      # between tasks; a pooled connection outliving it raises
+      # "Future attached to a different loop" on the next task.
+      - ORCHESTRATOR_RUNTIME=celery_worker
       - WAVESPEED_API_KEY=${WAVESPEED_API_KEY:-}
       - FISH_AUDIO_API_KEY=${FISH_AUDIO_API_KEY:-}
       - FAL_KEY=${FAL_KEY:-}
@@ -138,6 +146,10 @@ services:
     env_file: .env
     environment:
       - PYTHONPATH=/app
+      # NullPool DB engine — a Celery task's asyncio.run loop closes
+      # between tasks; a pooled connection outliving it raises
+      # "Future attached to a different loop" on the next task.
+      - ORCHESTRATOR_RUNTIME=celery_worker
     depends_on:
       redis:
         condition: service_healthy
