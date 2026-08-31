@@ -267,6 +267,17 @@ async def duplicate_cast_as(
         except Exception as e:
             sentry_sdk.capture_exception(e)
 
+        # If the source opted into AI-generated product b-roll, run that for
+        # the copy too — otherwise the duplicate silently falls back to the
+        # (freshly re-fetched) Pexels stock. It replaces stock on qualifying
+        # blocks with product-only photo/video; stock stays as the fallback.
+        if getattr(new_cast, "broll_media_source", "stock") == "ai_generated":
+            try:
+                from tasks.product_broll_tasks import generate_ai_broll_for_cast_task
+                generate_ai_broll_for_cast_task.delay(new_cast_id)
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+
         # Regenerate scene/action frames for the copied action & body-motion
         # blocks so they're framed for the NEW aspect ratio. Best-effort — the
         # block already carries the prompts, so the user can also (re)generate

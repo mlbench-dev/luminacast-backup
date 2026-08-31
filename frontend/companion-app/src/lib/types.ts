@@ -331,6 +331,10 @@ export interface BlockMetadata {
       is the same shape at 25% (480×480). `hidden` plays the audio without
       a visible face. */
   pip_layout?: PipLayout;
+  /** Set by the AI-from-product b-roll task: "generating" while it's making
+      the product shot for this beat, then "done" or "failed". The Script tab
+      shows a placeholder + polls while "generating". */
+  ai_broll?: "generating" | "done" | "failed";
   [key: string]: unknown;
 }
 

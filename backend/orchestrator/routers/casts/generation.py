@@ -520,6 +520,18 @@ async def generate_outline(
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
 
+    # Kick off AI-generated product b-roll the same way generate_smart_outline
+    # does. Previously this dispatch lived ONLY in the smart-outline endpoint,
+    # so a cast built WITHOUT Auto Cast (which runs this plain endpoint) kept
+    # showing Pexels stock even though the Setup picker was set to
+    # "AI-generated from product" — the task was never queued.
+    if getattr(cast, "broll_media_source", "stock") == "ai_generated":
+        try:
+            from tasks.product_broll_tasks import generate_ai_broll_for_cast_task
+            generate_ai_broll_for_cast_task.delay(cast_id)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+
     # Kick off background music the same way generate_smart_outline does.
     # Previously this dispatch lived ONLY in the smart-outline endpoint, so a
     # cast built WITHOUT Auto Cast (which runs this plain endpoint) got no

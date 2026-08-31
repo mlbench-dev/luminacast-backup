@@ -413,6 +413,17 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     queryKey: ["cast", cast.id],
     queryFn: () => castsApi.get(cast.id),
     refetchOnMount: true,
+    // Poll while AI-from-product b-roll is still generating so the "creating
+    // your product shot" tiles swap themselves out for the real shot with no
+    // manual refresh. Stops as soon as every b-roll block is done/failed.
+    refetchInterval: (q) => {
+      const c = q.state.data as any;
+      if (!c || c.broll_media_source !== "ai_generated") return false;
+      const anyGenerating = (c.blocks || []).some(
+        (b: any) => b?.metadata?.ai_broll === "generating",
+      );
+      return anyGenerating ? 5000 : false;
+    },
   });
 
   // Smart-outline regeneration wipes existing blocks and creates new ones with
@@ -450,15 +461,41 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     b?.variants?.find((v: any) => v.is_active) || b?.variants?.[0];
 
   useEffect(() => {
-    if (freshCast?.blocks) {
-      const sorted = [...freshCast.blocks].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-      setBlocks(sorted);
-      // Initialize history with the active variant of each block.
-      sorted.forEach(b => {
-        const v = pickActiveVariant(b);
-        if (v) history.push(b.id, { text: v.script_text || "", category: (b.category || "avatar_speaking") as string });
+    if (!freshCast?.blocks) return;
+    const sorted = [...freshCast.blocks].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    setBlocks((prev) => {
+      const sameSet =
+        prev.length > 0 &&
+        prev.length === sorted.length &&
+        prev.every((pb) => sorted.some((sb) => sb.id === pb.id));
+      if (!sameSet) {
+        // Fresh load or a regeneration (new block ids) — take the server set
+        // as-is and seed edit history.
+        sorted.forEach((b) => {
+          const v = pickActiveVariant(b);
+          if (v) history.push(b.id, { text: v.script_text || "", category: (b.category || "avatar_speaking") as string });
+        });
+        return sorted;
+      }
+      // Same blocks, background refetch (e.g. the AI-b-roll poll). Keep local
+      // fields the user is editing (script text / category / product / look —
+      // may have unsaved changes) and only pull the fields the server updates
+      // out of band: b-roll media + AI-b-roll status + generated frame ids.
+      const sById = new Map(sorted.map((sb) => [sb.id, sb]));
+      return prev.map((pb) => {
+        const sb = sById.get(pb.id);
+        if (!sb) return pb;
+        return {
+          ...pb,
+          parallel_media: sb.parallel_media,
+          image_asset_id: sb.image_asset_id,
+          video_asset_id: sb.video_asset_id,
+          body_motion_start_look_id: sb.body_motion_start_look_id,
+          body_motion_end_look_id: sb.body_motion_end_look_id,
+          metadata: { ...(pb.metadata || {}), ai_broll: (sb.metadata as any)?.ai_broll },
+        } as Block;
       });
-    }
+    });
   }, [freshCast]);
 
   // Poll for blocks if none yet (auto-fired from Setup)

@@ -1,12 +1,23 @@
 """AI-generated product b-roll for casts with broll_media_source='ai_generated'.
 
-Runs after /casts/{id}/generate-smart-outline returns. Pexels auto-population
-already ran in-band (cheap, ~150-400ms/block) and left every stock_photo/
-stock_video block's stock_media_url populated as a safety-net fallback. This
-task then replaces that fallback with a product-only AI-generated photo/video
-(FLUX Kontext / Kling, services/product_ai_media.py) for any such block that
-has a product attached and no per-block visual override — but only when the
-cast opted into "ai_generated" b-roll at Setup.
+Runs after outline generation. Pexels auto-population already ran in-band and
+left each b-roll beat with a stock clip (on stock_photo/stock_video blocks via
+stock_media_url, and on avatar_speaking / avatar_voiceover beats via
+parallel_media). This task replaces those generic stock picks with a
+product-only AI-generated photo/video (FLUX Kontext / Kling,
+services/product_ai_media.py) so the b-roll actually shows the user's product.
+
+It processes ANY block that carries b-roll (a stock_* category, a
+parallel_media list, or a stock_media_url) and resolves a product for it —
+its own product_id, else the cast's primary product. Earlier this only looked
+at stock_photo/stock_video *category* blocks, which the Auto Cast (Smart Cast)
+outline almost never produces — it builds avatar_speaking / avatar_voiceover
+beats with parallel_media instead — so "AI-generated from product" silently
+did nothing on those casts.
+
+Generated assets are cached per (product, kind, prompt) so a single-product
+cast makes one image / one video and reuses it across beats rather than firing
+a Kling call per block.
 
 Why a Celery task, not inline in the outline endpoint: a single Kling video
 generation takes on the order of minutes (see services/product_ai_media.py),
@@ -35,10 +46,20 @@ def generate_ai_broll_for_cast_task(cast_id: str) -> dict:
     return asyncio.run(_generate_async(cast_id))
 
 
+def _block_has_broll(blk) -> bool:
+    """Does this block carry an auto-picked stock visual we should replace?"""
+    if (blk.category or "") in ("stock_photo", "stock_video"):
+        return True
+    pm = blk.parallel_media
+    if isinstance(pm, list) and any(isinstance(x, dict) and x.get("url") for x in pm):
+        return True
+    return bool(blk.stock_media_url)
+
+
 async def _generate_async(cast_id: str) -> dict:
     from database import async_session_factory
     from models.block import Block
-    from models.cast import Cast
+    from models.cast import Cast, CastProduct
     from models.product import Product
     from services.product_ai_media import (
         generate_ai_image_asset,
@@ -48,6 +69,7 @@ async def _generate_async(cast_id: str) -> dict:
 
     generated = 0
     failed = 0
+    reused = 0
 
     async with async_session_factory() as db:
         cast = await db.get(Cast, cast_id)
@@ -57,51 +79,134 @@ async def _generate_async(cast_id: str) -> dict:
             return {"skipped": "not_ai_generated", "generated": 0}
         owner_id = cast.user_id
 
+        # Cast primary product — the fallback when a b-roll block has no
+        # product_id of its own (Smart Cast leaves many beats' product_id NULL).
+        primary_product_id = None
+        cp = (
+            await db.execute(
+                select(CastProduct)
+                .where(CastProduct.cast_id == cast_id)
+                .order_by(CastProduct.position.asc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if cp:
+            primary_product_id = cp.product_id
+
         rows = (
             await db.execute(
                 select(Block).where(
                     Block.cast_id == cast_id,
                     Block.deleted_at.is_(None),
-                    Block.category.in_(("stock_photo", "stock_video")),
-                    Block.product_id.isnot(None),
                     Block.video_asset_id.is_(None),
                     Block.image_asset_id.is_(None),
                 )
             )
         ).scalars().all()
 
+        # Pre-pass: the blocks we'll actually work on. Stamp each with
+        # metadata.ai_broll="generating" so the Script tab can show a
+        # "creating your product shot" state (and poll for completion)
+        # instead of presenting the interim Pexels clip as the final pick.
+        eligible: list = []
         for blk in rows:
-            product = await db.get(Product, blk.product_id)
-            if product is None:
+            if not _block_has_broll(blk):
                 continue
-            try:
-                if blk.category == "stock_photo":
-                    asset = await generate_ai_image_asset(
-                        product, db, owner_id, style="lifestyle",
-                    )
-                    await db.flush()
-                    blk.image_asset_id = asset.id
-                else:
-                    asset = await generate_ai_video_asset(
-                        product, db, owner_id, style="product_showcase",
-                        duration_seconds=5, quality="pro",
-                    )
-                    await db.flush()
-                    blk.video_asset_id = asset.id
+            if not (blk.product_id or primary_product_id):
+                continue
+            blk.block_metadata = {**(blk.block_metadata or {}), "ai_broll": "generating"}
+            eligible.append(blk)
+        if not eligible:
+            logger.info("AI b-roll for cast %s: no eligible b-roll blocks", cast_id)
+            return {"cast_id": cast_id, "generated": 0, "reused": 0, "failed": 0}
+        await db.commit()
+
+        # (product_id, kind, prompt) -> ProductAsset, so a single-product cast
+        # makes one asset and reuses it instead of a Kling call per block.
+        asset_cache: dict[tuple, object] = {}
+
+        for blk in eligible:
+            product_id = blk.product_id or primary_product_id
+            product = await db.get(Product, product_id)
+            if product is None:
+                blk.block_metadata = {**(blk.block_metadata or {}), "ai_broll": "failed"}
                 await db.commit()
-                generated += 1
-            except ProductAiMediaError as exc:
+                failed += 1
+                continue
+
+            # Scene prompt from the beat's own stock query, so each shot is the
+            # real product framed for that beat ("hoodie flatlay", "morning
+            # coffee window", ...). Falls back to the generic lifestyle style.
+            prompt = (blk.stock_media_query or "").strip()
+            # stock_video / avatar_voiceover beats are the visual — give them
+            # motion (Kling). Brief cutaways over a speaking avatar get a still
+            # (FLUX Kontext — far faster); the renderer Ken-Burns-animates it.
+            want_video = (blk.category or "") == "stock_video" or (
+                (blk.category or "") == "avatar_voiceover"
+            )
+            kind = "video" if want_video else "image"
+            cache_key = (product_id, kind, prompt)
+
+            try:
+                asset = asset_cache.get(cache_key)
+                if asset is not None:
+                    reused += 1
+                else:
+                    if kind == "video":
+                        asset = await generate_ai_video_asset(
+                            product, db, owner_id, style="product_showcase",
+                            duration_seconds=5, quality="pro",
+                            custom_prompt=prompt,
+                        )
+                    else:
+                        asset = await generate_ai_image_asset(
+                            product, db, owner_id, style="lifestyle",
+                            custom_prompt=prompt,
+                        )
+                    await db.flush()
+                    asset_cache[cache_key] = asset
+                    generated += 1
+
+                media_type = getattr(asset, "media_type", "image")
+                if media_type == "video":
+                    blk.image_asset_id = None
+                    blk.video_asset_id = asset.id
+                else:
+                    blk.video_asset_id = None
+                    blk.image_asset_id = asset.id
+                # Point parallel_media at the AI asset too, so the editor's
+                # "Visual b-roll" strip shows the product shot, not the Pexels
+                # clip it replaced.
+                blk.parallel_media = [{
+                    "kind": "video" if media_type == "video" else "photo",
+                    "url": asset.r2_url,
+                    "thumbnail": asset.r2_url,
+                    "source": "ai_generated",
+                    "start_offset_s": 0,
+                    "duration_s": None,
+                }]
+                blk.block_metadata = {**(blk.block_metadata or {}), "ai_broll": "done"}
+                await db.commit()
+            except (ProductAiMediaError, Exception) as exc:
+                if not isinstance(exc, ProductAiMediaError):
+                    import sentry_sdk
+                    sentry_sdk.capture_exception(exc)
                 logger.warning(
                     "AI b-roll generation failed for block %s (%s); "
-                    "leaving Pexels stock_media_url as the fallback",
+                    "leaving the stock clip as the fallback",
                     blk.id, exc,
                 )
-                failed += 1
-            except Exception as exc:
-                import sentry_sdk
-                sentry_sdk.capture_exception(exc)
-                logger.warning("AI b-roll generation errored for block %s: %s", blk.id, exc)
+                await db.rollback()
+                # Re-stamp after rollback (rollback discarded the in-session
+                # metadata change) so the UI stops showing the spinner.
+                blk2 = await db.get(Block, blk.id)
+                if blk2 is not None:
+                    blk2.block_metadata = {**(blk2.block_metadata or {}), "ai_broll": "failed"}
+                    await db.commit()
                 failed += 1
 
-    logger.info("AI b-roll for cast %s: %d generated, %d failed", cast_id, generated, failed)
-    return {"cast_id": cast_id, "generated": generated, "failed": failed}
+    logger.info(
+        "AI b-roll for cast %s: %d generated, %d reused, %d failed",
+        cast_id, generated, reused, failed,
+    )
+    return {"cast_id": cast_id, "generated": generated, "reused": reused, "failed": failed}

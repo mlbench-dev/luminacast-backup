@@ -1,8 +1,10 @@
 import { useState, useCallback, useEffect } from "react";
-import { Plus, X, Search, Loader2, Image as ImageIcon, Video as VideoIcon, ExternalLink, Sparkles } from "lucide-react";
-import { castsApi, api } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { Plus, X, Search, Loader2, Image as ImageIcon, Video as VideoIcon, ExternalLink, Sparkles, AlertTriangle } from "lucide-react";
+import { castsApi, api, productsApi } from "@/lib/api";
 import type { Block, ParallelMediaItem } from "@/lib/types";
 import { cn } from "@/lib/cn";
+import { cdnUrl } from "@/lib/cdn";
 import { toast } from "@/hooks/useToast";
 
 /**
@@ -79,6 +81,20 @@ export function ParallelMediaPicker({
   const aiQuery = (block.stock_media_query || "").trim();
   const aiSuggestedItem = items.find((it) => it.ai_suggested);
 
+  // AI-from-product b-roll status (Setup → "AI-generated from product").
+  // While "generating" we hide the interim stock clip and show a placeholder
+  // that polls itself out for the real product shot (poll lives in ScriptPhase).
+  const aiBroll = block.metadata?.ai_broll;
+  const { data: product } = useQuery({
+    queryKey: ["product", block.product_id],
+    queryFn: () => productsApi.get(block.product_id as string),
+    enabled: !!block.product_id && aiBroll === "generating",
+    staleTime: 60_000,
+  });
+  const productCover =
+    product?.cover_image_url ||
+    (product?.cover_image_key ? cdnUrl(product.cover_image_key) : null);
+
   return (
     <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -99,7 +115,11 @@ export function ParallelMediaPicker({
             )}
           </div>
           <div className="text-[10px] text-white/40">
-            {aiSuggestedItem
+            {aiBroll === "generating"
+              ? "Creating an AI shot of your product for this beat…"
+              : aiBroll === "failed"
+              ? "Couldn't generate a product shot — using stock for now."
+              : aiSuggestedItem
               ? "AI picked the visual below — swap it or add more."
               : aiQuery
               ? "Search ran with the AI tag above — add what fits the moment."
@@ -114,7 +134,36 @@ export function ParallelMediaPicker({
         </button>
       </div>
 
-      {items.length > 0 && (
+      {aiBroll === "generating" && (
+        <div className="flex items-center gap-3 rounded-md border border-fuchsia-400/20 bg-fuchsia-500/[0.06] p-2.5">
+          <div className="relative h-16 w-24 shrink-0 rounded-md overflow-hidden border border-white/10 bg-black/40">
+            {productCover && (
+              <img src={productCover} alt="" className="w-full h-full object-cover opacity-40" />
+            )}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-fuchsia-200" />
+            </div>
+          </div>
+          <div className="min-w-0 text-[11px] leading-snug text-fuchsia-100/90">
+            Generating a shot of your product for this beat…
+            <span className="block text-fuchsia-200/50">
+              Takes a few minutes — it&apos;ll appear here on its own.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {aiBroll === "failed" && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-400/20 bg-amber-500/[0.06] p-2 text-[10px] text-amber-200/90">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+          <span>
+            AI couldn&apos;t make a product shot for this beat — showing stock. Use
+            &ldquo;Add visual&rdquo; to pick one, or check the product has a cover photo.
+          </span>
+        </div>
+      )}
+
+      {aiBroll !== "generating" && items.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {items.map((item, idx) => (
             <div
