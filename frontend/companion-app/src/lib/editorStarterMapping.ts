@@ -761,12 +761,35 @@ export function castToEditorStarterTimeline(
     if (Array.isArray(parallelMedia) && parallelMedia.length > 0) {
       // Compute default per-item slot when offsets are missing.
       const slot = dur / parallelMedia.length;
+      // Safety net for casts generated BEFORE the outline b-roll normaliser:
+      // a lone parallel_media clip with no explicit offset/duration on an
+      // avatar_speaking block would otherwise fill the whole beat (full
+      // canvas, opaque) and hide the avatar for the entire block. Bound it to
+      // a mid-beat cutaway so the avatar bookends it. Fresh casts already
+      // carry an explicit duration_s (or were retyped to voiceover) and skip
+      // this branch. Mirrors _normalize_full_cover_broll on the backend.
+      const isSpeakingBlock = (block.category || "avatar_speaking") === "avatar_speaking";
+      // `hidden` = the user deliberately dropped the face for this beat, so
+      // the b-roll IS meant to fill the frame — don't clamp it. (isPipHidden
+      // is derived from metadata.pip_layout above.)
+      const avatarDeliberatelyHidden = isPipHidden;
+      const unboundedSingleClip =
+        parallelMedia.length === 1 &&
+        typeof parallelMedia[0]?.start_offset_s !== "number" &&
+        (parallelMedia[0]?.duration_s === null ||
+          parallelMedia[0]?.duration_s === undefined);
+      const clampSpeakingCutaway =
+        isSpeakingBlock && !avatarDeliberatelyHidden && unboundedSingleClip && dur > 0;
       parallelMedia.forEach((pm, pmIdx) => {
         if (!pm || !pm.url || !pm.kind) return;
-        const offset = typeof pm.start_offset_s === "number"
+        const offset = clampSpeakingCutaway
+          ? Math.min(1.5, dur * 0.2)
+          : typeof pm.start_offset_s === "number"
           ? Math.max(0, Math.min(pm.start_offset_s, dur - 0.1))
           : pmIdx * slot;
-        const itemDur = typeof pm.duration_s === "number" && pm.duration_s !== null
+        const itemDur = clampSpeakingCutaway
+          ? Math.max(0.1, Math.min(4, Math.max(2, dur * 0.4), dur - offset))
+          : typeof pm.duration_s === "number" && pm.duration_s !== null
           ? Math.max(0.1, Math.min(pm.duration_s, dur - offset))
           : slot;
         const itemFrom = secondsToFrames(start + offset, fps);

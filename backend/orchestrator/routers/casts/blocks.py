@@ -523,6 +523,26 @@ async def update_block(
         block.category = category
         if category == "avatar_motion" and not (render_mode and render_mode == "motion"):
             block.render_mode = "motion"
+        # Keep render_mode coupled to the category on a manual switch. Before
+        # this, category was a bare label and render_mode kept whatever value
+        # it already had — so switching a block to "Avatar voiceover" (or any
+        # other type) in the editor did NOTHING on the next render (the render
+        # dispatcher only ever reads render_mode), and the change only took
+        # effect after a full cast regen. An explicit render_mode in the same
+        # request still wins. Mirrors the category -> render_mode map the
+        # generation path uses (routers/casts/generation.py).
+        elif render_mode is None:
+            _mode_for_category = {
+                "avatar_speaking": "avatar_full",
+                "avatar_voiceover": "voiceover",
+                "pip_talking_head": "pip",
+                "stock_photo": "voiceover",
+                "stock_video": "voiceover",
+                "avatar_action": "body_motion",
+                "avatar_acting": "body_motion",
+            }.get(category)
+            if _mode_for_category:
+                block.render_mode = _mode_for_category
         if getattr(block, "deleted_at", None) is not None:
             block.deleted_at = None
         if getattr(block, "is_active", True) is False:

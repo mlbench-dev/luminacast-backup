@@ -23,6 +23,14 @@ export interface BlockCategoryInfo {
 	hex: string;
 	/** Lighter hex used for borders / accents. */
 	hexAccent: string;
+	/** One-line "what this block type is", shown as help on the category picker. */
+	blurb: string;
+	/**
+	 * Consequence shown when the user switches an existing block TO this type,
+	 * so a category change isn't a silent no-op / surprise. Kept short —
+	 * rendered inline under the dropdown.
+	 */
+	onSwitch: string;
 }
 
 export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
@@ -33,6 +41,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-indigo-400",
 		hex: "#4f46e5",
 		hexAccent: "#818cf8",
+		blurb: "Avatar talks straight to camera, full frame. B-roll plays as short cutaways on top.",
+		onSwitch: "The avatar is the shot. Any b-roll becomes a brief cutaway, not a full cover.",
 	},
 	{
 		// avatar_action: avatar performs an action in a scene-specific
@@ -47,6 +57,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-orange-400",
 		hex: "#f97316",
 		hexAccent: "#fb923c",
+		blurb: "Avatar performs an action in a generated scene (walking, holding the product).",
+		onSwitch: "The avatar is animated between two AI scene frames. Set the motion prompt below, then regenerate.",
 	},
 	{
 		value: "avatar_voiceover",
@@ -55,6 +67,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-blue-400",
 		hex: "#2563eb",
 		hexAccent: "#60a5fa",
+		blurb: "No avatar on screen — the script plays as narration over stock / AI / product footage.",
+		onSwitch: "The avatar won't appear. Your script plays as voiceover over the b-roll. Regenerate to apply.",
 	},
 	{
 		// pip_talking_head: avatar appears as a small talking head over
@@ -66,6 +80,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-green-400",
 		hex: "#16a34a",
 		hexAccent: "#4ade80",
+		blurb: "Avatar in a small corner window over a background or b-roll.",
+		onSwitch: "The avatar shrinks to a corner window. The background fills the rest of the frame.",
 	},
 	{
 		value: "stock_photo",
@@ -74,6 +90,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-teal-400",
 		hex: "#14b8a6",
 		hexAccent: "#5eead4",
+		blurb: "A library photo fills the frame. No avatar.",
+		onSwitch: "This block becomes a full-frame photo. No avatar, no narration unless you add it.",
 	},
 	{
 		value: "stock_video",
@@ -82,6 +100,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-yellow-400",
 		hex: "#eab308",
 		hexAccent: "#fde047",
+		blurb: "A library video clip fills the frame. No avatar.",
+		onSwitch: "This block becomes a full-frame stock clip. No avatar, no narration unless you add it.",
 	},
 	{
 		value: "generated_photo",
@@ -90,6 +110,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-purple-400",
 		hex: "#a855f7",
 		hexAccent: "#d8b4fe",
+		blurb: "AI generates a still image from the block's text prompt. No avatar.",
+		onSwitch: "This block becomes an AI image built from the block text. No avatar.",
 	},
 	{
 		value: "generated_video",
@@ -98,6 +120,8 @@ export const BLOCK_CATEGORIES: BlockCategoryInfo[] = [
 		dotClass: "bg-pink-400",
 		hex: "#ec4899",
 		hexAccent: "#f9a8d4",
+		blurb: "AI generates a motion clip from the block's text prompt. No avatar.",
+		onSwitch: "This block becomes an AI video built from the block text. No avatar. Regenerate to apply.",
 	},
 ];
 

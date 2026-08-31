@@ -80,14 +80,18 @@ def _action_block_metadata_from_scene(scene: dict) -> dict | None:
     """Build the per-block metadata bag from an LLM scene.
 
     Carries ``voiceover_enabled`` (PR #76 — per-action-block voiceover
-    choice) and ``pip_layout`` (PR #83 — talking-head PIP window size /
-    visibility). Returns None if no relevant fields were present so the
-    column stays NULL.
+    choice), ``pip_layout`` (PR #83 — talking-head PIP window size /
+    visibility) and ``auto_categorized`` (the b-roll normaliser retyped this
+    beat — the editor uses it to explain the change and offer a revert).
+    Returns None if no relevant fields were present so the column stays NULL.
     """
     try:
         if not isinstance(scene, dict):
             return None
         bag: dict = {}
+
+        if isinstance(scene.get("auto_categorized"), dict):
+            bag["auto_categorized"] = scene["auto_categorized"]
 
         if "voiceover_enabled" in scene:
             raw_vo = scene.get("voiceover_enabled")

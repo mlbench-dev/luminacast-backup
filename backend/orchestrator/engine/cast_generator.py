@@ -3082,6 +3082,96 @@ def _parallel_clip_entry(
     }
 
 
+# Shortest avatar_speaking beat (seconds) that still has room for a b-roll
+# *cutaway* — cut to the clip, then back to the avatar. Below this, a single
+# auto-picked clip swallows the whole beat and the avatar never appears, so we
+# treat the beat as a voiceover instead of a talking head.
+_CUTAWAY_MIN_BEAT_SEC = 8.0
+# When a long-enough speaking beat keeps its cutaway, bound the clip so the
+# avatar bookends it instead of the clip covering the full beat.
+_CUTAWAY_MAX_SEC = 4.0
+_CUTAWAY_START_OFFSET_SEC = 1.5
+
+
+def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
+    """Stop a single auto-picked b-roll clip from covering an entire
+    ``avatar_speaking`` beat.
+
+    ``auto_populate_stock_media`` attaches ONE ``parallel_media`` entry with
+    ``start_offset_s=0, duration_s=None`` to avatar/PIP beats. The editor
+    mapping (frontend ``editorStarterMapping.ts``) expands a lone
+    null-duration clip to the FULL block — full canvas, opaque — so an
+    "avatar speaking" block renders with the avatar hidden for 100% of the
+    beat: visually identical to a voiceover block, but still paying for an
+    avatar lip-sync bake nobody sees.
+
+    Two outcomes, decided per beat:
+
+      * beat too short for a real cutaway  -> retype to ``avatar_voiceover``
+        (honest label, no wasted bake, and the renderer's voiceover visual
+        fallback chain kicks in if the clip is unusable). A marker is left in
+        ``block["auto_categorized"]`` so the editor can explain why and offer
+        a one-click revert.
+      * beat long enough                   -> keep ``avatar_speaking`` but
+        bound the clip to a mid-beat cutaway so the avatar bookends it.
+
+    Only runs on beats that carry ``estimated_duration_seconds`` (fresh
+    outline generation). The re-fetch path (``repopulate_stock_media``) has no
+    reliable beat length and its blocks already have written scripts, so it is
+    intentionally left untouched.
+    """
+    for i, block in enumerate(outline):
+        if (block.get("category") or "avatar_speaking") != "avatar_speaking":
+            continue
+        if block.get("multi_angle"):
+            continue
+        if "estimated_duration_seconds" not in block:
+            continue
+        pm = block.get("parallel_media")
+        if not isinstance(pm, list) or len(pm) != 1:
+            continue
+        entry = pm[0]
+        if not isinstance(entry, dict) or not entry.get("url"):
+            continue
+        try:
+            beat_s = float(block.get("estimated_duration_seconds") or 0)
+        except (TypeError, ValueError):
+            beat_s = 0.0
+        dur = entry.get("duration_s")
+        covers_whole_beat = dur is None or (
+            beat_s > 0 and float(dur) >= beat_s - 0.25
+        )
+        if not covers_whole_beat:
+            continue
+
+        if beat_s <= 0 or beat_s < _CUTAWAY_MIN_BEAT_SEC:
+            block["category"] = "avatar_voiceover"
+            block["render_mode"] = "voiceover"
+            block["auto_categorized"] = {
+                "from": "avatar_speaking",
+                "to": "avatar_voiceover",
+                "reason": "broll_full_cover",
+            }
+            _log(
+                "info",
+                "Retyped fully-covered speaking beat to voiceover",
+                cast_id=cast_id,
+                block_index=i,
+                beat_seconds=beat_s,
+            )
+        else:
+            entry["start_offset_s"] = _CUTAWAY_START_OFFSET_SEC
+            entry["duration_s"] = min(_CUTAWAY_MAX_SEC, max(2.0, beat_s * 0.4))
+            _log(
+                "info",
+                "Bounded full-cover b-roll to a mid-beat cutaway",
+                cast_id=cast_id,
+                block_index=i,
+                beat_seconds=beat_s,
+                cutaway_seconds=entry["duration_s"],
+            )
+
+
 def _apply_preferred_broll(
     outline: list[dict], cast_id: str, preferred_broll_urls: list[str],
 ) -> set[int]:
@@ -3362,6 +3452,14 @@ async def auto_populate_stock_media(
         *[_fetch_for_block(i, b) for i, b in enumerate(outline)],
         return_exceptions=True,
     )
+    # Post-pass: a single auto-picked clip must not swallow a whole
+    # avatar_speaking beat (retype short beats to voiceover, bound long ones
+    # to a cutaway). See _normalize_full_cover_broll.
+    try:
+        _normalize_full_cover_broll(outline, cast_id)
+    except Exception as exc:  # never fail generation over a normalisation bug
+        import sentry_sdk
+        sentry_sdk.capture_exception(exc)
     return outline
 
 

@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Loader2, GripVertical, Trash2, Plus, Wand2, Volume2, RefreshCw, FileText,
   Check, ChevronDown, MessageSquare, Undo2, Redo2, Captions, Send,
-  Type, Scissors, Smartphone, X,
+  Type, Scissors, Smartphone, X, Sparkles,
 } from "lucide-react";
 import { CAPTION_PRESETS, getCaptionPreset, DEFAULT_CAPTION_PRESET_ID } from "@/lib/captionPresets";
 import { Button } from "@/components/ui/button";
@@ -398,6 +398,11 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   const [captionsGlobal, setCaptionsGlobal] = useState(true);
   const [captionsPerBlock, setCaptionsPerBlock] = useState<Record<string, boolean>>({});
 
+  // 4.7.1 — transient "what this category change does" note, keyed by block id.
+  // Set on a manual category switch so the change isn't a silent surprise;
+  // cleared when the user dismisses it or switches again.
+  const [categoryNotice, setCategoryNotice] = useState<Record<string, string>>({});
+
   // 4.7.4 — Per-block chat
   const [blockChatInputs, setBlockChatInputs] = useState<Record<string, string>>({});
 
@@ -612,6 +617,12 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   // 4.7.1 — Change block category
   const handleChangeCategory = useCallback(async (blockId: string, category: string) => {
     setBlocks(prev => prev.map(b => b.id === blockId ? { ...b, category: category } : b));
+    // Surface what the switch does — a category change used to be a silent
+    // no-op until a full regen; now the backend couples render_mode to it.
+    setCategoryNotice(prev => ({
+      ...prev,
+      [blockId]: CATEGORY_MAP[category]?.onSwitch || "",
+    }));
     try {
       await castsApi.updateBlock(cast.id, blockId, { category });
     } catch (err: any) {
@@ -1225,6 +1236,14 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
               "pip_talking_head",
             ].includes(block.category || "avatar_speaking");
             const blockCaptionOn = captionsPerBlock[block.id] ?? captionsGlobal;
+            // The outline normaliser retyped this beat (a single b-roll clip
+            // would otherwise have covered the whole avatar_speaking shot).
+            // Only badge it while the block still IS the auto-assigned type —
+            // once the user switches away the badge naturally clears.
+            const autoCat = block.metadata?.auto_categorized;
+            const showAutoCatBadge =
+              !!autoCat && autoCat.to === (block.category || "avatar_speaking");
+            const switchNotice = categoryNotice[block.id];
 
             // Animated slide-aside for neighbors during drag. The dragged
             // block stays in place (just dimmed) while neighbors translate to
@@ -1315,18 +1334,21 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                         drop target so a drag from the rail can land on it. */}
                     <span className="text-xs font-medium text-white/60">Block {idx + 1}</span>
 
-                    {/* 4.7.1 — Category dropdown */}
+                    {/* 4.7.1 — Category dropdown. `title` gives the "what is
+                        this block type" blurb on hover; the consequence of a
+                        switch is shown inline under the header (switchNotice). */}
                     <div className="relative inline-block">
                       <select
                         value={block.category || "avatar_speaking"}
                         onChange={e => handleChangeCategory(block.id, e.target.value)}
+                        title={cat.blurb}
                         className={cn(
                           "appearance-none text-[11px] pl-2 pr-6 py-1 rounded-full cursor-pointer border-0 focus:outline-none focus:ring-1 focus:ring-accent/40 font-medium",
                           cat.pillClass
                         )}
                       >
                         {BLOCK_CATEGORIES.map(c => (
-                          <option key={c.value} value={c.value}>{c.label}</option>
+                          <option key={c.value} value={c.value} title={c.blurb}>{c.label}</option>
                         ))}
                       </select>
                       <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none opacity-60" />
@@ -1415,6 +1437,44 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     </button>
                   </div>
                 </div>
+
+                {/* Auto-retype notice — the outline normaliser changed this
+                    beat's type because a single b-roll clip would have covered
+                    the whole avatar shot. Tell the user why + one-click undo. */}
+                {showAutoCatBadge && autoCat && (
+                  <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-1.5 text-[11px] text-blue-100/90">
+                    <Sparkles className="w-3 h-3 mt-0.5 shrink-0 text-blue-300" />
+                    <span className="flex-1">
+                      Auto-set to <strong>{CATEGORY_MAP[autoCat.to]?.label || autoCat.to}</strong> — this
+                      beat is short and fully covered by b-roll, so no avatar is generated.
+                    </span>
+                    <button
+                      onClick={() => handleChangeCategory(block.id, autoCat.from)}
+                      className="shrink-0 font-medium text-blue-200 underline decoration-blue-400/50 hover:text-white"
+                    >
+                      Keep as {CATEGORY_MAP[autoCat.from]?.label || autoCat.from}
+                    </button>
+                  </div>
+                )}
+
+                {/* Consequence of a manual category switch (was previously a
+                    silent no-op until a full regen). */}
+                {switchNotice && (
+                  <div className="flex items-start gap-2 rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white/60">
+                    <span className="flex-1">{switchNotice}</span>
+                    <button
+                      onClick={() => setCategoryNotice(prev => {
+                        const next = { ...prev };
+                        delete next[block.id];
+                        return next;
+                      })}
+                      className="shrink-0 text-white/40 hover:text-white/80"
+                      title="Dismiss"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
 
                 {/* 4.7.2 — Per-category inline controls.
                     Avatar-bearing blocks (speaking / voiceover / pip)
@@ -2098,6 +2158,7 @@ function AddBlockButton({
             <button
               key={c.value}
               role="menuitem"
+              title={c.blurb}
               onClick={() => handlePick(c.value)}
               className={cn(
                 "text-[11px] px-3 py-2 rounded font-medium transition-colors hover:ring-1 hover:ring-accent/40 text-left flex items-center gap-2",

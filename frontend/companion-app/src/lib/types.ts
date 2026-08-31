@@ -335,6 +335,14 @@ export interface BlockMetadata {
       the product shot for this beat, then "done" or "failed". The Script tab
       shows a placeholder + polls while "generating". */
   ai_broll?: "generating" | "done" | "failed";
+  /** Left by the outline b-roll normaliser when it retyped this beat because a
+      single auto-picked clip would have covered the whole avatar_speaking
+      shot. The Script tab surfaces this + a one-click revert. */
+  auto_categorized?: {
+    from: string;
+    to: string;
+    reason: string;
+  };
   [key: string]: unknown;
 }
 
