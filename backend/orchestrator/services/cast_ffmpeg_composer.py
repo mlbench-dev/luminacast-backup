@@ -311,6 +311,14 @@ DEFAULT_SAFE_AREA_BOTTOM_PCT = 18.0
 # renderer still measures real metrics and auto-shrinks as a fail-safe.
 _AVG_GLYPH_EM = 0.52
 
+# Hard ceiling on words shown at once. A long caption line otherwise sat static
+# for several seconds; capping it advances the caption every ~6-7 spoken words.
+# Each re-chunk still starts on its first token's timestamp, so it turns over
+# exactly when that word is spoken. Mirrors the editor preview
+# (captions-layer.tsx MAX_WORDS_PER_PAGE) and the SSR renderer
+# (CaptionComposition.tsx) so preview and render page identically.
+_MAX_WORDS_PER_PAGE = 7
+
 
 def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float:
     """Read an env var as a float clamped to [lo, hi], falling back to default."""
@@ -591,8 +599,9 @@ def cap_tokens_to_line_budget(
     """Re-chunk word tokens so each visible chunk fits within ``max_lines``.
 
     Greedily accumulates tokens until adding the next word would exceed the
-    character budget (``chars_per_line * max_lines``), then starts a new chunk.
-    Each output chunk preserves the source token timestamps:
+    character budget (``chars_per_line * max_lines``) OR the chunk already holds
+    ``_MAX_WORDS_PER_PAGE`` words, then starts a new chunk. Each output chunk
+    preserves the source token timestamps:
 
       * ``start_ms`` = first token's ``startMs``
       * ``end_ms``   = last token's ``endMs``
@@ -627,7 +636,9 @@ def cap_tokens_to_line_budget(
         word = tok["text"]
         # +1 for the joining space once the chunk already has a word.
         added = len(word) + (1 if current else 0)
-        if current and current_len + added > budget:
+        over_budget = bool(current) and current_len + added > budget
+        over_words = len(current) >= _MAX_WORDS_PER_PAGE
+        if current and (over_budget or over_words):
             _flush()
             current = []
             current_len = 0
@@ -1507,7 +1518,10 @@ def translate_timeline_to_ffmpeg(
         budget = _chars_per_line(font_size, caption_width) * max(1, max_lines)
         capped_pages: list[dict] = []
         for page in pages:
-            if len(page["text"]) <= budget:
+            if (
+                len(page["text"]) <= budget
+                and len(page.get("tokens") or []) <= _MAX_WORDS_PER_PAGE
+            ):
                 capped_pages.append(page)
                 continue
             capped_pages.extend(

@@ -113,6 +113,32 @@ def test_over_long_single_word_is_its_own_chunk_not_dropped():
     assert chunks[0]["text"] == long_word
 
 
+def test_word_ceiling_splits_even_when_char_budget_fits():
+    # 10 short words comfortably fit the character budget at max_lines=5, but
+    # the caption should still advance every _MAX_WORDS_PER_PAGE words so a long
+    # line doesn't sit static while the speaker keeps talking.
+    text = " ".join(["aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj"])
+    tokens = _tokens_from_text(text)
+    chunks = comp.cap_tokens_to_line_budget(
+        tokens,
+        font_size=FONT_SIZE,
+        caption_width=CAPTION_WIDTH,
+        max_lines=5,
+    )
+
+    assert len(chunks) == 2
+    assert len(chunks[0]["tokens"]) == comp._MAX_WORDS_PER_PAGE
+    assert len(chunks[1]["tokens"]) == 10 - comp._MAX_WORDS_PER_PAGE
+
+    # Timing still comes from the tokens, adjacent chunks don't overlap.
+    assert chunks[0]["start_ms"] == tokens[0]["startMs"]
+    assert chunks[1]["start_ms"] == tokens[comp._MAX_WORDS_PER_PAGE]["startMs"]
+    assert chunks[1]["start_ms"] >= chunks[0]["end_ms"]
+
+    # No words lost.
+    assert " ".join(c["text"] for c in chunks) == text
+
+
 def test_safe_area_bottom_pct_env_override(monkeypatch):
     monkeypatch.setenv("CAPTIONS_SAFE_AREA_BOTTOM_PCT", "25")
     assert comp._safe_area_bottom_pct() == 25.0

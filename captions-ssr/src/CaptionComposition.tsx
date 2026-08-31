@@ -124,27 +124,46 @@ function buildPages(
 	return pages;
 }
 
-// regr-2c: re-split a time-windowed page whose text exceeds maxCharsPerChunk so
-// each visible chunk fits maxLines at the configured font size / width. Token
-// timestamps are preserved: a child page starts at its first token's fromMs and
-// ends at its last token's toMs, so adjacent chunks never overlap. A single
-// token longer than the budget becomes its own chunk (clip one word rather than
-// lose it). When the page already fits (or the cap is disabled) it's returned
-// unchanged.
+// Hard ceiling on words shown at once — mirrors the editor preview
+// (captions-layer.tsx MAX_WORDS_PER_PAGE) and backend composer
+// (_MAX_WORDS_PER_PAGE). A long caption line otherwise sat static for
+// seconds; this advances it every ~6-7 spoken words. Each sub-page still
+// starts on its first token's fromMs, so it turns over as that word is spoken.
+const MAX_WORDS_PER_PAGE = 7;
+
+function countWords(tokens: TikTokPage['tokens']): number {
+	let n = 0;
+	for (const t of tokens) {
+		if (t.text.trim().length > 0) {
+			n++;
+		}
+	}
+	return n;
+}
+
+// regr-2c: re-split a time-windowed page so each visible chunk fits BOTH the
+// maxCharsPerChunk budget (maxLines at the configured font size / width) AND
+// the MAX_WORDS_PER_PAGE word ceiling. Token timestamps are preserved: a child
+// page starts at its first token's fromMs and ends at its last token's toMs, so
+// adjacent chunks never overlap. A single token longer than the budget becomes
+// its own chunk (clip one word rather than lose it). When the page already fits
+// both limits it's returned unchanged.
 export function capPageToCharBudget(
 	page: TikTokPage,
 	maxCharsPerChunk: number,
 ): TikTokPage[] {
-	if (!maxCharsPerChunk || maxCharsPerChunk <= 0) {
-		return [page];
-	}
-	if (page.text.length <= maxCharsPerChunk) {
+	const fitsChars =
+		!maxCharsPerChunk ||
+		maxCharsPerChunk <= 0 ||
+		page.text.length <= maxCharsPerChunk;
+	if (fitsChars && countWords(page.tokens) <= MAX_WORDS_PER_PAGE) {
 		return [page];
 	}
 
 	const out: TikTokPage[] = [];
 	let current: TikTokPage['tokens'] = [];
 	let currentLen = 0;
+	let currentWords = 0;
 
 	const flush = () => {
 		if (current.length === 0) {
@@ -160,13 +179,24 @@ export function capPageToCharBudget(
 
 	for (const tok of page.tokens) {
 		const addedLen = tok.text.length;
-		if (current.length > 0 && currentLen + addedLen > maxCharsPerChunk) {
+		const isWord = tok.text.trim().length > 0;
+		const overChars =
+			maxCharsPerChunk > 0 &&
+			current.length > 0 &&
+			currentLen + addedLen > maxCharsPerChunk;
+		const overWords =
+			current.length > 0 && isWord && currentWords >= MAX_WORDS_PER_PAGE;
+		if (overChars || overWords) {
 			flush();
 			current = [];
 			currentLen = 0;
+			currentWords = 0;
 		}
 		current.push(tok);
 		currentLen += addedLen;
+		if (isWord) {
+			currentWords++;
+		}
 	}
 	flush();
 

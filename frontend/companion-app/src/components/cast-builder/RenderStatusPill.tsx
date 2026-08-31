@@ -306,7 +306,7 @@ export function RenderStatusPill({
     renderStatusRaw === "composing"
       ? `Composing${etaSeconds != null ? ` · ~${formatEta(etaSeconds)}` : ""}`
       : counts.total > 0
-        ? `Baking ${counts.done}/${counts.total}${etaSeconds != null ? ` · ~${formatEta(etaSeconds)}` : ""}`
+        ? `Baking ${counts.done}/${counts.total}`
         : (progressStep || "Rendering…");
 
   const panel = open && pos && createPortal(
