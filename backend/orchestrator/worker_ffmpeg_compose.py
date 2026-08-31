@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 # fonts/escaping in sync instead of maintaining two copies that can drift.
 from services.cast_ffmpeg_composer import (
     _resolve_caption_font_file,
-    _ffmpeg_escape_drawtext,
     _caption_safe_width,
     _caption_font,
     _wrap_text_to_width,
@@ -460,6 +459,122 @@ def _build_overlay_filter_parts(overlay_elements, current_label):
         current_label = out_label
 
     return filter_parts, current_label
+
+
+def _build_caption_filter_parts(caption_overlays, current_label, *, canvas_w, tmpdir):
+    """Build the drawtext filtergraph parts that burn styled captions in.
+
+    Each caption gets its own drawtext filter carrying its own resolved
+    font / color / stroke / box / position (from the editor's caption preset),
+    rather than one hardcoded style for all of them.
+
+    The caption's wrapped text is written to ``tmpdir/caption_<n>.txt`` and
+    referenced with ``textfile=`` — it is NEVER inlined as ``text='...'`` in
+    the filtergraph string. Inlining forced every apostrophe / colon / comma /
+    newline in the caption to survive FFmpeg's filtergraph quote parser, and a
+    wrapped (multi-line) caption containing an apostrophe desynced it: the
+    ``text=`` value swallowed the filter's own trailing options and drawtext
+    burned ``:fontsize=42:...:enable=between(t,...)`` into the frame as literal
+    text. A sidecar file sidesteps all filtergraph escaping; ``expansion=none``
+    additionally stops drawtext interpreting ``%{...}`` / backslash sequences in
+    the caption body. Real newlines in the file are still hard line breaks.
+
+    Returns ``(filter_parts, current_label, drawn_count)``. Pulled out of
+    ``_run_ffmpeg_compose`` so the filter chain can be unit-tested without
+    invoking FFmpeg, matching ``_build_overlay_filter_parts``.
+    """
+    filter_parts: list[str] = []
+    if not caption_overlays or SKIP_CAPTION_BURN_IN:
+        return filter_parts, current_label, 0
+
+    sorted_caps = sorted(caption_overlays, key=lambda c: c.get("start_s", 0))
+    drawn = 0
+    for i, cap in enumerate(sorted_caps):
+        text = (cap.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            start = float(cap.get("start_s", 0))
+            end = float(cap.get("end_s", start + 1))
+        except (TypeError, ValueError) as ex:
+            sentry_sdk.capture_exception(ex)
+            continue
+        if end <= start:
+            continue
+
+        transform = (cap.get("textTransform") or "none").lower()
+        if transform == "uppercase":
+            text = text.upper()
+        elif transform == "lowercase":
+            text = text.lower()
+
+        font_path = _resolve_caption_font_file(cap.get("fontFamily") or "", 700)
+        font_size = int(cap.get("fontSize") or 42)
+        font_color = _drawtext_color(cap.get("fontColor"), default="white")
+        stroke_width = int(cap.get("strokeWidth") or 0)
+        stroke_color = _drawtext_color(cap.get("strokeColor"), default="black")
+
+        # drawtext never wraps text on its own — a caption drawn as one
+        # unbroken line runs straight off the frame edges on any canvas
+        # narrower than the text (confirmed live: correct on a wide 16:9
+        # test, but a normal-length caption clipped hard off both edges on a
+        # 4:5 render). Measure and wrap against this caption's own resolved
+        # font before drawing, the same way cast_ffmpeg_composer's own
+        # (separately-used) drawtext path already does for its captions.
+        safe_width = _caption_safe_width(canvas_w)
+        measure_font = _caption_font(font_path, font_size)
+        wrapped_lines = _wrap_text_to_width(text, measure_font, float(safe_width))
+        if not wrapped_lines:
+            continue
+        caption_txt_path = os.path.join(tmpdir, f"caption_{i}.txt")
+        with open(caption_txt_path, "w", encoding="utf-8") as _cf:
+            _cf.write("\n".join(wrapped_lines))
+
+        # Horizontal: honour textAlign; default matches the old hardcoded
+        # ASS Alignment=2 (bottom-center).
+        align = (cap.get("textAlign") or "center").lower()
+        if align == "left":
+            x_expr = "40"
+        elif align == "right":
+            x_expr = "w-text_w-40"
+        else:
+            x_expr = "(w-text_w)/2"
+
+        # Vertical: positionY is a 0..1 fraction of canvas height from the
+        # top, set by the caption preset (see editorStarterMapping.ts's
+        # presetPositionFraction). Falls back to a fixed bottom margin —
+        # close to the old hardcoded ASS MarginV=30 look — for legacy items
+        # saved before presets carried this field.
+        position_y = cap.get("positionY")
+        if isinstance(position_y, (int, float)):
+            frac = max(0.0, min(1.0, float(position_y)))
+            y_expr = f"(h-text_h)*{frac:.4f}"
+        else:
+            y_expr = "h-text_h-40"
+
+        box_args = ""
+        if cap.get("ffmpegBoxEnabled"):
+            box_color = _drawtext_color(cap.get("ffmpegBoxColor"), default="black@0.5")
+            box_args = f"box=1:boxcolor={box_color}:boxborderw=12:"
+
+        out_label = f"[cap{i}]"
+        filter_parts.append(
+            f"{current_label}drawtext="
+            f"fontfile='{font_path}':"
+            f"textfile='{caption_txt_path}':expansion=none:"
+            f"fontsize={font_size}:"
+            f"fontcolor={font_color}:"
+            f"{box_args}"
+            f"line_spacing=6:fix_bounds=1:"
+            f"borderw={stroke_width}:bordercolor={stroke_color}:"
+            f"x={x_expr}:y={y_expr}:"
+            f"enable='between(t,{start},{end})'"
+            f"{out_label}"
+        )
+        current_label = out_label
+        drawn += 1
+
+    return filter_parts, current_label, drawn
 
 
 def _run_ffmpeg_compose(req):
@@ -935,103 +1050,14 @@ def _run_ffmpeg_compose(req):
         # white caption regardless of what was styled in the editor. Each
         # caption now gets its own drawtext filter using its own resolved
         # style instead of one style for all of them.
-        if caption_overlays and not SKIP_CAPTION_BURN_IN:
-            sorted_caps = sorted(caption_overlays, key=lambda c: c.get("start_s", 0))
-            drawn = 0
-            for i, cap in enumerate(sorted_caps):
-                text = (cap.get("text") or "").strip()
-                if not text:
-                    continue
-                try:
-                    start = float(cap.get("start_s", 0))
-                    end = float(cap.get("end_s", start + 1))
-                except (TypeError, ValueError) as ex:
-                    sentry_sdk.capture_exception(ex)
-                    continue
-                if end <= start:
-                    continue
-
-                transform = (cap.get("textTransform") or "none").lower()
-                if transform == "uppercase":
-                    text = text.upper()
-                elif transform == "lowercase":
-                    text = text.lower()
-
-                font_path = _resolve_caption_font_file(cap.get("fontFamily") or "", 700)
-                font_size = int(cap.get("fontSize") or 42)
-                font_color = _drawtext_color(cap.get("fontColor"), default="white")
-                stroke_width = int(cap.get("strokeWidth") or 0)
-                stroke_color = _drawtext_color(cap.get("strokeColor"), default="black")
-
-                # drawtext never wraps text on its own — a caption drawn as
-                # one unbroken line runs straight off the frame edges on any
-                # canvas narrower than the text (confirmed live: correct on
-                # a wide 16:9 test, but a normal-length caption clipped hard
-                # off both edges on a 4:5 render). Measure and wrap against
-                # this caption's own resolved font before drawing, the same
-                # way cast_ffmpeg_composer's own (separately-used) drawtext
-                # path already does for its captions.
-                safe_width = _caption_safe_width(canvas_w)
-                measure_font = _caption_font(font_path, font_size)
-                wrapped_lines = _wrap_text_to_width(text, measure_font, float(safe_width))
-                if not wrapped_lines:
-                    continue
-                # drawtext treats a literal newline in text= as a hard line
-                # break — join the wrapped lines with a real one so the
-                # multi-line block renders instead of running off-frame.
-                escaped_text = "\n".join(
-                    _ffmpeg_escape_drawtext(ln) for ln in wrapped_lines
-                )
-
-                # Horizontal: honour textAlign; default matches the old
-                # hardcoded ASS Alignment=2 (bottom-center).
-                align = (cap.get("textAlign") or "center").lower()
-                if align == "left":
-                    x_expr = "40"
-                elif align == "right":
-                    x_expr = "w-text_w-40"
-                else:
-                    x_expr = "(w-text_w)/2"
-
-                # Vertical: positionY is a 0..1 fraction of canvas height
-                # from the top, set by the caption preset (see
-                # editorStarterMapping.ts's presetPositionFraction). Falls
-                # back to a fixed bottom margin — close to the old
-                # hardcoded ASS MarginV=30 look — for legacy items saved
-                # before presets carried this field.
-                position_y = cap.get("positionY")
-                if isinstance(position_y, (int, float)):
-                    frac = max(0.0, min(1.0, float(position_y)))
-                    y_expr = f"(h-text_h)*{frac:.4f}"
-                else:
-                    y_expr = "h-text_h-40"
-
-                box_args = ""
-                if cap.get("ffmpegBoxEnabled"):
-                    box_color = _drawtext_color(cap.get("ffmpegBoxColor"), default="black@0.5")
-                    box_args = f"box=1:boxcolor={box_color}:boxborderw=12:"
-
-                out_label = f"[cap{i}]"
-                filter_parts.append(
-                    f"{current_label}drawtext="
-                    f"fontfile='{font_path}':"
-                    f"text='{escaped_text}':"
-                    f"fontsize={font_size}:"
-                    f"fontcolor={font_color}:"
-                    f"{box_args}"
-                    f"line_spacing=6:fix_bounds=1:"
-                    f"borderw={stroke_width}:bordercolor={stroke_color}:"
-                    f"x={x_expr}:y={y_expr}:"
-                    f"enable='between(t,{start},{end})'"
-                    f"{out_label}"
-                )
-                current_label = out_label
-                drawn += 1
-
-            logger.info(
-                "compose %s: added %d styled drawtext caption(s)",
-                render_id, drawn,
-            )
+        caption_parts, current_label, drawn = _build_caption_filter_parts(
+            caption_overlays, current_label, canvas_w=canvas_w, tmpdir=tmpdir
+        )
+        filter_parts.extend(caption_parts)
+        logger.info(
+            "compose %s: added %d styled drawtext caption(s)",
+            render_id, drawn,
+        )
 
         # ── 6. Run final FFmpeg. ──
         output_path = os.path.join(tmpdir, "final.mp4")
