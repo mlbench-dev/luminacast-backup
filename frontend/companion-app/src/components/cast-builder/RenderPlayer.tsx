@@ -40,44 +40,49 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
 
   // Keyboard shortcuts
   useEffect(() => {
+    const HANDLED = new Set([
+      " ", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+      "f", "F", "m", "M", "Escape",
+    ]);
     const handler = (e: KeyboardEvent) => {
       const v = videoRef.current;
       if (!v) return;
       // Ignore when typing in an input
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (!HANDLED.has(e.key)) return;
+
+      // This modal is portaled OVER the editor, whose Remotion preview player
+      // has its own window-level Space = play/pause shortcut (and other
+      // editor shortcuts). Swallow the event here — capture phase + stop —
+      // so watching the finished render never also drives the editor player.
+      e.preventDefault();
+      e.stopImmediatePropagation();
 
       switch (e.key) {
         case " ":
-          e.preventDefault();
           v.paused ? v.play() : v.pause();
           break;
         case "ArrowLeft":
-          e.preventDefault();
           v.currentTime = Math.max(0, v.currentTime - 5);
           break;
         case "ArrowRight":
-          e.preventDefault();
           v.currentTime = Math.min(v.duration, v.currentTime + 5);
           break;
         case "ArrowUp":
-          e.preventDefault();
           v.volume = Math.min(1, v.volume + 0.1);
           setVolume(v.volume);
           break;
         case "ArrowDown":
-          e.preventDefault();
           v.volume = Math.max(0, v.volume - 0.1);
           setVolume(v.volume);
           break;
         case "f":
         case "F":
-          e.preventDefault();
           toggleFullscreen();
           break;
         case "m":
         case "M":
-          e.preventDefault();
           v.muted = !v.muted;
           setMuted(v.muted);
           break;
@@ -86,8 +91,8 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
           break;
       }
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
   }, [onClose]);
 
   // Fullscreen change listener
