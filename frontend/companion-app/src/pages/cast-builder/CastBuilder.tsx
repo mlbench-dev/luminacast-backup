@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, AlertCircle, RefreshCw, ArrowLeft, Trash2, Rocket, MoreVertical, Copy, ChevronLeft, CheckCircle2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { castsApi } from "@/lib/api";
+import { castsApi, billingApi } from "@/lib/api";
 import { CastStatus, type Cast } from "@/lib/types";
 import { toast } from "@/hooks/useToast";
 import { PhaseHeader, type WizardPhase } from "@/components/cast-builder/PhaseHeader";
@@ -379,6 +379,34 @@ export function CastBuilderPage() {
         icon: "warning",
       });
       if (!proceed) return;
+    }
+
+    // Overage warning: an active subscriber past their included render minutes
+    // with no PAYG credits gets an immediate off-session card charge for this
+    // render (services/billing_service.py::_attempt_overage_charge). Nothing
+    // else prompts for that — so confirm it here.
+    try {
+      const bill = await billingApi.getDashboard();
+      if (bill.render_billing?.source === "overage") {
+        const rateCents = bill.render_billing.overage_rate_cents_per_minute?.standard ?? 500;
+        const perMin = (rateCents / 100).toFixed(2);
+        const includedMin = Math.round(bill.render_minutes?.included ?? 0);
+        const proceed = await confirmAction({
+          title: bill.render_billing.will_charge_card
+            ? "This render will be charged to your card"
+            : "This render will be billed as overage",
+          text:
+            `You've used all ${includedMin} included render minutes this period and have no PAYG credits. ` +
+            `This render is billed as overage at about $${perMin} per rendered minute` +
+            (bill.render_billing.will_charge_card ? ", charged to your card now." : "."),
+          confirmButtonText: "Render anyway",
+          cancelButtonText: "Cancel",
+          icon: "warning",
+        });
+        if (!proceed) return;
+      }
+    } catch (billErr) {
+      console.warn("Overage pre-check failed, proceeding:", billErr);
     }
 
     const MIN_SPEAKING_SLOT_S = 1.5;

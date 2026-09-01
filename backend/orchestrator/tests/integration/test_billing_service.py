@@ -9,6 +9,7 @@ charge) rather than mocking the Stripe SDK itself.
 """
 import uuid
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -93,6 +94,74 @@ async def _make_subscription(
     db_session.add(sub)
     await db_session.commit()
     return sub
+
+
+class TestNextRenderBillingDescriptor:
+    """`_describe_next_render_billing` — the pure helper the UI reads to warn
+    before a render that would charge the card as overage."""
+
+    @staticmethod
+    def _period(*, included=10.0, used=0.0, free=False):
+        return SimpleNamespace(
+            render_minutes_included=included,
+            render_minutes_used=used,
+            is_free_tier=free,
+        )
+
+    @staticmethod
+    def _wallet(balance_cents=0):
+        return SimpleNamespace(balance_cents=balance_cents)
+
+    @staticmethod
+    def _sub(*, active=True, card=True):
+        return SimpleNamespace(
+            status=(SubscriptionStatus.ACTIVE.value if active else SubscriptionStatus.CANCELED.value),
+            stripe_customer_id=("cus_x" if card else None),
+        )
+
+    def test_included_when_minutes_remain(self):
+        out = billing_service._describe_next_render_billing(
+            self._sub(), self._period(used=4.0), self._wallet()
+        )
+        assert out["source"] == "included"
+        assert out["will_charge_card"] is False
+
+    def test_credits_when_minutes_gone_but_wallet_positive(self):
+        out = billing_service._describe_next_render_billing(
+            self._sub(), self._period(used=10.0), self._wallet(500)
+        )
+        assert out["source"] == "credits"
+        assert out["will_charge_card"] is False
+
+    def test_overage_charges_card_for_active_subscriber_with_card(self):
+        out = billing_service._describe_next_render_billing(
+            self._sub(card=True), self._period(used=10.0), self._wallet(0)
+        )
+        assert out["source"] == "overage"
+        assert out["will_charge_card"] is True
+        assert out["overage_rate_cents_per_minute"]["standard"] > 0
+
+    def test_overage_without_card_is_still_overage_but_not_charged_now(self):
+        out = billing_service._describe_next_render_billing(
+            self._sub(card=False), self._period(used=10.0), self._wallet(0)
+        )
+        assert out["source"] == "overage"
+        assert out["will_charge_card"] is False
+
+    def test_blocked_for_non_subscriber_with_no_credits_and_no_free_minutes(self):
+        out = billing_service._describe_next_render_billing(
+            self._sub(active=False),
+            self._period(included=2.0, used=2.0, free=True),
+            self._wallet(0),
+        )
+        assert out["source"] == "blocked"
+        assert out["will_charge_card"] is False
+
+    def test_free_tier_with_minutes_left_is_included(self):
+        out = billing_service._describe_next_render_billing(
+            None, self._period(included=2.0, used=0.0, free=True), self._wallet(0)
+        )
+        assert out["source"] == "included"
 
 
 class TestComputeBillableMinutes:
