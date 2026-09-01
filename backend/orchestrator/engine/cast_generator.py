@@ -669,11 +669,26 @@ def _build_template_constraint(template: Optional[dict]) -> str:
     visual_rules = template.get("visual_rules") or []
     rules_block = "\n".join(f"  * {r}" for r in visual_rules) if visual_rules else ""
 
+    blueprints = template.get("block_blueprints") or []
+    bp_block = ""
+    if blueprints:
+        bp_lines = []
+        for idx, bp in enumerate(blueprints, start=1):
+            dur_range = bp.get("target_duration_range", [4, 10])
+            bp_lines.append(
+                f"  * Block {idx} [{bp.get('beat', 'SCENE')}]: block_type={bp.get('block_type')}, "
+                f"category={bp.get('category')}, render_mode={bp.get('render_mode')}, "
+                f"framing={bp.get('framing', 'MEDIUM')}, duration={dur_range[0]}-{dur_range[1]}s — {bp.get('purpose', '')}"
+            )
+        bp_block = "\n".join(bp_lines)
+
     lines = [
         f'MANDATORY TEMPLATE CONSTRAINT — the user picked the "{template.get("name", "custom")}" format. Follow it strictly:',
         f"- Produce blocks that follow this structural sequence (repeat/extend beats only as duration requires): {seq_str}",
         f"- Weight screen time roughly: {avatar_pct}% avatar speaking to camera, {broll_pct}% b-roll / product cutaways, {uploaded_pct}% uploaded footage.",
     ]
+    if bp_block:
+        lines.append(f"- REQUIRED BLOCK BLUEPRINTS (MATCH THESE EXACT CATEGORIES & RENDER MODES):\n{bp_block}")
     if video_prompt:
         lines.append(f"- Template Format & Video Directives:\n{video_prompt}")
     if rules_block:
@@ -3402,8 +3417,15 @@ async def auto_populate_stock_media(
             return
         if i in preferred_claimed:
             return
-        base_query = (block.get("stock_media_query") or "").strip()
         category = block.get("category") or "avatar_speaking"
+        render_mode = block.get("render_mode") or "avatar_full"
+        if category == "avatar_speaking" and render_mode == "avatar_full":
+            # On-camera avatar block — do not overlay generic stock b-roll
+            block["parallel_media"] = None
+            block["stock_media_url"] = None
+            return
+
+        base_query = (block.get("stock_media_query") or "").strip()
         bg_type = block.get("background_type") or ""
 
         wants_photo = category == "stock_photo" or bg_type == "stock_photo"
@@ -3443,7 +3465,7 @@ async def auto_populate_stock_media(
                 if not src.get("large2x"):
                     return
                 block["stock_media_url"] = src["large2x"]
-                block["stock_media_thumbnail"] = src.get("medium")
+                block["stock_media_thumbnail"] = src.get("tiny") or src.get("medium") or src["large2x"]
                 block["stock_media_pexels_id"] = best.get("id")
                 block["stock_media_kind"] = "photo"
                 block["stock_media_width"] = best.get("width")
@@ -3466,12 +3488,9 @@ async def auto_populate_stock_media(
             _log("warning", "Pexels search failed", cast_id=cast_id, block_index=i, query=query, error=str(exc))
             return
 
-        # Mirror the chosen asset into parallel_media for avatar/PIP
-        # blocks. parallel_media is what the editor reads to overlay
-        # b-roll while the avatar's voice plays underneath. For pure
-        # stock blocks we leave parallel_media alone — the asset IS the
-        # block, not an overlay.
-        if category in ("avatar_speaking", "avatar_voiceover", "pip_talking_head"):
+        # Mirror the chosen asset into parallel_media for voiceover/PIP blocks.
+        # parallel_media is what the editor reads to display cutaways.
+        if category in ("avatar_voiceover", "pip_talking_head"):
             block["parallel_media"] = [
                 {
                     "kind": block["stock_media_kind"],

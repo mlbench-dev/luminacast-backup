@@ -55,6 +55,7 @@ def test_each_template_has_required_fields(tpl_id):
     assert isinstance(tpl.get("video_generation_prompt"), str) and tpl["video_generation_prompt"]
     assert isinstance(tpl.get("visual_rules"), list) and len(tpl["visual_rules"]) > 0
     assert isinstance(tpl.get("script_direction"), str) and tpl["script_direction"]
+    assert isinstance(tpl.get("block_blueprints"), list) and len(tpl["block_blueprints"]) > 0
     bias = tpl["bias"]
     assert set(bias.keys()) == {"avatar_speaking", "broll", "uploaded_video"}
     # Bias is a rough split — allow a little slack but it should sum near 1.
@@ -75,12 +76,13 @@ def test_list_templates_shape():
             "id", "name", "description", "preview_image_key", "block_count",
             "est_duration_range", "default_bias", "default_mic_on",
             "default_caption_preset", "video_generation_prompt", "visual_rules",
-            "script_direction",
+            "script_direction", "block_blueprints",
         }
         assert item["block_count"] == len(TEMPLATES[item["id"]]["block_sequence"])
         assert item["video_generation_prompt"] is not None
         assert isinstance(item["visual_rules"], list)
         assert item["script_direction"] is not None
+        assert isinstance(item["block_blueprints"], list)
 
 
 def test_get_template_lookup_and_auto_fallthrough():

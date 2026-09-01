@@ -79,8 +79,8 @@ function levenshtein(a: string, b: string): number {
   for (let i = 1; i <= m; i++)
     for (let j = 1; j <= n; j++)
       dp[i][j] = Math.min(
-        dp[i-1][j] + 1, dp[i][j-1] + 1,
-        dp[i-1][j-1] + (a[i-1] !== b[j-1] ? 1 : 0),
+        dp[i - 1][j] + 1, dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] !== b[j - 1] ? 1 : 0),
       );
   return dp[m][n];
 }
@@ -949,8 +949,10 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
       // Optimistic local update so the preview appears immediately.
       setBlocks(prev => prev.map(b =>
         b.id === blockId
-          ? { ...b,
-              [slot === "first" ? "gen_video_first_frame_key" : "gen_video_last_frame_key"]: result.r2_key }
+          ? {
+            ...b,
+            [slot === "first" ? "gen_video_first_frame_key" : "gen_video_last_frame_key"]: result.r2_key
+          }
           : b
       ));
       toast({ title: `${slot === "first" ? "First" : "Last"} frame uploaded` });
@@ -1101,376 +1103,376 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
       {renderInProgress && <RenderLockBanner onCancelRender={onCancelRender} />}
       <div
         className={cn(
-          "flex justify-center gap-5 p-6 relative transition-opacity",
+          "flex justify-center items-start gap-5 p-6 relative transition-opacity",
           renderInProgress && "opacity-60",
         )}
         inert={renderInProgress}
       >
-      {!generating && blocks.length > 1 && (
-        <BlockOrderRail
-          blocks={blocks}
-          dragSrcIdx={dragSrcIdx}
-          dropTargetIdx={dropTargetIdx}
-          onDragStart={handleDragStart}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-          onDragEnd={handleDragEnd}
-          onJumpTo={jumpToBlock}
-        />
-      )}
-      <div className="w-full min-w-0 max-w-3xl space-y-6 relative">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-            <FileText className="w-5 h-5 text-accent" />
-            Script Editor
-          </h2>
-          <p className="text-sm text-white/50 mt-1">
-            {cast.description
-              ? `Goal: "${cast.description.slice(0, 80)}${(cast.description?.length || 0) > 80 ? "..." : ""}"`
-              : "Edit the script blocks below"}
-          </p>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="text-right shrink-0">
-            <div className="text-sm text-white/70 whitespace-nowrap">
-              {totalWords} words · ~{totalDuration}s
+        {!generating && blocks.length > 1 && (
+          <BlockOrderRail
+            blocks={blocks}
+            dragSrcIdx={dragSrcIdx}
+            dropTargetIdx={dropTargetIdx}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onDragEnd={handleDragEnd}
+            onJumpTo={jumpToBlock}
+          />
+        )}
+        <div className="w-full min-w-0 max-w-3xl space-y-6 relative">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+                <FileText className="w-5 h-5 text-accent" />
+                Script Editor
+              </h2>
+              <p className="text-sm text-white/50 mt-1">
+                {cast.description
+                  ? `Goal: "${cast.description.slice(0, 80)}${(cast.description?.length || 0) > 80 ? "..." : ""}"`
+                  : "Edit the script blocks below"}
+              </p>
             </div>
-            <div className="text-xs text-white/40 whitespace-nowrap">{blocks.length} blocks</div>
+            <div className="flex items-center gap-4">
+              <div className="text-right shrink-0">
+                <div className="text-sm text-white/70 whitespace-nowrap">
+                  {totalWords} words · ~{totalDuration}s
+                </div>
+                <div className="text-xs text-white/40 whitespace-nowrap">{blocks.length} blocks</div>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
 
-      {/* PR #65: clip-on lavalier vs phone-mic toggle. Persisted per-avatar
+          {/* PR #65: clip-on lavalier vs phone-mic toggle. Persisted per-avatar
           (NOT per-cast — the toast makes that explicit, since this control
           sitting inside one cast's Script tab previously read like a
           cast-specific override). It's also only the fallback now: any
           block whose scene has its own mic-visible setting uses that
           instead — see AvatarLookPicker / mic_presets.resolve_scene_voice_settings. */}
-      {cast.avatar_id && (
-        <ClipMicToggle
-          avatarId={cast.avatar_id}
-          initialEnabled={!!castAvatar?.clip_mic_enabled}
-          onChange={(enabled) => {
-            // Keep the cached avatar in sync so the toggle survives a
-            // refresh / remount (it reads back from this query).
-            queryClient.invalidateQueries({ queryKey: ["avatar-status", cast.avatar_id] });
-            toast({
-              title: `Default mic style: ${enabled ? "clip mic" : "phone mic"}`,
-              description: "Applies to every cast using this avatar (unless a scene sets its own). Regenerate TTS to apply to existing blocks here.",
-            });
-          }}
-        />
-      )}
+          {cast.avatar_id && (
+            <ClipMicToggle
+              avatarId={cast.avatar_id}
+              initialEnabled={!!castAvatar?.clip_mic_enabled}
+              onChange={(enabled) => {
+                // Keep the cached avatar in sync so the toggle survives a
+                // refresh / remount (it reads back from this query).
+                queryClient.invalidateQueries({ queryKey: ["avatar-status", cast.avatar_id] });
+                toast({
+                  title: `Default mic style: ${enabled ? "clip mic" : "phone mic"}`,
+                  description: "Applies to every cast using this avatar (unless a scene sets its own). Regenerate TTS to apply to existing blocks here.",
+                });
+              }}
+            />
+          )}
 
-      {/* Match a past live for this cast only (optional, non-blocking).
+          {/* Match a past live for this cast only (optional, non-blocking).
           Cast-scoped reference takes precedence over the avatar's at
           outline generation (resolve_active_assessment). */}
-      <div className="rounded-lg border border-white/10 bg-white/5 p-4">
-        <LiveReferenceCard
-          castId={cast.id}
-          title="Match a past live (optional)"
-          subtitle="Reference a specific past live for this cast only."
-        />
-      </div>
-
-      {/* 4.7.5 — Cast-level chat */}
-      {!generating && blocks.length > 0 && (
-        <div className="flex items-center gap-2 bg-white/5 rounded-lg px-3 py-2 border border-white/10">
-          <MessageSquare className="w-4 h-4 text-white/30 shrink-0" />
-          <input
-            value={castChatInput}
-            onChange={e => setCastChatInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleCastChat()}
-            placeholder="Refine all blocks... (e.g. 'make all blocks shorter and more urgent')"
-            className="flex-1 bg-transparent text-sm text-white/80 placeholder:text-white/30 focus:outline-none"
-            disabled={castChatLoading}
-          />
-          <button
-            onClick={handleCastChat}
-            disabled={castChatLoading || !castChatInput.trim()}
-            className="text-accent hover:text-accent/80 disabled:text-white/20"
-          >
-            {castChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          </button>
-        </div>
-      )}
-
-      {/* Generating skeleton */}
-      {generating && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3 text-accent mb-4">
-            <Loader2 className="w-5 h-5 animate-spin" />
-            <span className="text-sm">Generating script...</span>
+          <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+            <LiveReferenceCard
+              castId={cast.id}
+              title="Match a past live (optional)"
+              subtitle="Reference a specific past live for this cast only."
+            />
           </div>
-          {[1, 2, 3].map(i => (
-            <div key={i} className="border border-white/10 rounded-lg p-4 space-y-3 animate-pulse">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-4 bg-white/10 rounded" />
-                <div className="w-16 h-4 bg-white/10 rounded" />
-                <div className="w-20 h-4 bg-white/10 rounded" />
-              </div>
-              <div className="space-y-2">
-                <div className="h-3 bg-white/5 rounded w-full" />
-                <div className="h-3 bg-white/5 rounded w-4/5" />
-                <div className="h-3 bg-white/5 rounded w-3/5" />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
-      {/* Empty state — two cases:
+          {/* 4.7.5 — Cast-level chat */}
+          {!generating && blocks.length > 0 && (
+            <div className="flex items-center gap-2 bg-white/5 rounded-lg px-3 py-2 border border-white/10">
+              <MessageSquare className="w-4 h-4 text-white/30 shrink-0" />
+              <input
+                value={castChatInput}
+                onChange={e => setCastChatInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleCastChat()}
+                placeholder="Refine all blocks... (e.g. 'make all blocks shorter and more urgent')"
+                className="flex-1 bg-transparent text-sm text-white/80 placeholder:text-white/30 focus:outline-none"
+                disabled={castChatLoading}
+              />
+              <button
+                onClick={handleCastChat}
+                disabled={castChatLoading || !castChatInput.trim()}
+                className="text-accent hover:text-accent/80 disabled:text-white/20"
+              >
+                {castChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              </button>
+            </div>
+          )}
+
+          {/* Generating skeleton */}
+          {generating && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 text-accent mb-4">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span className="text-sm">Generating script...</span>
+              </div>
+              {[1, 2, 3].map(i => (
+                <div key={i} className="border border-white/10 rounded-lg p-4 space-y-3 animate-pulse">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-4 bg-white/10 rounded" />
+                    <div className="w-16 h-4 bg-white/10 rounded" />
+                    <div className="w-20 h-4 bg-white/10 rounded" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="h-3 bg-white/5 rounded w-full" />
+                    <div className="h-3 bg-white/5 rounded w-4/5" />
+                    <div className="h-3 bg-white/5 rounded w-3/5" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Empty state — two cases:
           (a) the user deleted every block themselves → offer Add Block +
               Regenerate, and don't call it a "failure";
           (b) generation genuinely failed / hasn't arrived → Retry.
           We know it's (a) if we've ever rendered a block this session, or the
           cast is already past outline generation. */}
-      {!generating && blocks.length === 0 && (() => {
-        const s = (cast.status as string | undefined)?.toLowerCase();
-        const userEmptied =
-          blocksEverLoadedRef.current ||
-          (!!s && !["draft", "generating", "generation_failed", "template_select", "pending_payment"].includes(s));
-        return (
-          <div className="text-center py-12 space-y-4">
-            {userEmptied ? (
-              <>
-                <p className="text-white/40 text-sm">This script has no blocks.</p>
-                <div className="mx-auto flex max-w-xs flex-col items-stretch gap-2 sm:max-w-md sm:flex-row sm:justify-center">
-                  <div className="w-full sm:w-56">
-                    <AddBlockButton onAdd={handleAddBlock} />
-                  </div>
-                  <Button onClick={generateOutline} variant="outline" className="shrink-0">
-                    <Wand2 className="w-4 h-4 mr-2" /> Regenerate script
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-white/40 text-sm">Script generation failed or is still loading.</p>
-                <Button onClick={generateOutline} className="bg-accent hover:bg-accent/90">
-                  <Wand2 className="w-4 h-4 mr-2" /> Retry Script Generation
-                </Button>
-              </>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* Script blocks */}
-      {!generating && blocks.length > 0 && (
-        <div className="space-y-3">
-          {blocks.map((block, idx) => {
-            // Pick the active variant explicitly. The backend now returns variants
-            // sorted active-first, but a block may have multiple variants where only
-            // one is active — explicit `find` is safer than relying on ordering.
-            // If neither is_active nor [0] yields a variant (race during generation,
-            // partial fetch, or stale cache), we render a small "loading text…"
-            // hint so the user knows scripts are still arriving rather than seeing
-            // a silent empty card with 0 words.
-            const variant = pickActiveVariant(block);
-            const rawText = variant?.script_text || "";
-            const wc = ttsWordCount(rawText);
-            const dur = estimateDuration(rawText);
-            const cat = CATEGORY_MAP[(block.category || "avatar_speaking") as string] || CATEGORY_MAP.avatar_speaking;
-            const isAvatarCategory = [
-              "avatar_speaking",
-              "avatar_action",
-              // Legacy aliases — old blocks render correctly until SQL migration runs.
-              "avatar_acting",
-              "avatar_motion",
-              "avatar_voiceover",
-              "pip_talking_head",
-            ].includes(block.category || "avatar_speaking");
-            const blockCaptionOn = captionsPerBlock[block.id] ?? captionsGlobal;
-            // Speaking / talking-head blocks carry an extra "Avatar size"
-            // dropdown in the header, which pushes the word-count + edit
-            // controls onto a wrapped second line. For those, render that
-            // cluster just above the script textarea instead.
-            const hasAvatarSizeDropdown =
-              block.category === "avatar_speaking" || block.category === "pip_talking_head";
-            // The outline normaliser retyped this beat (a single b-roll clip
-            // would otherwise have covered the whole avatar_speaking shot).
-            // Only badge it while the block still IS the auto-assigned type —
-            // once the user switches away the badge naturally clears.
-            const autoCat = block.metadata?.auto_categorized;
-            const showAutoCatBadge =
-              !!autoCat && autoCat.to === (block.category || "avatar_speaking");
-            const switchNotice = categoryNotice[block.id];
-
-            // Word count + per-block edit controls. Rendered in the header
-            // normally, but moved to just above the textarea when the header
-            // also carries the Avatar-size dropdown (see hasAvatarSizeDropdown).
-            const metaControls = (
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
-
-                {/* 4.7.8 — Per-block caption toggle */}
-                <button
-                  onClick={() => setCaptionsPerBlock(prev => ({
-                    ...prev,
-                    [block.id]: !(prev[block.id] ?? captionsGlobal),
-                  }))}
-                  className={cn(
-                    "p-1 rounded",
-                    blockCaptionOn ? "text-accent/60" : "text-white/20"
-                  )}
-                  title={blockCaptionOn ? "Captions on for this block" : "Captions off for this block"}
-                >
-                  <Captions className="w-3 h-3" />
-                </button>
-
-                {/* 4.7.4 — Undo / Redo */}
-                <button
-                  onClick={() => handleUndo(block.id)}
-                  disabled={!history.canUndo(block.id)}
-                  className="text-white/20 hover:text-white/50 disabled:opacity-30"
-                  title="Undo (Ctrl+Z)"
-                >
-                  <Undo2 className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={() => handleRedo(block.id)}
-                  disabled={!history.canRedo(block.id)}
-                  className="text-white/20 hover:text-white/50 disabled:opacity-30"
-                  title="Redo (Ctrl+Shift+Z)"
-                >
-                  <Redo2 className="w-3 h-3" />
-                </button>
-
-                <button
-                  onClick={() => handleRewriteInVoice(block.id)}
-                  className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"
-                  title="Rewrite in your voice"
-                >
-                  <RefreshCw className="w-3 h-3" /> Voice
-                </button>
-                <button
-                  onClick={() => handleDeleteBlock(block.id)}
-                  className="text-xs text-red-400 hover:text-red-300"
-                  title="Delete block"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+          {!generating && blocks.length === 0 && (() => {
+            const s = (cast.status as string | undefined)?.toLowerCase();
+            const userEmptied =
+              blocksEverLoadedRef.current ||
+              (!!s && !["draft", "generating", "generation_failed", "template_select", "pending_payment"].includes(s));
+            return (
+              <div className="text-center py-12 space-y-4">
+                {userEmptied ? (
+                  <>
+                    <p className="text-white/40 text-sm">This script has no blocks.</p>
+                    <div className="mx-auto flex max-w-xs flex-col items-stretch gap-2 sm:max-w-md sm:flex-row sm:justify-center">
+                      <div className="w-full sm:w-56">
+                        <AddBlockButton onAdd={handleAddBlock} />
+                      </div>
+                      <Button onClick={generateOutline} variant="outline" className="shrink-0">
+                        <Wand2 className="w-4 h-4 mr-2" /> Regenerate script
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-white/40 text-sm">Script generation failed or is still loading.</p>
+                    <Button onClick={generateOutline} className="bg-accent hover:bg-accent/90">
+                      <Wand2 className="w-4 h-4 mr-2" /> Retry Script Generation
+                    </Button>
+                  </>
+                )}
               </div>
             );
+          })()}
 
-            // Animated slide-aside for neighbors during drag. The dragged
-            // block stays in place (just dimmed) while neighbors translate to
-            // open a gap at dropTargetIdx. We compute a transform per index:
-            //   - dragging from src to a target ABOVE src: items in [target..src-1]
-            //     should slide DOWN by one card-height
-            //   - dragging from src to a target BELOW src: items in [src+1..target-1]
-            //     should slide UP by one card-height
-            // Card height varies; using transform keeps it pixel-precise via
-            // a CSS variable measured per-card with the resize observer is
-            // overkill, so we use a uniform 14px gap + relative-position trick.
-            const isDragging = dragSrcIdx === idx;
-            const showIndicatorAbove = dropTargetIdx === idx && dragSrcIdx !== null && dragSrcIdx !== idx;
-            const showIndicatorBelow = dropTargetIdx === idx + 1 && dragSrcIdx !== null && dragSrcIdx !== idx;
-            // Slide-aside translation: positive = down, negative = up.
-            let slideY = 0;
-            if (dragSrcIdx !== null && dropTargetIdx !== null && !isDragging) {
-              const slideAmount = 8; // px nudge — enough to feel kinetic, not jarring
-              if (dragSrcIdx < idx && idx < dropTargetIdx) slideY = -slideAmount; // shift up
-              if (dropTargetIdx <= idx && idx < dragSrcIdx) slideY = slideAmount; // shift down
-            }
-            return (
-              <div
-                key={block.id}
-                data-block-card
-                data-block-id={block.id}
-                onDragOver={e => handleDragOver(e, idx)}
-                onDrop={handleDrop}
-                onDragEnd={handleDragEnd}
-                style={{
-                  transform: `translateY(${slideY}px)`,
-                  transition: "transform 200ms cubic-bezier(.2,.8,.2,1), opacity 150ms, box-shadow 150ms",
-                  opacity: isDragging ? 0.45 : 1,
-                  boxShadow: isDragging ? "0 12px 28px -10px rgba(0,0,0,0.55)" : undefined,
-                }}
-                className={cn(
-                  "relative border rounded-2xl p-4",
-                  isDragging
-                    ? "border-accent/60 bg-accent/10 ring-1 ring-accent/30 z-10"
-                    : "border-white/10 bg-white/[0.03] hover:border-white/15 hover:bg-white/[0.05] transition-colors",
-                )}
-              >
-                {/* Drop indicator: 2px accent bar above or below the card. */}
-                {showIndicatorAbove && (
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute left-2 right-2 -top-[7px] h-[3px] rounded-full bg-accent shadow-[0_0_12px_rgba(167,139,250,.6)]"
-                  />
-                )}
-                {showIndicatorBelow && (
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute left-2 right-2 -bottom-[7px] h-[3px] rounded-full bg-accent shadow-[0_0_12px_rgba(167,139,250,.6)]"
-                  />
-                )}
-                {/* Two-column body: 9:16 visual preview on the left,
+          {/* Script blocks */}
+          {!generating && blocks.length > 0 && (
+            <div className="space-y-3">
+              {blocks.map((block, idx) => {
+                // Pick the active variant explicitly. The backend now returns variants
+                // sorted active-first, but a block may have multiple variants where only
+                // one is active — explicit `find` is safer than relying on ordering.
+                // If neither is_active nor [0] yields a variant (race during generation,
+                // partial fetch, or stale cache), we render a small "loading text…"
+                // hint so the user knows scripts are still arriving rather than seeing
+                // a silent empty card with 0 words.
+                const variant = pickActiveVariant(block);
+                const rawText = variant?.script_text || "";
+                const wc = ttsWordCount(rawText);
+                const dur = estimateDuration(rawText);
+                const cat = CATEGORY_MAP[(block.category || "avatar_speaking") as string] || CATEGORY_MAP.avatar_speaking;
+                const isAvatarCategory = [
+                  "avatar_speaking",
+                  "avatar_action",
+                  // Legacy aliases — old blocks render correctly until SQL migration runs.
+                  "avatar_acting",
+                  "avatar_motion",
+                  "avatar_voiceover",
+                  "pip_talking_head",
+                ].includes(block.category || "avatar_speaking");
+                const blockCaptionOn = captionsPerBlock[block.id] ?? captionsGlobal;
+                // Speaking / talking-head blocks carry an extra "Avatar size"
+                // dropdown in the header, which pushes the word-count + edit
+                // controls onto a wrapped second line. For those, render that
+                // cluster just above the script textarea instead.
+                const hasAvatarSizeDropdown =
+                  block.category === "avatar_speaking" || block.category === "pip_talking_head";
+                // The outline normaliser retyped this beat (a single b-roll clip
+                // would otherwise have covered the whole avatar_speaking shot).
+                // Only badge it while the block still IS the auto-assigned type —
+                // once the user switches away the badge naturally clears.
+                const autoCat = block.metadata?.auto_categorized;
+                const showAutoCatBadge =
+                  !!autoCat && autoCat.to === (block.category || "avatar_speaking");
+                const switchNotice = categoryNotice[block.id];
+
+                // Word count + per-block edit controls. Rendered in the header
+                // normally, but moved to just above the textarea when the header
+                // also carries the Avatar-size dropdown (see hasAvatarSizeDropdown).
+                const metaControls = (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
+
+                    {/* 4.7.8 — Per-block caption toggle */}
+                    <button
+                      onClick={() => setCaptionsPerBlock(prev => ({
+                        ...prev,
+                        [block.id]: !(prev[block.id] ?? captionsGlobal),
+                      }))}
+                      className={cn(
+                        "p-1 rounded",
+                        blockCaptionOn ? "text-accent/60" : "text-white/20"
+                      )}
+                      title={blockCaptionOn ? "Captions on for this block" : "Captions off for this block"}
+                    >
+                      <Captions className="w-3 h-3" />
+                    </button>
+
+                    {/* 4.7.4 — Undo / Redo */}
+                    <button
+                      onClick={() => handleUndo(block.id)}
+                      disabled={!history.canUndo(block.id)}
+                      className="text-white/20 hover:text-white/50 disabled:opacity-30"
+                      title="Undo (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => handleRedo(block.id)}
+                      disabled={!history.canRedo(block.id)}
+                      className="text-white/20 hover:text-white/50 disabled:opacity-30"
+                      title="Redo (Ctrl+Shift+Z)"
+                    >
+                      <Redo2 className="w-3 h-3" />
+                    </button>
+
+                    <button
+                      onClick={() => handleRewriteInVoice(block.id)}
+                      className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                      title="Rewrite in your voice"
+                    >
+                      <RefreshCw className="w-3 h-3" /> Voice
+                    </button>
+                    <button
+                      onClick={() => handleDeleteBlock(block.id)}
+                      className="text-xs text-red-400 hover:text-red-300"
+                      title="Delete block"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+
+                // Animated slide-aside for neighbors during drag. The dragged
+                // block stays in place (just dimmed) while neighbors translate to
+                // open a gap at dropTargetIdx. We compute a transform per index:
+                //   - dragging from src to a target ABOVE src: items in [target..src-1]
+                //     should slide DOWN by one card-height
+                //   - dragging from src to a target BELOW src: items in [src+1..target-1]
+                //     should slide UP by one card-height
+                // Card height varies; using transform keeps it pixel-precise via
+                // a CSS variable measured per-card with the resize observer is
+                // overkill, so we use a uniform 14px gap + relative-position trick.
+                const isDragging = dragSrcIdx === idx;
+                const showIndicatorAbove = dropTargetIdx === idx && dragSrcIdx !== null && dragSrcIdx !== idx;
+                const showIndicatorBelow = dropTargetIdx === idx + 1 && dragSrcIdx !== null && dragSrcIdx !== idx;
+                // Slide-aside translation: positive = down, negative = up.
+                let slideY = 0;
+                if (dragSrcIdx !== null && dropTargetIdx !== null && !isDragging) {
+                  const slideAmount = 8; // px nudge — enough to feel kinetic, not jarring
+                  if (dragSrcIdx < idx && idx < dropTargetIdx) slideY = -slideAmount; // shift up
+                  if (dropTargetIdx <= idx && idx < dragSrcIdx) slideY = slideAmount; // shift down
+                }
+                return (
+                  <div
+                    key={block.id}
+                    data-block-card
+                    data-block-id={block.id}
+                    onDragOver={e => handleDragOver(e, idx)}
+                    onDrop={handleDrop}
+                    onDragEnd={handleDragEnd}
+                    style={{
+                      transform: `translateY(${slideY}px)`,
+                      transition: "transform 200ms cubic-bezier(.2,.8,.2,1), opacity 150ms, box-shadow 150ms",
+                      opacity: isDragging ? 0.45 : 1,
+                      boxShadow: isDragging ? "0 12px 28px -10px rgba(0,0,0,0.55)" : undefined,
+                    }}
+                    className={cn(
+                      "relative border rounded-2xl p-4",
+                      isDragging
+                        ? "border-accent/60 bg-accent/10 ring-1 ring-accent/30 z-10"
+                        : "border-white/10 bg-white/[0.03] hover:border-white/15 hover:bg-white/[0.05] transition-colors",
+                    )}
+                  >
+                    {/* Drop indicator: 2px accent bar above or below the card. */}
+                    {showIndicatorAbove && (
+                      <span
+                        aria-hidden
+                        className="pointer-events-none absolute left-2 right-2 -top-[7px] h-[3px] rounded-full bg-accent shadow-[0_0_12px_rgba(167,139,250,.6)]"
+                      />
+                    )}
+                    {showIndicatorBelow && (
+                      <span
+                        aria-hidden
+                        className="pointer-events-none absolute left-2 right-2 -bottom-[7px] h-[3px] rounded-full bg-accent shadow-[0_0_12px_rgba(167,139,250,.6)]"
+                      />
+                    )}
+                    {/* Two-column body: 9:16 visual preview on the left,
                     script + controls on the right. The original card
                     chrome (drag handle, header, controls) lives inside
                     the right column so the preview gets to shine. */}
-                <div className="flex gap-4">
-                  <BlockVisualPreview
-                    block={block}
-                    avatarFaceUrl={avatarFaceUrl}
-                    durationSeconds={dur}
-                    textOverlay={block.category === "stock_photo" ? rawText : null}
-                    actionStartUrl={
-                      // PR #66 Fix 2: prefer the server-hydrated
-                      // first_frame_url so block #2+ render their
-                      // start frame on initial mount. Falls back to
-                      // looking the look up in `allLooks` when the
-                      // server response predates this PR.
-                      (block as any).first_frame_url ??
-                      allLooks.find((l) => l.id === block.body_motion_start_look_id)?.image_url ??
-                      null
-                    }
-                    actionEndUrl={
-                      (block as any).last_frame_url ??
-                      allLooks.find((l) => l.id === block.body_motion_end_look_id)?.image_url ??
-                      null
-                    }
-                  />
-                  <div className="flex-1 min-w-0 space-y-3">
-                {/* Block header */}
-                <div className="flex items-center justify-between flex-wrap gap-y-1.5">
-                  <div className="flex items-center gap-2 shrink-0">
-                    {/* Reordering now lives in the Block Order rail (left
+                    <div className="flex gap-4">
+                      <BlockVisualPreview
+                        block={block}
+                        avatarFaceUrl={avatarFaceUrl}
+                        durationSeconds={dur}
+                        textOverlay={block.category === "stock_photo" ? rawText : null}
+                        actionStartUrl={
+                          // PR #66 Fix 2: prefer the server-hydrated
+                          // first_frame_url so block #2+ render their
+                          // start frame on initial mount. Falls back to
+                          // looking the look up in `allLooks` when the
+                          // server response predates this PR.
+                          (block as any).first_frame_url ??
+                          allLooks.find((l) => l.id === block.body_motion_start_look_id)?.image_url ??
+                          null
+                        }
+                        actionEndUrl={
+                          (block as any).last_frame_url ??
+                          allLooks.find((l) => l.id === block.body_motion_end_look_id)?.image_url ??
+                          null
+                        }
+                      />
+                      <div className="flex-1 min-w-0 space-y-3">
+                        {/* Block header */}
+                        <div className="flex items-center justify-between flex-wrap gap-y-1.5">
+                          <div className="flex items-center gap-2 shrink-0">
+                            {/* Reordering now lives in the Block Order rail (left
                         sidebar) — no per-card drag handle. The card is still a
                         drop target so a drag from the rail can land on it. */}
-                    <span className="text-xs font-medium text-white/60">Block {idx + 1}</span>
+                            <span className="text-xs font-medium text-white/60">Block {idx + 1}</span>
 
-                    {/* 4.7.1 — Category dropdown. `title` gives the "what is
+                            {/* 4.7.1 — Category dropdown. `title` gives the "what is
                         this block type" blurb on hover; the consequence of a
                         switch is shown inline under the header (switchNotice). */}
-                    <div className="relative inline-block">
-                      <select
-                        value={block.category || "avatar_speaking"}
-                        onChange={e => handleChangeCategory(block.id, e.target.value)}
-                        title={cat.blurb}
-                        className={cn(
-                          "appearance-none text-[11px] pl-2 pr-6 py-1 rounded-full cursor-pointer border-0 focus:outline-none focus:ring-1 focus:ring-accent/40 font-medium",
-                          cat.pillClass
-                        )}
-                      >
-                        {BLOCK_CATEGORIES.map(c => (
-                          <option key={c.value} value={c.value} title={c.blurb}>{c.label}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none opacity-60" />
-                    </div>
+                            <div className="relative inline-block">
+                              <select
+                                value={block.category || "avatar_speaking"}
+                                onChange={e => handleChangeCategory(block.id, e.target.value)}
+                                title={cat.blurb}
+                                className={cn(
+                                  "appearance-none text-[11px] pl-2 pr-6 py-1 rounded-full cursor-pointer border-0 focus:outline-none focus:ring-1 focus:ring-accent/40 font-medium",
+                                  cat.pillClass
+                                )}
+                              >
+                                {BLOCK_CATEGORIES.map(c => (
+                                  <option key={c.value} value={c.value} title={c.blurb}>{c.label}</option>
+                                ))}
+                              </select>
+                              <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none opacity-60" />
+                            </div>
 
-                    {/* 4.7.6 — Preview card summary */}
-                    <span className="text-[10px] text-white/30 ml-1">
-                      {isAvatarCategory ? "1 avatar" : block.category?.includes("stock") ? "stock media" : "AI media"}
-                    </span>
+                            {/* 4.7.6 — Preview card summary */}
+                            <span className="text-[10px] text-white/30 ml-1">
+                              {isAvatarCategory ? "1 avatar" : block.category?.includes("stock") ? "stock media" : "AI media"}
+                            </span>
 
-                    {/* PR #83 — Avatar size: only meaningful for blocks
+                            {/* PR #83 — Avatar size: only meaningful for blocks
                         where the avatar is the visible face on camera
                         (speaking / pip_talking_head). Hidden on
                         voiceover / action / stock blocks because the
@@ -1478,88 +1480,88 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                         comes from block_metadata.pip_layout (LLM picks
                         pip_small for product/feature beats, fullscreen
                         for direct-camera greeting/closing/CTA). */}
-                    {(block.category === "avatar_speaking" || block.category === "pip_talking_head") && (
-                      <div className="relative inline-block ml-1">
-                        <select
-                          value={(block.metadata?.pip_layout as string) || "fullscreen"}
-                          onChange={e => handleChangePipLayout(block.id, e.target.value)}
-                          className="appearance-none text-[10px] pl-2 pr-5 py-0.5 rounded-full cursor-pointer border border-white/15 bg-white/5 text-white/70 hover:text-white focus:outline-none focus:ring-1 focus:ring-accent/40"
-                          title="Avatar size on screen"
-                        >
-                          <option value="fullscreen">Fullscreen</option>
-                          <option value="pip_small">Small (default)</option>
-                          <option value="pip_medium">Medium</option>
-                          <option value="hidden">Hidden (audio only)</option>
-                        </select>
-                        <ChevronDown className="absolute right-1 top-1/2 -translate-y-1/2 w-2.5 h-2.5 pointer-events-none opacity-60" />
-                      </div>
-                    )}
-                  </div>
+                            {(block.category === "avatar_speaking" || block.category === "pip_talking_head") && (
+                              <div className="relative inline-block ml-1">
+                                <select
+                                  value={(block.metadata?.pip_layout as string) || "fullscreen"}
+                                  onChange={e => handleChangePipLayout(block.id, e.target.value)}
+                                  className="appearance-none text-[10px] pl-2 pr-5 py-0.5 rounded-full cursor-pointer border border-white/15 bg-white/5 text-white/70 hover:text-white focus:outline-none focus:ring-1 focus:ring-accent/40"
+                                  title="Avatar size on screen"
+                                >
+                                  <option value="fullscreen">Fullscreen</option>
+                                  <option value="pip_small">Small (default)</option>
+                                  <option value="pip_medium">Medium</option>
+                                  <option value="hidden">Hidden (audio only)</option>
+                                </select>
+                                <ChevronDown className="absolute right-1 top-1/2 -translate-y-1/2 w-2.5 h-2.5 pointer-events-none opacity-60" />
+                              </div>
+                            )}
+                          </div>
 
-                  {!hasAvatarSizeDropdown && metaControls}
-                </div>
+                          {!hasAvatarSizeDropdown && metaControls}
+                        </div>
 
-                {/* Auto-retype notice — the outline normaliser changed this
+                        {/* Auto-retype notice — the outline normaliser changed this
                     beat's type because a single b-roll clip would have covered
                     the whole avatar shot. Tell the user why + one-click undo. */}
-                {showAutoCatBadge && autoCat && (
-                  <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-1.5 text-[11px] text-blue-100/90">
-                    <Sparkles className="w-3 h-3 mt-0.5 shrink-0 text-blue-300" />
-                    <span className="flex-1">
-                      Auto-set to <strong>{CATEGORY_MAP[autoCat.to]?.label || autoCat.to}</strong> — this
-                      beat is short and fully covered by b-roll, so no avatar is generated.
-                    </span>
-                    <button
-                      onClick={() => handleChangeCategory(block.id, autoCat.from)}
-                      className="shrink-0 font-medium text-blue-200 underline decoration-blue-400/50 hover:text-white"
-                    >
-                      Keep as {CATEGORY_MAP[autoCat.from]?.label || autoCat.from}
-                    </button>
-                  </div>
-                )}
+                        {showAutoCatBadge && autoCat && (
+                          <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-1.5 text-[11px] text-blue-100/90">
+                            <Sparkles className="w-3 h-3 mt-0.5 shrink-0 text-blue-300" />
+                            <span className="flex-1">
+                              Auto-set to <strong>{CATEGORY_MAP[autoCat.to]?.label || autoCat.to}</strong> — this
+                              beat is short and fully covered by b-roll, so no avatar is generated.
+                            </span>
+                            <button
+                              onClick={() => handleChangeCategory(block.id, autoCat.from)}
+                              className="shrink-0 font-medium text-blue-200 underline decoration-blue-400/50 hover:text-white"
+                            >
+                              Keep as {CATEGORY_MAP[autoCat.from]?.label || autoCat.from}
+                            </button>
+                          </div>
+                        )}
 
-                {/* Consequence of a manual category switch (was previously a
+                        {/* Consequence of a manual category switch (was previously a
                     silent no-op until a full regen). */}
-                {switchNotice && (
-                  <div className="flex items-start gap-2 rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white/60">
-                    <span className="flex-1">{switchNotice}</span>
-                    <button
-                      onClick={() => setCategoryNotice(prev => {
-                        const next = { ...prev };
-                        delete next[block.id];
-                        return next;
-                      })}
-                      className="shrink-0 text-white/40 hover:text-white/80"
-                      title="Dismiss"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
+                        {switchNotice && (
+                          <div className="flex items-start gap-2 rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white/60">
+                            <span className="flex-1">{switchNotice}</span>
+                            <button
+                              onClick={() => setCategoryNotice(prev => {
+                                const next = { ...prev };
+                                delete next[block.id];
+                                return next;
+                              })}
+                              className="shrink-0 text-white/40 hover:text-white/80"
+                              title="Dismiss"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
 
-                {/* 4.7.2 — Per-category inline controls.
+                        {/* 4.7.2 — Per-category inline controls.
                     Avatar-bearing blocks (speaking / voiceover / pip)
                     get a thumbnail-style background picker. The picker
                     also lets the user generate a brand-new background
                     inline without leaving the script editor. */}
-                {isAvatarCategory && (
-                  <div className="space-y-1.5">
-                    <div className="text-[10px] font-medium uppercase tracking-wider text-white/45">
-                      Scene
-                    </div>
-                    <AvatarLookPicker
-                      avatarId={cast.avatar_id}
-                      looks={backgroundLooks}
-                      value={block.avatar_look_id || null}
-                      onChange={(lookId) => handleChangeBackground(block.id, lookId || "")}
-                      defaultLabel="Cast scene"
-                      onLookCreated={() => refetchLooks()}
-                      size="sm"
-                    />
-                  </div>
-                )}
+                        {isAvatarCategory && (
+                          <div className="space-y-1.5">
+                            <div className="text-[10px] font-medium uppercase tracking-wider text-white/45">
+                              Scene
+                            </div>
+                            <AvatarLookPicker
+                              avatarId={cast.avatar_id}
+                              looks={backgroundLooks}
+                              value={block.avatar_look_id || null}
+                              onChange={(lookId) => handleChangeBackground(block.id, lookId || "")}
+                              defaultLabel="Cast scene"
+                              onLookCreated={() => refetchLooks()}
+                              size="sm"
+                            />
+                          </div>
+                        )}
 
-                {/* Avatar acting (body motion). Two pose pickers: where
+                        {/* Avatar acting (body motion). Two pose pickers: where
                     the avatar starts and where they end. The avatar
                     look images come from already-rendered body_motion
                     looks on the avatar profile, so the user picks two
@@ -1570,247 +1572,246 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     If no body-motion looks exist yet, surface a
                     helpful link to /avatar/{id} so the user can render
                     the angle set first. */}
-                {/* avatar_action: AI-generated SCENE frames (FLUX Kontext)
+                        {/* avatar_action: AI-generated SCENE frames (FLUX Kontext)
                     interpolated by I2V. Replaces the legacy avatar_motion
                     (T2V, no face) and avatar_acting (generic body shots)
                     categories. The avatar's appearance is auto-prepended to
                     every prompt on the server. */}
-                {(block.category === "avatar_action" ||
-                  block.category === "avatar_motion" ||
-                  block.category === "avatar_acting") && (
-                  <div className="space-y-2 rounded-lg border border-orange-400/15 bg-orange-500/[0.04] p-2.5">
-                    <ActionFrameCarousel
-                      castId={cast.id}
-                      blockId={block.id}
-                      startLookId={(block as any).body_motion_start_look_id || null}
-                      endLookId={(block as any).body_motion_end_look_id || null}
-                      startPromptSeed={
-                        (block as any).action_start_prompt ||
-                        (block as any).body_motion_start_prompt ||
-                        null
-                      }
-                      endPromptSeed={
-                        (block as any).action_end_prompt ||
-                        (block as any).body_motion_end_prompt ||
-                        null
-                      }
-                      productName={
-                        (block.product_id &&
-                          cast.products?.find((p) => p.id === block.product_id)?.name) ||
-                        cast.products?.[0]?.name ||
-                        null
-                      }
-                      onSelectionChange={(kind, lookId) =>
-                        handleChangeBodyMotionLook(block.id, kind, lookId)
-                      }
-                    />
-                    <div className="space-y-1">
-                      <div className="text-[10px] font-medium uppercase tracking-wider text-orange-200/80">
-                        Motion description — the actual movement (avatar appearance is auto-prepended)
-                      </div>
-                      <textarea
-                        value={
-                          (block as any).motion_prompt ||
-                          (block as any).body_motion_prompt ||
-                          ""
-                        }
-                        onChange={(e) => handleChangeMotionPrompt(block.id, e.target.value)}
-                        placeholder="What actually moves + scene + camera: 'winds up and hurls the product at the brick wall, it bounces off, she catches it — handheld, punchy'"
-                        rows={3}
-                        className="w-full bg-black/25 border border-white/10 rounded-md px-2 py-1.5 text-[11px] text-white/85 placeholder:text-white/30 focus:outline-none focus:border-orange-400/50 resize-none"
-                      />
-                      <p className="text-[10px] text-white/35">
-                        This is what drives the video — put the throw / walk / gesture here, not in the frame boxes above.
-                        Keep it to <span className="text-white/55">one clear action</span>: the AI can't do step-by-step
-                        sequences, real physics, or outcomes ("no dent", "hits her on the head", "proves it's tough") —
-                        those get dropped. For a freer take, generate only a Start Frame and leave End Frame empty.
-                        Voiceover below is optional — leave the script empty for a silent action shot.
-                      </p>
-                    </div>
-                    {/* PR #76: per-block voiceover toggle. Action blocks
+                        {(block.category === "avatar_action" ||
+                          block.category === "avatar_motion" ||
+                          block.category === "avatar_acting") && (
+                            <div className="space-y-2 rounded-lg border border-orange-400/15 bg-orange-500/[0.04] p-2.5">
+                              <ActionFrameCarousel
+                                castId={cast.id}
+                                blockId={block.id}
+                                startLookId={(block as any).body_motion_start_look_id || null}
+                                endLookId={(block as any).body_motion_end_look_id || null}
+                                startPromptSeed={
+                                  (block as any).action_start_prompt ||
+                                  (block as any).body_motion_start_prompt ||
+                                  null
+                                }
+                                endPromptSeed={
+                                  (block as any).action_end_prompt ||
+                                  (block as any).body_motion_end_prompt ||
+                                  null
+                                }
+                                productName={
+                                  (block.product_id &&
+                                    cast.products?.find((p) => p.id === block.product_id)?.name) ||
+                                  cast.products?.[0]?.name ||
+                                  null
+                                }
+                                onSelectionChange={(kind, lookId) =>
+                                  handleChangeBodyMotionLook(block.id, kind, lookId)
+                                }
+                              />
+                              <div className="space-y-1">
+                                <div className="text-[10px] font-medium uppercase tracking-wider text-orange-200/80">
+                                  Motion description — the actual movement (avatar appearance is auto-prepended)
+                                </div>
+                                <textarea
+                                  value={
+                                    (block as any).motion_prompt ||
+                                    (block as any).body_motion_prompt ||
+                                    ""
+                                  }
+                                  onChange={(e) => handleChangeMotionPrompt(block.id, e.target.value)}
+                                  placeholder="What actually moves + scene + camera: 'winds up and hurls the product at the brick wall, it bounces off, she catches it — handheld, punchy'"
+                                  rows={3}
+                                  className="w-full bg-black/25 border border-white/10 rounded-md px-2 py-1.5 text-[11px] text-white/85 placeholder:text-white/30 focus:outline-none focus:border-orange-400/50 resize-none"
+                                />
+                                <p className="text-[10px] text-white/35">
+                                  This is what drives the video — put the throw / walk / gesture here, not in the frame boxes above.
+                                  Keep it to <span className="text-white/55">one clear action</span>: the AI can't do step-by-step
+                                  sequences, real physics, or outcomes ("no dent", "hits her on the head", "proves it's tough") —
+                                  those get dropped. For a freer take, generate only a Start Frame and leave End Frame empty.
+                                  Voiceover below is optional — leave the script empty for a silent action shot.
+                                </p>
+                              </div>
+                              {/* PR #76: per-block voiceover toggle. Action blocks
                         are never lip-synced; the dialogue plays as a
                         voiceover audio track over the motion clip. The
                         user can disable it for pure silent visual beats.
                         null/undefined = LLM default (treated as enabled
                         when dialogue is present). */}
-                    <label className="flex items-center gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        className="w-3.5 h-3.5 accent-orange-400"
-                        checked={(block as any).voiceover_enabled !== false}
-                        onChange={async (e) => {
-                          const next = e.target.checked;
-                          setBlocks((prev) =>
-                            prev.map((b) =>
-                              b.id === block.id
-                                ? { ...b, voiceover_enabled: next }
-                                : b,
-                            ),
-                          );
-                          try {
-                            await castsApi.updateBlock(cast.id, block.id, {
-                              metadata: { voiceover_enabled: next },
-                            });
-                          } catch (err) {
-                            await handleStaleBlockError(
-                              err,
-                              "Failed to update voiceover toggle",
-                            );
-                          }
-                        }}
-                      />
-                      <span className="text-[11px] text-white/80">
-                        Voice over this action
-                      </span>
-                      <span
-                        className={`ml-auto text-[10px] px-1.5 py-0.5 rounded ${
-                          (block as any).voiceover_enabled !== false
-                            ? "bg-orange-500/15 text-orange-200"
-                            : "bg-white/5 text-white/40"
-                        }`}
-                        title={
-                          (block as any).voiceover_enabled !== false
-                            ? "Dialogue plays as a voiceover over the motion clip"
-                            : "Silent action — dialogue dropped at render"
-                        }
-                      >
-                        {(block as any).voiceover_enabled !== false
-                          ? "🎙 voiceover"
-                          : "🔇 silent"}
-                      </span>
-                    </label>
-                  </div>
-                )}
+                              <label className="flex items-center gap-2 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  className="w-3.5 h-3.5 accent-orange-400"
+                                  checked={(block as any).voiceover_enabled !== false}
+                                  onChange={async (e) => {
+                                    const next = e.target.checked;
+                                    setBlocks((prev) =>
+                                      prev.map((b) =>
+                                        b.id === block.id
+                                          ? { ...b, voiceover_enabled: next }
+                                          : b,
+                                      ),
+                                    );
+                                    try {
+                                      await castsApi.updateBlock(cast.id, block.id, {
+                                        metadata: { voiceover_enabled: next },
+                                      });
+                                    } catch (err) {
+                                      await handleStaleBlockError(
+                                        err,
+                                        "Failed to update voiceover toggle",
+                                      );
+                                    }
+                                  }}
+                                />
+                                <span className="text-[11px] text-white/80">
+                                  Voice over this action
+                                </span>
+                                <span
+                                  className={`ml-auto text-[10px] px-1.5 py-0.5 rounded ${(block as any).voiceover_enabled !== false
+                                    ? "bg-orange-500/15 text-orange-200"
+                                    : "bg-white/5 text-white/40"
+                                    }`}
+                                  title={
+                                    (block as any).voiceover_enabled !== false
+                                      ? "Dialogue plays as a voiceover over the motion clip"
+                                      : "Silent action — dialogue dropped at render"
+                                  }
+                                >
+                                  {(block as any).voiceover_enabled !== false
+                                    ? "🎙 voiceover"
+                                    : "🔇 silent"}
+                                </span>
+                              </label>
+                            </div>
+                          )}
 
-                {(block.category === "stock_photo" || block.category === "stock_video") && (
-                  <VisualSourcePicker
-                    castId={cast.id}
-                    block={block}
-                    onUpdated={() => {
-                      queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
-                    }}
-                  />
-                )}
+                        {(block.category === "stock_photo" || block.category === "stock_video") && (
+                          <VisualSourcePicker
+                            castId={cast.id}
+                            block={block}
+                            onUpdated={() => {
+                              queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
+                            }}
+                          />
+                        )}
 
-                {/* Parallel b-roll — stock photo/video that plays ON TOP of
+                        {/* Parallel b-roll — stock photo/video that plays ON TOP of
                     voiceover / PIP / avatar-speaking blocks. The avatar's
                     audio keeps running underneath; the b-roll covers the
                     canvas while the voice plays. The picker hits the
                     existing /api/stock-media/{photos,videos} endpoints. */}
-                {["avatar_voiceover", "pip_talking_head", "avatar_speaking"].includes(
-                  block.category || "avatar_speaking",
-                ) && (
-                  <ParallelMediaPicker
-                    castId={cast.id}
-                    block={block}
-                    scriptText={rawText}
-                    onUpdated={() => {
-                      queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
-                    }}
-                  />
-                )}
+                        {["avatar_voiceover", "pip_talking_head", "avatar_speaking"].includes(
+                          block.category || "avatar_speaking",
+                        ) && (
+                            <ParallelMediaPicker
+                              castId={cast.id}
+                              block={block}
+                              scriptText={rawText}
+                              onUpdated={() => {
+                                queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
+                              }}
+                            />
+                          )}
 
-                {/* Product carousel — fades through ALL of the attached
+                        {/* Product carousel — fades through ALL of the attached
                     product's media during the block render. The component
                     self-hides when the product has fewer than two assets,
                     so the section is invisible until PR #20's full media
                     import has populated the gallery. */}
-                <ProductCarouselToggle
-                  castId={cast.id}
-                  block={block}
-                  onUpdated={() => {
-                    queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
-                  }}
-                />
+                        <ProductCarouselToggle
+                          castId={cast.id}
+                          block={block}
+                          onUpdated={() => {
+                            queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
+                          }}
+                        />
 
 
-                {block.category === "generated_photo" && (
-                  <div className="text-[10px] text-white/30 italic">
-                    AI photo will be generated based on block text prompt
-                  </div>
-                )}
+                        {block.category === "generated_photo" && (
+                          <div className="text-[10px] text-white/30 italic">
+                            AI photo will be generated based on block text prompt
+                          </div>
+                        )}
 
-                {/* Generated video: show first + last frame pickers. The text
+                        {/* Generated video: show first + last frame pickers. The text
                     prompt below is the motion description; the two frame slots
                     are optional but strongly recommended for control. */}
-                {block.category === "generated_video" && (
-                  <div className="space-y-2">
-                    <div className="text-[10px] text-white/40">
-                      First and last frame guide the AI video. Drop or click to upload —
-                      both are optional, but the more you provide, the more controlled the result.
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <FrameSlot
-                        label="First frame"
-                        slot="first"
-                        blockId={block.id}
-                        r2Key={(block as any).gen_video_first_frame_key}
-                        uploading={!!frameUploading[`${block.id}:first`]}
-                        onUpload={(file) => handleFrameUpload(block.id, "first", file)}
-                        onClear={() => handleFrameClear(block.id, "first")}
-                      />
-                      <FrameSlot
-                        label="Last frame"
-                        slot="last"
-                        blockId={block.id}
-                        r2Key={(block as any).gen_video_last_frame_key}
-                        uploading={!!frameUploading[`${block.id}:last`]}
-                        onUpload={(file) => handleFrameUpload(block.id, "last", file)}
-                        onClear={() => handleFrameClear(block.id, "last")}
-                      />
-                    </div>
-                  </div>
-                )}
+                        {block.category === "generated_video" && (
+                          <div className="space-y-2">
+                            <div className="text-[10px] text-white/40">
+                              First and last frame guide the AI video. Drop or click to upload —
+                              both are optional, but the more you provide, the more controlled the result.
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <FrameSlot
+                                label="First frame"
+                                slot="first"
+                                blockId={block.id}
+                                r2Key={(block as any).gen_video_first_frame_key}
+                                uploading={!!frameUploading[`${block.id}:first`]}
+                                onUpload={(file) => handleFrameUpload(block.id, "first", file)}
+                                onClear={() => handleFrameClear(block.id, "first")}
+                              />
+                              <FrameSlot
+                                label="Last frame"
+                                slot="last"
+                                blockId={block.id}
+                                r2Key={(block as any).gen_video_last_frame_key}
+                                uploading={!!frameUploading[`${block.id}:last`]}
+                                onUpload={(file) => handleFrameUpload(block.id, "last", file)}
+                                onClear={() => handleFrameClear(block.id, "last")}
+                              />
+                            </div>
+                          </div>
+                        )}
 
-                {/* Per-block product pin. The cast's pre-selected products
+                        {/* Per-block product pin. The cast's pre-selected products
                     (cast.products) are the only valid options — server
                     rejects anything else. Pinning a product makes the
                     action-frame dispatcher generate scene frames that hold
                     THIS product, and weaves the product name + description
                     into Refine/Voice rewrites of the script for this block.
                     Hidden when the cast has zero attached products. */}
-                {(cast.products?.length ?? 0) > 0 && (
-                  <BlockProductPicker
-                    castId={cast.id}
-                    blockId={block.id}
-                    products={cast.products ?? []}
-                    selectedProductId={block.product_id ?? null}
-                    onChange={(productId) => {
-                      setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, product_id: productId ?? undefined } : b));
-                    }}
-                  />
-                )}
+                        {(cast.products?.length ?? 0) > 0 && (
+                          <BlockProductPicker
+                            castId={cast.id}
+                            blockId={block.id}
+                            products={cast.products ?? []}
+                            selectedProductId={block.product_id ?? null}
+                            onChange={(productId) => {
+                              setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, product_id: productId ?? undefined } : b));
+                            }}
+                          />
+                        )}
 
-                {/* "Featuring: <product>" hint sits directly above the
+                        {/* "Featuring: <product>" hint sits directly above the
                     script textarea so the user sees what the rewriter will
                     weave in before they hit Refine. */}
-                {block.product_id && (() => {
-                  const pinned = cast.products?.find(p => p.id === block.product_id);
-                  if (!pinned) return null;
-                  return (
-                    <div className="text-[11px] text-white/55 italic">
-                      Featuring: <span className="text-white/80 not-italic font-medium">{pinned.name}</span>
-                    </div>
-                  );
-                })()}
+                        {block.product_id && (() => {
+                          const pinned = cast.products?.find(p => p.id === block.product_id);
+                          if (!pinned) return null;
+                          return (
+                            <div className="text-[11px] text-white/55 italic">
+                              Featuring: <span className="text-white/80 not-italic font-medium">{pinned.name}</span>
+                            </div>
+                          );
+                        })()}
 
-                {/* No-variant fallback. If a block has no variants, the script
+                        {/* No-variant fallback. If a block has no variants, the script
                     generation is either still in flight or failed. Surface this
                     state explicitly with a retry button so the user isn't left
                     looking at an empty card showing only "0 words". */}
-                {!variant && (
-                  <div className="flex items-center justify-between text-xs text-amber-300/70 bg-amber-500/5 border border-amber-500/20 rounded px-3 py-2">
-                    <span>Script text not loaded yet for this block.</span>
-                    <button
-                      onClick={generateOutline}
-                      className="text-amber-300 hover:text-amber-200 underline underline-offset-2"
-                    >
-                      Regenerate
-                    </button>
-                  </div>
-                )}
+                        {!variant && (
+                          <div className="flex items-center justify-between text-xs text-amber-300/70 bg-amber-500/5 border border-amber-500/20 rounded px-3 py-2">
+                            <span>Script text not loaded yet for this block.</span>
+                            <button
+                              onClick={generateOutline}
+                              className="text-amber-300 hover:text-amber-200 underline underline-offset-2"
+                            >
+                              Regenerate
+                            </button>
+                          </div>
+                        )}
 
-                {/* 4.7.3 + 6.6 — Text editor with prosody highlighting,
+                        {/* 4.7.3 + 6.6 — Text editor with prosody highlighting,
                     gesture autocomplete and autosave indicators. The
                     textarea sits behind a ProsodyHighlighter overlay
                     that colours (excited)/[pause]/etc — selection caret
@@ -1818,221 +1819,221 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     the overlay. Geometry must match exactly: same font
                     size (text-sm), same line-height (leading-[1.6]),
                     same padding (px-3 py-2). */}
-                {variant && (
-                  <div className="space-y-1">
-                    {/* Speaking / talking-head blocks: word count + edit
+                        {variant && (
+                          <div className="space-y-1">
+                            {/* Speaking / talking-head blocks: word count + edit
                         controls live here (not the header) so the header's
                         Avatar-size dropdown doesn't force a wrapped row. */}
-                    {hasAvatarSizeDropdown && (
-                      <div className="flex justify-end">{metaControls}</div>
-                    )}
-                    <div className="relative">
-                      <ProsodyHighlighter text={rawText} />
-                      <textarea
-                        ref={el => { textareaRefs.current[block.id] = el; }}
-                        data-script-textarea="true"
-                        value={rawText}
-                        onChange={e => {
-                          handleScriptChange(block.id, variant.id, e.target.value);
-                        }}
-                        onBlur={() => handleScriptBlur(block.id, variant.id, rawText)}
-                        onKeyDown={e => {
-                          if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
-                            e.preventDefault();
-                            handleUndo(block.id);
-                          }
-                          if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
-                            e.preventDefault();
-                            handleRedo(block.id);
-                          }
-                        }}
-                        rows={3}
-                        spellCheck={false}
-                        // The textarea draws ONLY the caret + selection.
-                        // Every visible glyph comes from the
-                        // ProsodyHighlighter overlay above. We use
-                        // text-transparent + caret-accent + a faint
-                        // selection color so the user sees a normal
-                        // caret but never two layers of text.
-                        className="relative w-full bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 text-sm leading-[1.6] text-transparent caret-accent placeholder:text-white/30 resize-none focus:outline-none focus:border-accent/40 focus:bg-white/[0.05] selection:bg-accent/30 selection:text-transparent"
-                        placeholder="Enter spoken script text…"
-                      />
-                      <div className="absolute bottom-1.5 right-2 flex items-center gap-2 text-[10px]">
-                        <span className="text-white/25">{stripProsody(rawText).length}/280</span>
-                        {pendingSaves.has(`${block.id}:${variant.id}`) ? (
-                          <span className="text-yellow-400/60">Saving...</span>
-                        ) : savedKeys.has(`${block.id}:${variant.id}`) ? (
-                          <span className="text-green-400/60 flex items-center gap-0.5">
-                            <Check className="w-2.5 h-2.5" /> Saved
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    {/* The gesture-validated highlight preview lives below
+                            {hasAvatarSizeDropdown && (
+                              <div className="flex justify-end">{metaControls}</div>
+                            )}
+                            <div className="relative">
+                              <ProsodyHighlighter text={rawText} />
+                              <textarea
+                                ref={el => { textareaRefs.current[block.id] = el; }}
+                                data-script-textarea="true"
+                                value={rawText}
+                                onChange={e => {
+                                  handleScriptChange(block.id, variant.id, e.target.value);
+                                }}
+                                onBlur={() => handleScriptBlur(block.id, variant.id, rawText)}
+                                onKeyDown={e => {
+                                  if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleUndo(block.id);
+                                  }
+                                  if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
+                                    e.preventDefault();
+                                    handleRedo(block.id);
+                                  }
+                                }}
+                                rows={3}
+                                spellCheck={false}
+                                // The textarea draws ONLY the caret + selection.
+                                // Every visible glyph comes from the
+                                // ProsodyHighlighter overlay above. We use
+                                // text-transparent + caret-accent + a faint
+                                // selection color so the user sees a normal
+                                // caret but never two layers of text.
+                                className="relative w-full bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 text-sm leading-[1.6] text-transparent caret-accent placeholder:text-white/30 resize-none focus:outline-none focus:border-accent/40 focus:bg-white/[0.05] selection:bg-accent/30 selection:text-transparent"
+                                placeholder="Enter spoken script text…"
+                              />
+                              <div className="absolute bottom-1.5 right-2 flex items-center gap-2 text-[10px]">
+                                <span className="text-white/25">{stripProsody(rawText).length}/280</span>
+                                {pendingSaves.has(`${block.id}:${variant.id}`) ? (
+                                  <span className="text-yellow-400/60">Saving...</span>
+                                ) : savedKeys.has(`${block.id}:${variant.id}`) ? (
+                                  <span className="text-green-400/60 flex items-center gap-0.5">
+                                    <Check className="w-2.5 h-2.5" /> Saved
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                            {/* The gesture-validated highlight preview lives below
                         as <GestureHighlightedText/>. The earlier inline
                         formatScriptHtml duplicate has been removed so the
                         same script no longer renders three times (textarea
                         + green span preview + grey badge preview). */}
-                    {/* 6.6.3 — Gesture autocomplete dropdown */}
-                    <GestureAutocomplete
-                        textareaRef={{ current: textareaRefs.current[block.id] ?? null }}
-                        text={rawText}
-                        onInsert={(replacement, start, end) => {
-                          const before = rawText.slice(0, start);
-                          const after = rawText.slice(end);
-                          const newText = before + replacement + after;
-                          handleScriptChange(block.id, variant.id, newText);
-                          // Restore cursor position after React re-render
-                          requestAnimationFrame(() => {
-                            const el = textareaRefs.current[block.id];
-                            if (el) {
-                              const cursorPos = start + replacement.length;
-                              el.focus();
-                              el.setSelectionRange(cursorPos, cursorPos);
-                            }
-                          });
-                        }}
-                    />
-                    {/* The legacy GestureHighlightedText preview was
+                            {/* 6.6.3 — Gesture autocomplete dropdown */}
+                            <GestureAutocomplete
+                              textareaRef={{ current: textareaRefs.current[block.id] ?? null }}
+                              text={rawText}
+                              onInsert={(replacement, start, end) => {
+                                const before = rawText.slice(0, start);
+                                const after = rawText.slice(end);
+                                const newText = before + replacement + after;
+                                handleScriptChange(block.id, variant.id, newText);
+                                // Restore cursor position after React re-render
+                                requestAnimationFrame(() => {
+                                  const el = textareaRefs.current[block.id];
+                                  if (el) {
+                                    const cursorPos = start + replacement.length;
+                                    el.focus();
+                                    el.setSelectionRange(cursorPos, cursorPos);
+                                  }
+                                });
+                              }}
+                            />
+                            {/* The legacy GestureHighlightedText preview was
                         rendering the script a second time below the
                         textarea, leading to a confusing "text appears
                         twice" effect. The new ProsodyHighlighter overlay
                         already covers prosody AND gesture markers in
                         place, so we don't need a separate preview row
                         anymore. Removed. */}
-                  </div>
-                )}
+                          </div>
+                        )}
 
-                {/* AI Refine bar — natural-language rewrite of the active
+                        {/* AI Refine bar — natural-language rewrite of the active
                     variant. Replaces the older block chat row. */}
-                {variant && (
-                  <RefineInput
-                    castId={cast.id}
-                    blockId={block.id}
-                    variantId={variant.id}
-                    currentText={rawText}
-                    onRewritten={(newText) => {
-                      handleScriptChange(block.id, variant.id, newText);
-                      handleScriptBlur(block.id, variant.id, newText);
-                    }}
-                    compact
-                  />
-                )}
+                        {variant && (
+                          <RefineInput
+                            castId={cast.id}
+                            blockId={block.id}
+                            variantId={variant.id}
+                            currentText={rawText}
+                            onRewritten={(newText) => {
+                              handleScriptChange(block.id, variant.id, newText);
+                              handleScriptBlur(block.id, variant.id, newText);
+                            }}
+                            compact
+                          />
+                        )}
 
-                {/* Per-block caption preset preview chip (Caption Fix 2,
+                        {/* Per-block caption preset preview chip (Caption Fix 2,
                     spec lines 634-657). Only shown for blocks that
                     actually get captions burned in. Clicking "Change"
                     cycles through the 15 presets locally; the canonical
                     write happens in the arrange phase via the caption
                     style bar / inspector. */}
-                {blockCaptionOn && block.category !== "stock_video" && (() => {
-                  const blockPresetId =
-                    ((cast as any)?.caption_preset?.id as string | undefined) ||
-                    DEFAULT_CAPTION_PRESET_ID;
-                  const blockPreset = getCaptionPreset(blockPresetId);
-                  const cycleNext = () => {
-                    const ids = Object.keys(CAPTION_PRESETS);
-                    const i = ids.indexOf(blockPresetId);
-                    const nextId = ids[(i + 1) % ids.length];
-                    (cast as any).caption_preset = { id: nextId };
-                    // Force a re-render via the existing per-block toggle map.
-                    setCaptionsPerBlock((prev) => ({ ...prev }));
-                  };
-                  return (
-                    <div className="mt-2 flex items-center gap-2 text-[10px] text-white/40">
-                      <Type className="w-3 h-3" />
-                      <span
-                        style={{
-                          fontFamily: blockPreset.fontFamily,
-                          fontWeight: blockPreset.fontWeight,
-                          color:
-                            blockPreset.color === "transparent"
-                              ? "#FFFFFF"
-                              : blockPreset.color,
-                          WebkitTextStroke:
-                            blockPreset.strokeWidth &&
-                            blockPreset.strokeColor !== "transparent"
-                              ? `1px ${blockPreset.strokeColor}`
-                              : undefined,
-                          paintOrder: "stroke",
-                          fontSize: 11,
-                        }}
-                      >
-                        {blockPreset.name}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={cycleNext}
-                        className="ml-auto text-accent hover:text-accent/80"
-                        title="Cycle caption preset for this block"
-                      >
-                        Change
-                      </button>
+                        {blockCaptionOn && block.category !== "stock_video" && (() => {
+                          const blockPresetId =
+                            ((cast as any)?.caption_preset?.id as string | undefined) ||
+                            DEFAULT_CAPTION_PRESET_ID;
+                          const blockPreset = getCaptionPreset(blockPresetId);
+                          const cycleNext = () => {
+                            const ids = Object.keys(CAPTION_PRESETS);
+                            const i = ids.indexOf(blockPresetId);
+                            const nextId = ids[(i + 1) % ids.length];
+                            (cast as any).caption_preset = { id: nextId };
+                            // Force a re-render via the existing per-block toggle map.
+                            setCaptionsPerBlock((prev) => ({ ...prev }));
+                          };
+                          return (
+                            <div className="mt-2 flex items-center gap-2 text-[10px] text-white/40">
+                              <Type className="w-3 h-3" />
+                              <span
+                                style={{
+                                  fontFamily: blockPreset.fontFamily,
+                                  fontWeight: blockPreset.fontWeight,
+                                  color:
+                                    blockPreset.color === "transparent"
+                                      ? "#FFFFFF"
+                                      : blockPreset.color,
+                                  WebkitTextStroke:
+                                    blockPreset.strokeWidth &&
+                                      blockPreset.strokeColor !== "transparent"
+                                      ? `1px ${blockPreset.strokeColor}`
+                                      : undefined,
+                                  paintOrder: "stroke",
+                                  fontSize: 11,
+                                }}
+                              >
+                                {blockPreset.name}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={cycleNext}
+                                className="ml-auto text-accent hover:text-accent/80"
+                                title="Cycle caption preset for this block"
+                              >
+                                Change
+                              </button>
+                            </div>
+                          );
+                        })()}
+                      </div>
                     </div>
-                  );
-                })()}
-                  </div>
-                </div>
-                {/* Subtle per-block timeline ruler. Sits flush below the
+                    {/* Subtle per-block timeline ruler. Sits flush below the
                     two-column body so the duration is felt spatially,
                     not just read as a number in the header. */}
-                <BlockTimeline durationSeconds={dur || 0} className="mt-4" />
-              </div>
-            );
-          })}
+                    <BlockTimeline durationSeconds={dur || 0} className="mt-4" />
+                  </div>
+                );
+              })}
 
-          {/* 4.7.7 — Add Block with category picker */}
-          <AddBlockButton onAdd={handleAddBlock} />
+              {/* 4.7.7 — Add Block with category picker */}
+              <AddBlockButton onAdd={handleAddBlock} />
 
-          {/* CHANGE 5.3 — Suggested Clips. Sits BELOW all block cards.
+              {/* CHANGE 5.3 — Suggested Clips. Sits BELOW all block cards.
               `suggested_clips` is filled by cast_generator.suggest_clips
               after generate_scripts; `approved_clips` is the subset the
               user kept. Approving creates a child cast that renders via
               FFmpeg trim of the parent's mp4 (no GPU work). */}
-          <SuggestedClipsSection cast={cast} blocks={blocks} />
-        </div>
-      )}
+              <SuggestedClipsSection cast={cast} blocks={blocks} />
+            </div>
+          )}
 
-      {/* Bottom action bar */}
-      {!generating && blocks.length > 0 && (
-        <div className="flex items-center justify-between pt-4 border-t border-white/10">
-          <Button variant="outline" onClick={generateOutline} className="border-white/20 text-white/70">
-            <RefreshCw className="w-4 h-4 mr-2" /> Regenerate Script
-          </Button>
-          <Button
-            size="lg"
-            disabled={generateAudioMutation.isPending || blocks.length === 0}
-            onClick={async () => {
-              const hasExistingAudio = blocks.some(b =>
-                (b.variants || []).some(v => !!(v as any).audio_key)
-              );
-              if (hasExistingAudio) {
-                // Blocks already have audio — a plain run would skip them, so a
-                // mic-style / scene change wouldn't take. Offer a full rebuild.
-                const ok = await confirmAction({
-                  title: "Regenerate all audio?",
-                  text: "Every block already has audio. Regenerating replaces it for all of them — needed to apply a changed mic style or scene.",
-                  confirmButtonText: "Regenerate all",
-                  cancelButtonText: "Cancel",
-                  icon: "warning",
-                });
-                if (!ok) return;
-                generateAudioMutation.mutate(true);
-                return;
-              }
-              generateAudioMutation.mutate(false);
-            }}
-            className="bg-accent hover:bg-accent/90"
-          >
-            {generateAudioMutation.isPending ? (
-              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Starting...</>
-            ) : (
-              <><Volume2 className="w-4 h-4 mr-2" /> Generate Audio &rarr;</>
-            )}
-          </Button>
+          {/* Bottom action bar */}
+          {!generating && blocks.length > 0 && (
+            <div className="flex items-center justify-between pt-4 border-t border-white/10">
+              <Button variant="outline" onClick={generateOutline} className="border-white/20 text-white/70">
+                <RefreshCw className="w-4 h-4 mr-2" /> Regenerate Script
+              </Button>
+              <Button
+                size="lg"
+                disabled={generateAudioMutation.isPending || blocks.length === 0}
+                onClick={async () => {
+                  const hasExistingAudio = blocks.some(b =>
+                    (b.variants || []).some(v => !!(v as any).audio_key)
+                  );
+                  if (hasExistingAudio) {
+                    // Blocks already have audio — a plain run would skip them, so a
+                    // mic-style / scene change wouldn't take. Offer a full rebuild.
+                    const ok = await confirmAction({
+                      title: "Regenerate all audio?",
+                      text: "Every block already has audio. Regenerating replaces it for all of them — needed to apply a changed mic style or scene.",
+                      confirmButtonText: "Regenerate all",
+                      cancelButtonText: "Cancel",
+                      icon: "warning",
+                    });
+                    if (!ok) return;
+                    generateAudioMutation.mutate(true);
+                    return;
+                  }
+                  generateAudioMutation.mutate(false);
+                }}
+                className="bg-accent hover:bg-accent/90"
+              >
+                {generateAudioMutation.isPending ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Starting...</>
+                ) : (
+                  <><Volume2 className="w-4 h-4 mr-2" /> Generate Audio &rarr;</>
+                )}
+              </Button>
+            </div>
+          )}
         </div>
-      )}
-      </div>
       </div>
     </>
   );
@@ -2065,8 +2066,8 @@ function BlockOrderRail({
   onJumpTo: (blockId: string) => void;
 }) {
   return (
-    <aside className="hidden lg:block w-44 shrink-0">
-      <div className="sticky top-4 rounded-xl border border-white/10 bg-white/[0.03] p-2">
+    <aside className="hidden lg:block w-44 shrink-0 sticky top-6 self-start z-20">
+      <div className="rounded-xl border border-white/10 bg-[#121212]/90 backdrop-blur-md p-2 shadow-lg">
         <div className="px-1.5 pb-1.5 text-[10px] font-medium uppercase tracking-wider text-white/40">
           Block order
         </div>

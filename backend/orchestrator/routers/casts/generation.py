@@ -262,7 +262,48 @@ async def generate_outline(
         select(CastProduct).where(CastProduct.cast_id == cast_id).options(selectinload(CastProduct.product))
     )
     cast_products = result.scalars().all()
-    products = [{"name": cp.product.name, "price": cp.product.price, "description": cp.product.description} for cp in cast_products if cp.product]
+    products = [
+        {
+            "id": cp.product.id,
+            "name": cp.product.name,
+            "price": cp.product.price,
+            "description": cp.product.description,
+            "key_benefits": getattr(cp.product, "key_benefits", None) or [],
+            "category": getattr(cp.product, "category", None) or "",
+            "image_url": getattr(cp.product, "image_url", None) or "",
+        }
+        for cp in cast_products if cp.product
+    ]
+
+    product_video_assets: list[dict] = []
+    product_image_assets: list[dict] = []
+    product_ids = [cp.product_id for cp in cast_products if cp.product_id]
+    if product_ids:
+        pa_result = await db.execute(
+            select(ProductAsset)
+            .where(ProductAsset.product_id.in_(product_ids))
+            .order_by(ProductAsset.position)
+        )
+        _name_by_id = {cp.product_id: cp.product.name for cp in cast_products if cp.product}
+        for pa in pa_result.scalars().all():
+            url = pa.r2_url or ""
+            if not url:
+                continue
+            item = {
+                "id": pa.id,
+                "product_id": pa.product_id,
+                "product_name": _name_by_id.get(pa.product_id),
+                "url": url,
+                "thumbnail": pa.thumbnail_r2_key or None,
+                "duration_seconds": pa.duration_seconds,
+                "width": pa.width,
+                "height": pa.height,
+                "media_type": pa.media_type,
+            }
+            if pa.media_type == "video":
+                product_video_assets.append(item)
+            else:
+                product_image_assets.append(item)
 
     avatar = await db.get(Avatar, cast.avatar_id)
     persona = dict(avatar.persona_profile) if avatar and avatar.persona_profile else {}
@@ -271,6 +312,8 @@ async def generate_outline(
         persona["style_dna"] = avatar.style_dna
     _enrich_persona_visual(persona, avatar)
     target_audience = getattr(avatar, 'target_audience', None) or {}
+
+    selected_template = get_template(getattr(cast, 'template_id', None))
 
     from engine.cast_generator import generate_outline as gen_outline
     from engine.live_style import resolve_active_assessment
@@ -283,42 +326,31 @@ async def generate_outline(
         target_audience=target_audience,
         duration_target_seconds=getattr(cast, 'duration_target_seconds', None),
         platform_target=getattr(cast, 'platform_target', 'tiktok') or 'tiktok',
-        user_id=ctx.workspace_owner_id,        # Stage-1 creative template (null = Auto). Constrains the outline to
-        # the template's block sequence + bias ratios when set.
-        template=get_template(getattr(cast, 'template_id', None)),
+        user_id=ctx.workspace_owner_id,
+        template=selected_template,
         live_assessment=live_assessment,
         live_mode_defaults=getattr(cast, 'live_mode_defaults', None),
         production_level=getattr(cast, 'production_level', None) or 'standard',
     )
 
-    # PR #162 b-roll fix: this manual (non-Smart-Cast) path never resolved
-    # user_video_ids into actual b-roll before — only generate-smart-outline
-    # did. Since picking LIVE mode auto-disables Smart Cast, that meant a
-    # LIVE cast's uploaded clips (the whole point of the "Upload your clips"
-    # card in Setup) were silently never used unless the user manually
-    # re-enabled Smart Cast afterward. Mirror the smart-outline endpoint's
-    # handling here so uploaded clips work regardless of Auto Cast state.
     from engine.cast_generator import auto_populate_stock_media
     preferred_broll_urls = await _resolve_user_video_urls(
         db, getattr(cast, "user_video_ids", None), ctx.workspace_owner_id,
     )
-    if preferred_broll_urls:
-        _broll_orientation = (
-            "landscape"
-            if getattr(cast, "format_family", "vertical") == "horizontal"
-            else "portrait"
-        )
-        scenes = await auto_populate_stock_media(
-            scenes, cast_id=cast_id, products=products,
-            preferred_broll_urls=preferred_broll_urls,
-            orientation=_broll_orientation,
-        )
+    _broll_orientation = (
+        "landscape"
+        if getattr(cast, "format_family", "vertical") == "horizontal"
+        else "portrait"
+    )
+    scenes = await auto_populate_stock_media(
+        scenes, cast_id=cast_id, products=products,
+        preferred_broll_urls=preferred_broll_urls,
+        orientation=_broll_orientation,
+        template=selected_template,
+        product_image_assets=product_image_assets,
+    )
 
-    # Replace any existing blocks before re-persisting. Without this a second
-    # call to generate-outline (client retry / double-submit) appended a whole
-    # new block set on top of the old one — every (position, type, category)
-    # tuple ended up on two rows in one logical pass (cst_0f43a80b624d). The
-    # Smart Cast path already wipes; mirror it here.
+    # Replace any existing blocks before re-persisting.
     existing_blocks = await db.execute(select(Block).where(Block.cast_id == cast_id))
     for _old in existing_blocks.scalars().all():
         await db.delete(_old)
@@ -328,14 +360,10 @@ async def generate_outline(
     selected_product_ids = [cp.product_id for cp in cast_products if cp.product]
     product_block_counter = 0
 
-    # Defensive: dedupe by (position, type, category) at insert time so even a
-    # buggy generator can't double a beat.
+    # Defensive: dedupe by (position, type, category) at insert time
     _seen_block_keys: set[tuple] = set()
 
     for i, s in enumerate(scenes):
-        # block_type arrives lowercase from the LLM; BlockType values are
-        # upper-case, so coerce (not a bare BlockType()) — otherwise every
-        # block silently collapsed to PRODUCT (cst_0f43a80b624d).
         block_type_enum = BlockType.coerce(s.get("block_type"))
 
         product_name = s.get("product_name")
@@ -346,16 +374,11 @@ async def generate_outline(
                     block_product_id = cp.product_id
                     break
 
-        # Auto-assign product_id by round-robin for product/flash_sale/cta blocks
         if not block_product_id and block_type_enum in (BlockType.PRODUCT, BlockType.FLASH_SALE, BlockType.CTA) and selected_product_ids:
             block_product_id = selected_product_ids[product_block_counter % len(selected_product_ids)]
             product_block_counter += 1
 
-        # Persist the LLM-chosen category so generate_scripts() picks the
-        # right per-category writing rule (voiceover vs talking head vs
-        # action vs stock). Sanitized in cast_generator._sanitize_outline_categories.
         scene_category = s.get("category") or "avatar_speaking"
-        # Legacy categories mapped to the merged avatar_action.
         if scene_category in ("avatar_motion", "avatar_acting"):
             scene_category = "avatar_action"
         if scene_category == "avatar_voiceover":
@@ -363,20 +386,12 @@ async def generate_outline(
         elif scene_category == "live_pip":
             block_render_mode = "pip"
         elif scene_category == "avatar_action":
-            # avatar_action always uses I2V (the body_motion render path)
-            # with FLUX-Kontext-generated scene frames.
             block_render_mode = "body_motion"
         elif scene_category in ("stock_photo", "stock_video"):
-            # Pure B-roll — no avatar face is meant to appear. Routes
-            # through the same voiceover bake path, which resolves the
-            # visual from stock_media_url for these categories.
             block_render_mode = "voiceover"
         else:
             block_render_mode = "avatar_full"
 
-        # Action prompts: prefer the new action_*_prompt fields; fall back
-        # to the legacy body_motion_*_prompt fields so old outlines still
-        # populate the new columns.
         action_start_prompt_val = (
             s.get("action_start_prompt") or s.get("body_motion_start_prompt") or None
         )
@@ -384,10 +399,6 @@ async def generate_outline(
             s.get("action_end_prompt") or s.get("body_motion_end_prompt") or None
         )
 
-        # Skip a beat we've already persisted at this pass so one (position,
-        # type, category) tuple never lands on two rows. Keyed on the same
-        # identity the generator dedupes on. Position uses a running counter so
-        # skips don't leave gaps.
         _block_key = (
             block_type_enum,
             scene_category,
@@ -403,8 +414,6 @@ async def generate_outline(
             cast_id=cast_id, product_id=block_product_id,
             type=block_type_enum, position=_position,
             category=scene_category,
-            # Round-6 Bug B: persist the per-block camera framing assigned by the
-            # outline (default MEDIUM) so look generation / reuse can vary shots.
             framing=(s.get("framing") or "MEDIUM"),
             layout_mode=LayoutMode.FULL_AVATAR,
             render_mode=block_render_mode,
@@ -416,10 +425,12 @@ async def generate_outline(
             voicing_mode=_clamp_voicing_mode(s.get("voicing_mode")),
             block_metadata=_action_block_metadata_from_scene(s),
             mood=s.get("mood", "energetic"), key_points=s.get("key_points", []),
-            # Inherit the cast-wide background look so RunPod has a source
-            # image to render against. Without this, avatar_speaking blocks
-            # land at RunPod with no face/look reference and the worker
-            # fails with a generic 'Video not found' error.
+            stock_media_query=s.get("stock_media_query"),
+            stock_media_url=s.get("stock_media_url"),
+            stock_media_thumbnail=s.get("stock_media_thumbnail"),
+            stock_media_kind=s.get("stock_media_kind"),
+            stock_media_pexels_id=str(s.get("stock_media_pexels_id")) if s.get("stock_media_pexels_id") else None,
+            parallel_media=s.get("parallel_media"),
             avatar_look_id=cast.default_avatar_look_id,
         )
         db.add(blk)
