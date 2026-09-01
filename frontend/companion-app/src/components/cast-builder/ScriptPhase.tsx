@@ -1545,7 +1545,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     />
                     <div className="space-y-1">
                       <div className="text-[10px] font-medium uppercase tracking-wider text-orange-200/80">
-                        Motion description (avatar appearance is auto-prepended)
+                        Motion description — the actual movement (avatar appearance is auto-prepended)
                       </div>
                       <textarea
                         value={
@@ -1554,11 +1554,13 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                           ""
                         }
                         onChange={(e) => handleChangeMotionPrompt(block.id, e.target.value)}
-                        placeholder="Describe action + scene + camera: 'running through a sunlit jungle trail, confident stride, hair flowing, golden hour, slow-motion cinematic'"
+                        placeholder="What actually moves + scene + camera: 'winds up and hurls the product at the brick wall, it bounces off, she catches it — handheld, punchy'"
                         rows={3}
                         className="w-full bg-black/25 border border-white/10 rounded-md px-2 py-1.5 text-[11px] text-white/85 placeholder:text-white/30 focus:outline-none focus:border-orange-400/50 resize-none"
                       />
                       <p className="text-[10px] text-white/35">
+                        This is what drives the video — put the throw / walk / gesture here, not in the frame boxes above.
+                        For a freer take, generate only a Start Frame and leave End Frame empty.
                         Voiceover below is optional — leave the script empty for a silent action shot.
                       </p>
                     </div>

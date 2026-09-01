@@ -5707,6 +5707,57 @@ async def _render_async(task, render_id: str):
                         product_bake_backend = None
 
                 if not wan_video_url:
+                    # EXPERIMENT (env ACTION_MOTION_ENGINE=kling): drive the
+                    # motion with Kling 2.5 Turbo Pro from the START frame +
+                    # the motion prompt ONLY — no end/tail frame. Wan's default
+                    # path passes both frames and interpolates between them, so
+                    # a dynamic action ("throw the product at the wall") can
+                    # never happen — the clip is boxed in by two near-identical
+                    # stills. Single-frame + prompt lets the model actually
+                    # animate the described motion. Falls back to Wan on any
+                    # error or when the flag is unset.
+                    _action_engine = (
+                        os.environ.get("ACTION_MOTION_ENGINE", "wan").strip().lower()
+                    )
+                    if _action_engine == "kling":
+                        try:
+                            from services.acting_video_client import ActingVideoClient
+                            _cw_k, _ch_k, _ = _canvas_dims_for_render(timeline)
+                            _ar_k = (
+                                "16:9" if _cw_k > _ch_k
+                                else "1:1" if _cw_k == _ch_k
+                                else "9:16"
+                            )
+                            _kdur = max(1, min(10, int(round(float(duration_s or 5.0)))))
+                            _kc = ActingVideoClient(getattr(settings, "FAL_API_KEY", "") or "")
+                            _kres = await _kc.generate(
+                                first_frame_url=start_url,
+                                last_frame_url=None,  # free-run the motion, don't interpolate
+                                prompt=i2v_prompt,
+                                duration_seconds=_kdur,
+                                aspect_ratio=_ar_k,
+                            )
+                            wan_video_url = _kres["video_url"]
+                            provider_reported_duration_s = float(
+                                _kres.get("duration_seconds") or 0.0
+                            )
+                            motion_requested_tier_s = provider_reported_duration_s or None
+                            product_bake_backend = "kling_acting_experiment"
+                            logger.info(
+                                "avatar_action block %s: Kling free-motion bake "
+                                "(engine=%s, dur=%ds, ar=%s)",
+                                block_id, _kres.get("engine"), _kdur, _ar_k,
+                            )
+                        except Exception as _kexc:
+                            sentry_sdk.capture_exception(_kexc)
+                            logger.warning(
+                                "avatar_action block %s: Kling free-motion bake "
+                                "failed (%s) — falling back to Wan",
+                                block_id, _kexc,
+                            )
+                            wan_video_url = None
+
+                if not wan_video_url:
                     wan_result = await generate_body_motion_clip(
                         start_image_url=start_url,
                         end_image_url=end_url,

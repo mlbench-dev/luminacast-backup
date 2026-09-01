@@ -218,6 +218,12 @@ export function ActionFrameCarousel({
       <div className="space-y-2.5">
         {renderRow("start", "Start Frame")}
         {renderRow("end", "End Frame")}
+        <p className="text-[10px] leading-snug text-white/35">
+          These describe the two still frames only — the pose the shot opens and closes on.
+          The <span className="text-white/55">movement between them</span> (throwing, walking,
+          picking something up…) goes in <span className="text-white/55">Motion description</span> below.
+          Leave End Frame empty to let the motion play out freely from the start pose.
+        </p>
       </div>
       {zoom && (
         <FrameZoomModal
@@ -508,13 +514,13 @@ function FrameZoomModal({
         )}
         <div>
           <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">
-            Scene description (avatar appearance is auto-prepended)
+            Frame description — one still moment (avatar appearance is auto-prepended)
           </label>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             rows={4}
-            placeholder="Describe the scene: setting, camera angle, pose, expression, lighting..."
+            placeholder="One frozen moment: setting, camera angle, pose, expression, lighting. Not an action — e.g. 'standing by a brick wall, product held back at the shoulder, ready to throw, determined look'."
             className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm text-white/90 placeholder:text-white/30 focus:outline-hidden focus:border-orange-500/50"
             data-testid={`af-prompt-${kind}`}
           />

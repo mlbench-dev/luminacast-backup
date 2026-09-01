@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, UserCircle, Package, Wand2, Radio, Clock, Monitor, Pencil, Sparkles, ImageIcon, Mic, Film, Layers, BarChart3, ArrowLeftRight, Camera } from "lucide-react";
+import { Loader2, UserCircle, Package, Wand2, Radio, Clock, Monitor, Pencil, Sparkles, ImageIcon, Mic, Film, Layers, BarChart3, ArrowLeftRight, Camera, Check } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +31,23 @@ const LAYOUT_OPTIONS = [
   { value: "16:9", label: "Horizontal 16:9", desc: "1920×1080", icon: "🖥" },
   { value: "1:1", label: "Square 1:1", desc: "1080×1080", icon: "⬜" },
   { value: "4:5", label: "4:5 Feed", desc: "1080×1350", icon: "📷" },
+] as const;
+
+const BROLL_SOURCE_OPTIONS = [
+  {
+    value: "stock",
+    label: "Generic stock",
+    desc: "Pexels clips matched to your script.",
+    hint: "Fast",
+    Icon: Film,
+  },
+  {
+    value: "ai_generated",
+    label: "AI-generated from product",
+    desc: "Product-only shots made from your product's own photo.",
+    hint: "Slower · runs in the background",
+    Icon: Sparkles,
+  },
 ] as const;
 
 const PLATFORM_BY_LAYOUT: Record<string, { value: string; label: string }[]> = {
@@ -894,32 +911,59 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           generation runs) — previously gated on selectedProducts.length,
           which buried it below Background Music and made it look missing
           until a product was picked. */}
-      <div className="space-y-1.5">
-        <p className="text-xs text-white/40">B-roll visual source</p>
-        <div className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.02] p-1">
-          <button
-            type="button"
-            onClick={() => setBrollMediaSource("stock")}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-              brollMediaSource === "stock" ? "bg-accent text-white" : "text-white/40"
-            }`}
-          >
-            Generic stock
-          </button>
-          <button
-            type="button"
-            onClick={() => setBrollMediaSource("ai_generated")}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-              brollMediaSource === "ai_generated" ? "bg-accent text-white" : "text-white/40"
-            }`}
-          >
-            AI-generated from product
-          </button>
+      <div className="space-y-2">
+        <div className="text-[10px] font-medium uppercase tracking-wider text-white/50 flex items-center gap-1.5">
+          <Film className="w-3 h-3" /> B-roll visual source
         </div>
-        <p className="text-[10px] text-white/25">
-          {brollMediaSource === "stock"
-            ? "B-roll is auto-selected from Pexels based on script content."
-            : "B-roll is generated from your product's own photo — takes a few minutes per clip, runs in the background."}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {BROLL_SOURCE_OPTIONS.map((opt) => {
+            const active = brollMediaSource === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setBrollMediaSource(opt.value)}
+                aria-pressed={active}
+                className={cn(
+                  "relative rounded-lg border p-3 text-left transition-all",
+                  active
+                    ? "border-accent bg-accent/10"
+                    : "border-white/10 bg-white/[0.02] hover:border-white/25"
+                )}
+              >
+                {active && (
+                  <span className="absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-white">
+                    <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                  </span>
+                )}
+                <div className="flex items-center gap-1.5 pr-5">
+                  <opt.Icon
+                    className={cn("w-3.5 h-3.5 shrink-0", active ? "text-accent" : "text-white/45")}
+                  />
+                  <span
+                    className={cn(
+                      "text-xs font-semibold",
+                      active ? "text-white" : "text-white/80"
+                    )}
+                  >
+                    {opt.label}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-white/45">{opt.desc}</p>
+                <p
+                  className={cn(
+                    "mt-1.5 text-[10px] font-medium",
+                    active ? "text-accent/90" : "text-white/35"
+                  )}
+                >
+                  {opt.hint}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-white/35">
+          Default for product b-roll blocks — you can still override any single block in the Script step.
         </p>
       </div>
 
