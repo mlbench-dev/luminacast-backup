@@ -1560,7 +1560,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                       />
                       <p className="text-[10px] text-white/35">
                         This is what drives the video — put the throw / walk / gesture here, not in the frame boxes above.
-                        For a freer take, generate only a Start Frame and leave End Frame empty.
+                        Keep it to <span className="text-white/55">one clear action</span>: the AI can't do step-by-step
+                        sequences, real physics, or outcomes ("no dent", "hits her on the head", "proves it's tough") —
+                        those get dropped. For a freer take, generate only a Start Frame and leave End Frame empty.
                         Voiceover below is optional — leave the script empty for a silent action shot.
                       </p>
                     </div>

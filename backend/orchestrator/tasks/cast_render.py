@@ -5608,6 +5608,19 @@ async def _render_async(task, render_id: str):
                 if not start_url:
                     raise RuntimeError(f"avatar_action block {block_id} has no usable start frame")
 
+                # Clean the user's Motion description before any engine sees it.
+                # Video models keep ~1 action and silently drop sequences,
+                # conditionals, physics and outcomes — this rewrites a rough
+                # note ("walk and throw it so it bounces off her head to prove
+                # it's tough") into one plausible action. The block keeps the
+                # user's original text; only i2v_prompt is cleaned. Best-effort.
+                if has_real_motion:
+                    try:
+                        from services.motion_prompt import sanitize_motion_prompt
+                        i2v_prompt = await sanitize_motion_prompt(i2v_prompt, cast_id=cast_id)
+                    except Exception as _mp_exc:
+                        sentry_sdk.capture_exception(_mp_exc)
+
                 # Route PRODUCT/PRODUCT_DEMO action blocks through the
                 # product-conditioned bake whenever an effective product
                 # image resolves. This replaces the previous unconditional
