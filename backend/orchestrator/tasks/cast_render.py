@@ -3072,6 +3072,31 @@ async def _ensure_fresh_tts_for_block(
                     sentry_sdk.capture_exception(head_exc)
 
             if not stale:
+                # Snapshot backfill: the editor timeline can pre-date the
+                # audio — e.g. an avatar_action block whose script + TTS were
+                # added AFTER the timeline was last saved, so it carries no
+                # audio element. The variant's audio is valid and fresh; use
+                # it instead of returning the empty snapshot URL, which would
+                # make the block bake silently (no voiceover in the render).
+                if not (snapshot_audio_url or "").strip():
+                    for _key in (
+                        (variant.tts_r2_key or "").strip(),
+                        (getattr(variant, "audio_key", None) or "").strip(),
+                    ):
+                        if not _key:
+                            continue
+                        try:
+                            _backfilled = r2.get_public_url(_key)
+                        except Exception as _url_exc:
+                            sentry_sdk.capture_exception(_url_exc)
+                            _backfilled = ""
+                        if _backfilled:
+                            logger.info(
+                                "Block %s: timeline snapshot had no audio — "
+                                "backfilled voiceover from variant key %s",
+                                block_id, _key,
+                            )
+                            return _backfilled, float(variant.tts_duration_seconds or 0)
                 return snapshot_audio_url, float(variant.tts_duration_seconds or 0)
 
             logger.warning(

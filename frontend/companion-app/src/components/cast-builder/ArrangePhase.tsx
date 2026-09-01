@@ -287,9 +287,19 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
             const staleBlocks: string[] = [];
             for (const b of currentBlocks) {
               const savedDurS = savedAudioDurationS.get(b.id);
-              if (savedDurS == null) continue; // no bonded audio item — handled elsewhere
               const liveVariant = (b.variants || []).find((v: any) => v.is_active !== false) || b.variants?.[0];
               const liveDurS = liveVariant?.tts_duration_seconds || liveVariant?.duration_seconds || 0;
+              if (savedDurS == null) {
+                // The saved timeline has NO audio item for this block. If the
+                // block has since gained a script + baked TTS (common on
+                // avatar_action blocks scripted after the timeline was last
+                // saved), the snapshot is stale — rebuild so the voice track
+                // is added. Silent beats (no script / no TTS) fall through
+                // unchanged.
+                const liveHasScript = !!((liveVariant?.script_text as string) || "").trim();
+                if (liveHasScript && liveDurS > 0) staleBlocks.push(b.id);
+                continue;
+              }
               const staleThresholdS = Math.max(STALE_DURATION_FLOOR_S, liveDurS * STALE_DURATION_RATIO);
               const isGrosslyStale = liveDurS > 0 && savedDurS < staleThresholdS;
               const isMarginallyShort = liveDurS > 0 && savedDurS < liveDurS - MARGINAL_SHORTFALL_EPSILON_S;
