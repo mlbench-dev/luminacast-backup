@@ -694,6 +694,28 @@ async def regenerate_block_audio(
     db.add(new_variant)
     await db.flush()
 
+    # Resolve the mic-style / scene EQ chain the same way the full-cast TTS
+    # task does — precedence: per-block mic_on > the block's scene > the
+    # avatar-wide default. Without this the single-block regen produced raw
+    # TTS with NO mic-style post-processing, so toggling the mic style and
+    # hitting this button changed nothing.
+    _clip_mic = bool(getattr(avatar, "clip_mic_enabled", False))
+    _scene_chain = None
+    try:
+        from services.mic_presets import resolve_scene_voice_settings
+        _look = None
+        if getattr(block, "avatar_look_id", None):
+            from models.avatar_look import AvatarLook
+            _look = await db.get(AvatarLook, block.avatar_look_id)
+        _clip_mic, _scene_chain = resolve_scene_voice_settings(
+            block_mic_on=getattr(block, "mic_on", None),
+            avatar_clip_mic_enabled=bool(getattr(avatar, "clip_mic_enabled", False)),
+            look_environment=getattr(_look, "environment", None),
+            look_mic_visible=getattr(_look, "mic_visible", None),
+        )
+    except Exception as _mic_exc:
+        sentry_sdk.capture_exception(_mic_exc)
+
     # Call TTS pipeline
     try:
         from services.fish_audio import get_fish_audio_service
@@ -701,6 +723,9 @@ async def regenerate_block_audio(
         tts_result = await fish.generate_tts(
             text=req.script_text,
             voice_id=avatar.voice_id,
+            clip_mic_enabled=_clip_mic,
+            scene_chain_id=_scene_chain,
+            block_id=block_id,
         )
 
         new_variant.audio_key = tts_result["audio_key"]

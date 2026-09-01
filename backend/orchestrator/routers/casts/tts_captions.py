@@ -37,11 +37,17 @@ router = APIRouter()
 @router.post("/{cast_id}/generate-tts")
 async def start_tts_generation(
     cast_id: str,
+    force: bool = Body(False, embed=True),
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Phase 1: Generate TTS audio for all blocks. Sets status to TTS_READY when done."""
+    """Phase 1: Generate TTS audio for all blocks. Sets status to TTS_READY when done.
+
+    ``force=True`` regenerates audio for every block even if it already has a
+    ready clip — needed after a sound-only setting change (mic style, a
+    scene's mic/environment) since no script text changed to mark audio stale.
+    """
     cast = await db.get(Cast, cast_id)
     if not cast or cast.user_id != ctx.workspace_owner_id:
         raise HTTPException(404, "Cast not found")
@@ -81,7 +87,7 @@ async def start_tts_generation(
     await db.commit()
 
     from tasks.generate_cast import generate_cast_tts_task
-    generate_cast_tts_task.delay(cast_id, ctx.workspace_owner_id)
+    generate_cast_tts_task.delay(cast_id, ctx.workspace_owner_id, bool(force))
     try:
         await audit_log.record(
             db, user_id=user.id, action="render.tts_start", entity_type="cast",

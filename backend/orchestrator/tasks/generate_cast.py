@@ -411,13 +411,20 @@ def refresh_intelligence():
 
 
 @celery_app.task(bind=True, max_retries=2, name="tasks.generate_cast.generate_tts")
-def generate_cast_tts_task(self, cast_id: str, user_id: str):
-    """Phase 1: Generate TTS audio only. Sets cast status to TTS_READY when done."""
+def generate_cast_tts_task(self, cast_id: str, user_id: str, force: bool = False):
+    """Phase 1: Generate TTS audio only. Sets cast status to TTS_READY when done.
+
+    ``force=True`` regenerates EVERY block's audio even if a ready clip already
+    exists — used when a setting that changes the *sound* was toggled (mic
+    style, a scene's mic/environment) but no script text changed, so the
+    normal "skip blocks that already have audio" fast-path would otherwise
+    leave the old audio in place.
+    """
     sentry_sdk.set_tag("cast_id", cast_id)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_generate_tts_only(cast_id, user_id))
+        loop.run_until_complete(_generate_tts_only(cast_id, user_id, force=force))
     except Exception as exc:
         sentry.capture_exception(exc)
         logger.error(json.dumps({
@@ -436,7 +443,7 @@ def generate_cast_tts_task(self, cast_id: str, user_id: str):
         loop.close()
 
 
-async def _generate_tts_only(cast_id: str, user_id: str):
+async def _generate_tts_only(cast_id: str, user_id: str, force: bool = False):
     """Generate TTS for all active blocks, then set status to TTS_READY."""
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
@@ -588,7 +595,7 @@ async def _generate_tts_only(cast_id: str, user_id: str):
             )
 
             for variant in getattr(block, 'variants', []):
-                if variant.status == VariantStatus.READY and variant.audio_key:
+                if not force and variant.status == VariantStatus.READY and variant.audio_key:
                     completed += 1
                     continue
 

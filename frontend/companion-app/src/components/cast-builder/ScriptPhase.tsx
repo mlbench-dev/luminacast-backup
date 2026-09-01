@@ -1048,9 +1048,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   }, [castChatInput, cast.id, refetch]);
 
   const generateAudioMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (force: boolean = false) => {
       await flushPendingSaves();
-      await castsApi.generateTts(cast.id);
+      await castsApi.generateTts(cast.id, force);
       return castsApi.get(cast.id);
     },
     onSuccess: (updatedCast) => {
@@ -2002,7 +2002,26 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
           <Button
             size="lg"
             disabled={generateAudioMutation.isPending || blocks.length === 0}
-            onClick={() => generateAudioMutation.mutate()}
+            onClick={async () => {
+              const hasExistingAudio = blocks.some(b =>
+                (b.variants || []).some(v => !!(v as any).audio_key)
+              );
+              if (hasExistingAudio) {
+                // Blocks already have audio — a plain run would skip them, so a
+                // mic-style / scene change wouldn't take. Offer a full rebuild.
+                const ok = await confirmAction({
+                  title: "Regenerate all audio?",
+                  text: "Every block already has audio. Regenerating replaces it for all of them — needed to apply a changed mic style or scene.",
+                  confirmButtonText: "Regenerate all",
+                  cancelButtonText: "Cancel",
+                  icon: "warning",
+                });
+                if (!ok) return;
+                generateAudioMutation.mutate(true);
+                return;
+              }
+              generateAudioMutation.mutate(false);
+            }}
             className="bg-accent hover:bg-accent/90"
           >
             {generateAudioMutation.isPending ? (

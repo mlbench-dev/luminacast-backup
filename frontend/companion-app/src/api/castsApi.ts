@@ -262,8 +262,8 @@ export const castsApi = {
       { headers: { "Content-Type": "multipart/form-data" } },
     ).then((r) => r.data);
   },
-  generateTts: (castId: string) =>
-    api.post(`/casts/${castId}/generate-tts`).then((r) => r.data),
+  generateTts: (castId: string, force = false) =>
+    api.post(`/casts/${castId}/generate-tts`, { force }).then((r) => r.data),
   generateCaptions: (castId: string) =>
     api.post(`/casts/${castId}/generate-captions`).then((r) => r.data),
   generateVideos: (castId: string) =>
