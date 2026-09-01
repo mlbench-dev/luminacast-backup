@@ -4686,6 +4686,49 @@ async def _render_async(task, render_id: str):
         except Exception as _th_exc:
             sentry_sdk.capture_exception(_th_exc)
 
+        # Per-block SCENE override. The editor timeline bakes the cast's
+        # default avatar face into v1.props.src for every speaking block, so a
+        # scene the user picked in the Script tab (block.avatar_look_id) was
+        # silently ignored at bake time — the render always showed the default
+        # backdrop. If that look is a ready background/scene look with an
+        # image, use it as the lip-sync reference. An explicit pick wins over
+        # the framing-matched talking-head look resolved above.
+        try:
+            from models.avatar_look import AvatarLook as _SceneLook
+            from models.block import Block as _SceneBlock
+            from models.cast import Cast as _SceneCast
+            async with factory() as _sc_session:
+                _sc_blk = await _sc_session.get(_SceneBlock, block_id)
+                _sc_look_id = getattr(_sc_blk, "avatar_look_id", None) if _sc_blk else None
+                _sc_is_action = bool(_sc_blk) and (
+                    _sc_blk.category == "avatar_action"
+                    or _sc_blk.render_mode == "body_motion"
+                )
+                if _sc_look_id and not _sc_is_action:
+                    _sc_look = await _sc_session.get(_SceneLook, _sc_look_id)
+                    if (
+                        _sc_look is not None
+                        and _sc_look.status == "ready"
+                        and getattr(_sc_look, "face_ref_key", None)
+                    ):
+                        _sc_cst = await _sc_session.get(_SceneCast, cast_id) if cast_id else None
+                        _sc_avatar_id = getattr(_sc_cst, "avatar_id", None) if _sc_cst else None
+                        _sc_mic_on = getattr(_sc_blk, "mic_on", None)
+                        if _sc_mic_on is None:
+                            _sc_mic_on = bool(getattr(_sc_look, "mic_visible", False))
+                        from services.mic_on_look import resolve_mic_on_face_key
+                        _sc_key = await resolve_mic_on_face_key(
+                            _sc_mic_on, _sc_avatar_id, _sc_look.id,
+                            _sc_look.face_ref_key, _sc_session,
+                        )
+                        face_ref_url = r2.get_public_url(_sc_key)
+                        logger.info(
+                            "Block %s: using picked scene look=%s (%s) mic_on=%s",
+                            block_id, _sc_look.id, _sc_look.name, _sc_mic_on,
+                        )
+        except Exception as _sc_exc:
+            sentry_sdk.capture_exception(_sc_exc)
+
         # avatar_motion blocks: T2V renders directly from the prompt and
         # has no face/audio dependency at the dispatch layer (voiceover, if
         # any, is muxed in by the FFmpeg compose pass via the A1 element).
