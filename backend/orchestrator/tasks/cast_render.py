@@ -5502,8 +5502,31 @@ async def _render_async(task, render_id: str):
                     # the avatar; prepending appearance text here drowns the
                     # motion description in Wan's prompt budget and produces
                     # a different-looking person performing arbitrary motion.
-                    raw_motion_prompt = (blk.body_motion_prompt if blk else "") or motion_prompt or "performs a natural action"
+                    # Prefer the block's Motion-description field. If the user
+                    # left it empty, fall back to the frame-box text (the
+                    # action they typed for the start/end still) BEFORE the
+                    # generic "talking to camera" default — otherwise a typed
+                    # action ("hurls the product at the wall") never reaches
+                    # the motion engine and the clip is just a talking head.
+                    _bm = ((blk.body_motion_prompt if blk else "") or "").strip()
+                    _frame_action = ""
+                    if not _bm and blk is not None:
+                        _frame_action = (
+                            (getattr(blk, "action_start_prompt", None) or "").strip()
+                            or (getattr(blk, "body_motion_start_prompt", None) or "").strip()
+                            or (getattr(blk, "action_end_prompt", None) or "").strip()
+                        )
+                    _passthru = (motion_prompt or "").strip()
+                    if _passthru.lower() == "a person talking naturally to the camera":
+                        _passthru = ""
+                    raw_motion_prompt = (
+                        _bm or _frame_action or _passthru or "performs a natural action"
+                    )
                     i2v_prompt = raw_motion_prompt
+                    # True when the user actually described a motion (vs a
+                    # generic fallback) — decides whether the Kling free-motion
+                    # path should win over the product-"hold" path below.
+                    has_real_motion = bool(_bm or _frame_action)
 
                     # ── Product gate (PR #92) ─────────────────────────────
                     # PRODUCT and PRODUCT_DEMO action blocks must condition
@@ -5593,15 +5616,30 @@ async def _render_async(task, render_id: str):
                 # instead of whatever the I2V model paints in. HOOK blocks
                 # and other non-PRODUCT types intentionally keep their
                 # artistic latitude via the wan_body_motion path below.
+                _action_engine = os.environ.get("ACTION_MOTION_ENGINE", "wan").strip().lower()
+                # When the Kling free-motion experiment is on AND the user
+                # actually described an action, let that path handle the beat
+                # even for product blocks. The product-"hold" path below can
+                # only ever show the avatar holding the item, never performing
+                # the action — so a "throw it at the wall" beat routed there
+                # always came back as a talking-head with the product. Product-
+                # elements stays the fallback if Kling free-motion errors.
+                _prefer_kling_free_motion = (_action_engine == "kling" and has_real_motion)
                 route_through_product_elements = bool(
-                    is_product_typed and effective_product_image_url_bm
+                    is_product_typed
+                    and effective_product_image_url_bm
+                    and not _prefer_kling_free_motion
                 )
                 logger.info(
-                    "product gate: block %s type=%s effective_product=%s → route=%s",
+                    "product gate: block %s type=%s effective_product=%s "
+                    "has_real_motion=%s prefer_kling=%s → route=%s",
                     block_id,
                     block_type_str or "?",
                     effective_product_id_bm or "None",
-                    "product_elements" if route_through_product_elements else "avatar_action",
+                    has_real_motion,
+                    _prefer_kling_free_motion,
+                    "product_elements" if route_through_product_elements
+                    else ("kling_free_motion" if _prefer_kling_free_motion else "avatar_action"),
                 )
 
                 wan_video_url: str | None = None
@@ -5715,10 +5753,8 @@ async def _render_async(task, render_id: str):
                     # never happen — the clip is boxed in by two near-identical
                     # stills. Single-frame + prompt lets the model actually
                     # animate the described motion. Falls back to Wan on any
-                    # error or when the flag is unset.
-                    _action_engine = (
-                        os.environ.get("ACTION_MOTION_ENGINE", "wan").strip().lower()
-                    )
+                    # error or when the flag is unset. `_action_engine` was
+                    # resolved at the product gate above.
                     if _action_engine == "kling":
                         try:
                             from services.acting_video_client import ActingVideoClient

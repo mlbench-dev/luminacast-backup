@@ -2102,6 +2102,21 @@ def _enforce_template_broll_ratio(
     )
 
 
+# ── Template-independent production-level defaults (Auto mode) ────────────────
+# When NO template is selected, the tier caps below have no est_duration_range
+# / block_sequence to derive from, so historically every one was a no-op and
+# "Quick" on Auto could still produce a long, many-block cast — the selector
+# looked like it did nothing. These give it real teeth in the common
+# no-template path.
+#
+# Only QUICK gets a default: its whole promise is "shorter, leaner", and that
+# was the promise being broken. Standard stays opinion-free (natural length),
+# Premium stays uncapped/expansive — both keep returning None with no template,
+# exactly as before. A manually-set duration still always wins.
+_AUTO_QUICK_DURATION_SECONDS = 35
+_AUTO_QUICK_BLOCK_CAP = 5
+
+
 def _normalize_production_level_for_generation(value: Optional[str]) -> str:
     """Normalize production_level for GENERATION purposes only.
 
@@ -2122,11 +2137,14 @@ def _production_level_block_cap(template: Optional[dict], production_level: str)
     types (repeats removed) — the leanest structurally-valid cut of the
     format. Premium allows one extra beat beyond the template's normal
     length. Standard is unchanged (the template's natural length — same as
-    today). None when no template is selected (Auto mode stays a no-op,
-    matching _build_template_constraint's own behavior).
+    today).
+
+    Auto mode (no template): Quick falls back to a fixed lean cap
+    (``_AUTO_QUICK_BLOCK_CAP``) so the tier still trims a bloated outline;
+    Standard / Premium stay uncapped (None), same as before.
     """
     if not template:
-        return None
+        return _AUTO_QUICK_BLOCK_CAP if production_level == "quick" else None
     seq = template.get("block_sequence") or []
     if not seq:
         return None
@@ -2208,11 +2226,22 @@ def _effective_duration_target_seconds(
     The tier ceiling is used ONLY as the DEFAULT when the user hasn't set a
     duration at all — derived from the template's own est_duration_range
     ([lo, hi] seconds): Quick defaults to lo, Premium to hi. Standard, or no
-    template, or no est_duration_range: no default to compute, returns None.
+    est_duration_range: no default to compute.
+
+    Auto mode (no template) + no manual duration: Quick falls back to a fixed
+    short default (``_AUTO_QUICK_DURATION_SECONDS``) so the tier still makes a
+    shorter cast; Standard / Premium return None (natural length), same as
+    before.
     """
     if duration_target_seconds:
         return duration_target_seconds
-    if not template or production_level == "standard":
+    if not template:
+        return (
+            _AUTO_QUICK_DURATION_SECONDS
+            if production_level == "quick"
+            else duration_target_seconds
+        )
+    if production_level == "standard":
         return duration_target_seconds
     dur_range = template.get("est_duration_range") or []
     if len(dur_range) != 2:

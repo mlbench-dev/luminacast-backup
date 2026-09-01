@@ -1603,21 +1603,27 @@ function ProductionLevelSelector({
       id: "quick" as const,
       name: "Quick",
       icon: "⚡",
-      desc: "Fewer beats (no repeats), mostly talking-head, shortest cut of your chosen format.",
+      desc: hasTemplate
+        ? "Fewer beats (no repeats), mostly talking-head, shortest cut of your chosen format."
+        : "Fewer, shorter beats — a lean ~35s talking-head cut.",
       price: "~$0.35",
     },
     {
       id: "standard" as const,
       name: "Standard",
       icon: "✦",
-      desc: "Your template's natural beat count, shot mix, and length — unchanged.",
+      desc: hasTemplate
+        ? "Your template's natural beat count, shot mix, and length — unchanged."
+        : "Balanced length and shot mix — whatever the script calls for.",
       price: "~$0.85",
     },
     {
       id: "premium" as const,
       name: "Premium",
       icon: "★",
-      desc: "One extra beat, more b-roll, longest cut of your chosen format.",
+      desc: hasTemplate
+        ? "One extra beat, more b-roll, longest cut of your chosen format."
+        : "Longer and richer — more beats and more b-roll.",
       price: "~$1.50",
     },
   ];
