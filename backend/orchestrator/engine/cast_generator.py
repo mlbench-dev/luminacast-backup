@@ -652,10 +652,8 @@ def _build_template_constraint(template: Optional[dict]) -> str:
 
     Returns "" when no template is selected (Auto mode) so the prompt is
     unchanged from the legacy free-choice behavior. When a template is set,
-    the LLM is told to follow the template's block sequence and to weight
-    screen time per the bias ratios. The mapping from bias lanes to scene
-    categories: avatar_speaking -> avatar_speaking, broll -> stock_video /
-    stock_photo / avatar_voiceover, uploaded_video -> stock_video.
+    the LLM is told to strictly follow the template's video generation directives,
+    visual composition rules, script/pacing direction, block sequence, and screen time ratios.
     """
     if not template:
         return ""
@@ -665,13 +663,30 @@ def _build_template_constraint(template: Optional[dict]) -> str:
     avatar_pct = int(round(float(bias.get("avatar_speaking", 0)) * 100))
     broll_pct = int(round(float(bias.get("broll", 0)) * 100))
     uploaded_pct = int(round(float(bias.get("uploaded_video", 0)) * 100))
-    return f"""
-TEMPLATE CONSTRAINT — the user picked the "{template.get('name', 'custom')}" format. Follow it:
-- Produce blocks that follow this structural sequence (repeat/extend beats only as duration requires): {seq_str}
-- Weight screen time roughly: {avatar_pct}% avatar speaking to camera, {broll_pct}% b-roll / product cutaways, {uploaded_pct}% uploaded footage.
-- When b-roll is favored, prefer categories avatar_voiceover / stock_video / stock_photo for those beats instead of a talking head.
-- Keep the opening beat a strong hook and the final beat a clear CTA regardless of the sequence above.
-"""
+
+    video_prompt = (template.get("video_generation_prompt") or "").strip()
+    script_dir = (template.get("script_direction") or "").strip()
+    visual_rules = template.get("visual_rules") or []
+    rules_block = "\n".join(f"  * {r}" for r in visual_rules) if visual_rules else ""
+
+    lines = [
+        f'MANDATORY TEMPLATE CONSTRAINT — the user picked the "{template.get("name", "custom")}" format. Follow it strictly:',
+        f"- Produce blocks that follow this structural sequence (repeat/extend beats only as duration requires): {seq_str}",
+        f"- Weight screen time roughly: {avatar_pct}% avatar speaking to camera, {broll_pct}% b-roll / product cutaways, {uploaded_pct}% uploaded footage.",
+    ]
+    if video_prompt:
+        lines.append(f"- Template Format & Video Directives:\n{video_prompt}")
+    if rules_block:
+        lines.append(f"- Visual Composition Rules:\n{rules_block}")
+    if script_dir:
+        lines.append(f"- Script & Pacing Rules:\n  {script_dir}")
+    if broll_pct >= 50:
+        lines.append("- When b-roll is favored, prefer categories avatar_voiceover / stock_video / stock_photo for those beats instead of a talking head.")
+    elif avatar_pct >= 70:
+        lines.append("- Avatar is heavily favored: keep avatar on-camera (avatar_speaking) for nearly all blocks; avoid full-screen b-roll takeovers.")
+    lines.append("- Keep the opening beat a strong hook and the final beat a clear CTA regardless of the sequence above.")
+
+    return "\n" + "\n".join(lines) + "\n"
 
 
 def _build_live_defaults_section(live_mode_defaults: Optional[dict]) -> str:
@@ -2094,8 +2109,19 @@ def _enforce_template_broll_ratio(
     _enforce_live_ratios, this has no short-form gate, since a template's
     intended shot mix should hold regardless of the cast's duration.
     """
+    if not template:
+        return scenes
+
+    base_broll = float((template.get("bias") or {}).get("broll", 0.0))
+    if base_broll <= 0.0 or template.get("id") == "talking_head_hook":
+        for s in scenes:
+            if isinstance(s, dict):
+                s["category"] = "avatar_speaking"
+                s["render_mode"] = "avatar_full"
+        return scenes
+
     avatar_ratio = _production_level_avatar_ratio(template, production_level)
-    if avatar_ratio is None:
+    if avatar_ratio is None or avatar_ratio >= 0.99:
         return scenes
     return _demote_surplus_avatar_blocks(
         scenes, avatar_ratio, cast_id=cast_id, log_label="Template b-roll ratio",
@@ -2402,6 +2428,29 @@ async def generate_smart_outline(
     _smart_product_desc = " ".join((p.get("description") or "") for p in (products or []))
     _smart_exemplars = select_exemplars(live_assessment, _smart_product_desc, description or "")
     live_style_section = build_live_style_section(live_assessment, _smart_exemplars)
+    if template:
+        t_name = template.get("name", "custom")
+        t_bias = template.get("bias", {})
+        t_av = int(round(float(t_bias.get("avatar_speaking", 0.5)) * 100))
+        t_br = int(round(float(t_bias.get("broll", 0.5)) * 100))
+        t_up = int(round(float(t_bias.get("uploaded_video", 0.0)) * 100))
+        coverage_bias_section = (
+            f"TEMPLATE-DRIVEN COVERAGE RATIO ({t_name} — STRICT):\n"
+            f"Follow the template's designated screen-time balance:\n"
+            f"- {t_av}% avatar on-camera (avatar_speaking / avatar_action)\n"
+            f"- {t_br}% b-roll, voiceover, and product cutaways (avatar_voiceover / stock_video / stock_photo)\n"
+            f"- {t_up}% uploaded footage\n"
+            f"Do not deviate from this ratio."
+        )
+    else:
+        coverage_bias_section = """LIVE-STYLE COVERAGE BIAS (short-form, ≤60s): Default to b-roll + voiceover blocks;
+reserve avatar-on-camera blocks for the hook, the snap-on demo moment, and the CTA. The
+body of the cast should be over Pexels/stock or uploaded product footage with avatar
+narration. Concretely, aim for roughly: 30-40% avatar_speaking / avatar_action (talking
+head, including mic-on demo), 40-50% avatar_voiceover / stock_video / stock_photo (voice
+over stock footage, NO avatar on screen), 10-20% uploaded product-asset footage when the
+product has its own video. Fewer talking-head blocks, more narrated b-roll."""
+
     user_prompt = f"""{style_dna_section}USER GOAL:
 {description}
 {ta_section}{avatar_visual_section}
@@ -2421,13 +2470,7 @@ block. The system will auto-generate scene-specific first/last frames of the ava
 (face preserved) and animate them — DO NOT repeat the avatar's appearance in the prompts;
 just describe the scene, action, and camera.
 
-LIVE-STYLE COVERAGE BIAS (short-form, ≤60s): Default to b-roll + voiceover blocks;
-reserve avatar-on-camera blocks for the hook, the snap-on demo moment, and the CTA. The
-body of the cast should be over Pexels/stock or uploaded product footage with avatar
-narration. Concretely, aim for roughly: 30-40% avatar_speaking / avatar_action (talking
-head, including mic-on demo), 40-50% avatar_voiceover / stock_video / stock_photo (voice
-over stock footage, NO avatar on screen), 10-20% uploaded product-asset footage when the
-product has its own video. Fewer talking-head blocks, more narrated b-roll.
+{coverage_bias_section}
 
 CAMERA FRAMING: every avatar-on-camera block MUST include a `framing` field — one of
 CLOSE | MEDIUM | MEDIUM_WIDE | WIDE | ANGLE_LEFT_3Q | ANGLE_RIGHT_3Q. Default starting
@@ -3224,30 +3267,84 @@ async def auto_populate_stock_media(
     outline: list[dict], cast_id: str, products: list[dict] | None = None,
     preferred_broll_urls: list[str] | None = None,
     orientation: str = "portrait",
+    template: Optional[dict] = None,
+    product_image_assets: list[dict] | None = None,
 ) -> list[dict]:
     """For each outline block with a stock_media_query, search Pexels and
     attach the top result to the block in place.
 
+    When `template` is `talking_head_hook` or has 0% b-roll bias, stock auto-population
+    clears any b-roll overlays and guarantees 100% avatar_speaking across all blocks.
+
+    When `product_image_assets` or product images are provided, product visual blocks
+    prefer the actual product image over generic Pexels stock video to guarantee product fidelity.
+
     When `products` is supplied, the search query is rebuilt around the product
     name + feature words (see `build_pexels_query`) so the b-roll matches the
-    PRODUCT instead of the brand or an incidental location. Long blocks may also
-    receive a multi-angle pair (close-up + hands-using) jump-cut together via
-    parallel_media — see `_multi_angle_enabled`.
-
-    When `preferred_broll_urls` is supplied (PR #162 — the user's `user_video_ids`
-    resolved to R2 URLs), those assets are assigned to b-roll-capable blocks
-    first and those blocks are skipped by the Pexels pass.
-
-    On failure (no Pexels key, network error, no results) the block is left
-    untouched and the editor will fall back to a solid background. Returns
-    the (mutated) outline for caller convenience.
+    PRODUCT instead of the brand or an incidental location.
     """
-    from services.pexels import get_pexels_client_optional, pick_best_video_file
+    # 1. Template Enforcement: Talking Head Hook / Zero-broll templates MUST NOT have stock b-roll
+    is_talking_head = False
+    if template:
+        t_id = template.get("id")
+        t_broll = float((template.get("bias") or {}).get("broll", 0.0))
+        if t_id == "talking_head_hook" or t_broll <= 0.0:
+            is_talking_head = True
+
+    if is_talking_head:
+        _log("info", "Template specifies 100% avatar speaking — clearing b-roll overlays", cast_id=cast_id)
+        for block in outline:
+            if isinstance(block, dict):
+                block["category"] = "avatar_speaking"
+                block["render_mode"] = "avatar_full"
+                block["stock_media_url"] = None
+                block["stock_media_thumbnail"] = None
+                block["stock_media_kind"] = None
+                block["stock_media_source"] = None
+                block["parallel_media"] = None
+        return outline
+
+    # 2. Product Image Assets: Prefer actual product image for product b-roll cutaways
+    img_assets_by_prod: dict[str, list[dict]] = {}
+    if product_image_assets:
+        for pa in product_image_assets:
+            pid = pa.get("product_id")
+            if pid and pa.get("url"):
+                img_assets_by_prod.setdefault(pid, []).append(pa)
+
+    if products:
+        for p in products:
+            pid = p.get("id")
+            img_url = p.get("image_url") or p.get("image_asset_url")
+            if pid and img_url and pid not in img_assets_by_prod:
+                img_assets_by_prod[pid] = [{"id": None, "url": img_url, "product_id": pid}]
+
+    for block in outline:
+        if not isinstance(block, dict):
+            continue
+        # Skip blocks that already carry a product video asset or user video
+        if block.get("stock_media_source") in ("product_asset", "user_video") and block.get("stock_media_url"):
+            continue
+        cat = block.get("category") or ""
+        prod = _product_for_block(block, products)
+        prod_id = prod.get("id") if prod else None
+        if prod_id and prod_id in img_assets_by_prod:
+            assets = img_assets_by_prod[prod_id]
+            if assets and cat in ("stock_photo", "stock_video", "avatar_voiceover", "product_demo"):
+                img_item = assets[0]
+                block["stock_media_url"] = img_item["url"]
+                block["stock_media_thumbnail"] = img_item.get("thumbnail") or img_item["url"]
+                block["stock_media_kind"] = "photo"
+                block["stock_media_source"] = "product_asset"
+                if img_item.get("id"):
+                    block["image_asset_id"] = img_item["id"]
+                _log("info", f"Assigned actual product image asset to block {block.get('block_type')}", cast_id=cast_id)
 
     preferred_claimed = _apply_preferred_broll(
         outline, cast_id, preferred_broll_urls or [],
     )
 
+    from services.pexels import get_pexels_client_optional, pick_best_video_file
     client = get_pexels_client_optional()
     if client is None:
         _log(
@@ -3257,11 +3354,6 @@ async def auto_populate_stock_media(
         )
         return outline
 
-    # Run all the per-block Pexels lookups concurrently. Each call is
-    # ~150-400ms; serialising them was costing 3-6s on a 10-block cast,
-    # which compounded with the script-gen wall time to bump the user
-    # close to the Cloudflare edge timeout. asyncio.gather drops it to
-    # roughly the slowest single call regardless of block count.
     import asyncio
 
     async def _fetch_video_clip(queries, beat_text: str, i: int) -> tuple[dict, dict] | None:
@@ -3277,20 +3369,14 @@ async def auto_populate_stock_media(
         return best, file
 
     async def _fetch_for_block(i: int, block: dict) -> None:
-        # PR E — a block already pointing at real product-asset footage must
-        # NOT be overwritten with generic Pexels b-roll. Leave it untouched.
         if block.get("stock_media_source") == "product_asset" and block.get("stock_media_url"):
             return
-        # PR #162 — blocks claimed by the user's preferred b-roll (user_video_ids)
-        # already carry the chosen asset; do not overwrite with Pexels.
         if i in preferred_claimed:
             return
         base_query = (block.get("stock_media_query") or "").strip()
         category = block.get("category") or "avatar_speaking"
         bg_type = block.get("background_type") or ""
 
-        # Decide whether the block wants a video or a photo. stock_photo
-        # is the only photo-bound category; everything else gets video.
         wants_photo = category == "stock_photo" or bg_type == "stock_photo"
 
         # Build product-relevant query candidates (specific→generic). For
@@ -3560,6 +3646,7 @@ async def _generate_full_script(
     style_dna_section: str = "",
     cast_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    template: Optional[dict] = None,
 ) -> str:
     """Pass 1 — Write the entire cast script as ONE continuous narrative.
 
@@ -3591,8 +3678,21 @@ async def _generate_full_script(
     word_hard_cap = int(round(word_target * SCRIPT_OVERSHOOT_SLACK))
 
     user_brief = (description or "").strip() or "(no specific brief)"
-    prompt = f"""{style_dna_section}USER'S BRIEF: {user_brief}
 
+    template_script_section = ""
+    if template:
+        t_name = template.get("name", "Custom")
+        t_script_dir = (template.get("script_direction") or "").strip()
+        t_prompt = (template.get("video_generation_prompt") or "").strip()
+        template_script_section = f"""
+TEMPLATE SCRIPT & PACING DIRECTIVE ({t_name}):
+- The user selected the "{t_name}" template. The script and tone MUST strictly match this format.
+- Script Direction: {t_script_dir}
+- Video Format Directives: {t_prompt}
+"""
+
+    prompt = f"""{style_dna_section}USER'S BRIEF: {user_brief}
+{template_script_section}
 Write a COMPLETE video script as ONE continuous flowing narrative.
 Do NOT write separate blocks. Write it as if ONE person is talking non-stop.
 
@@ -3660,6 +3760,7 @@ async def _split_into_blocks(
     persona: dict,
     cast_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    template: Optional[dict] = None,
 ) -> list[dict]:
     """Pass 2 — Split the flowing script into production blocks.
 
@@ -3690,8 +3791,12 @@ async def _split_into_blocks(
         indent=2,
     )
 
-    prompt = f"""Split this script into {len(outline)} blocks following the plan.
+    template_split_hint = ""
+    if template:
+        template_split_hint = f"\nTEMPLATE CONSTRAINTS ({template.get('name', 'Custom')}): Strictly match the block sequence and screen-time roles of this template.\n"
 
+    prompt = f"""Split this script into {len(outline)} blocks following the plan.
+{template_split_hint}
 FULL SCRIPT:
 {full_script}
 
@@ -3777,6 +3882,7 @@ async def generate_scripts(
     description: str = "",
     products: list[dict] | None = None,
     user_id: Optional[str] = None,
+    template: Optional[dict] = None,
 ) -> list[dict]:
     """Generate per-block scripts using a two-pass approach.
 
@@ -3851,6 +3957,7 @@ async def generate_scripts(
             style_dna_section=style_dna_section,
             cast_id=cast_id,
             user_id=user_id,
+            template=template,
         )
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
@@ -3867,6 +3974,7 @@ async def generate_scripts(
             persona=persona,
             cast_id=cast_id,
             user_id=user_id,
+            template=template,
         )
     except Exception as exc:
         sentry_sdk.capture_exception(exc)

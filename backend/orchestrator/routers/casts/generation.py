@@ -637,15 +637,15 @@ async def generate_smart_outline_endpoint(
     ]
     # PR E — collect the bound products' uploaded VIDEO assets so the outline
     # can put the real product footage on screen (preferred over Pexels b-roll).
+    # PR E — collect the bound products' uploaded video + image assets so the outline
+    # can put real product assets on screen (preferred over generic Pexels b-roll).
     product_video_assets: list[dict] = []
+    product_image_assets: list[dict] = []
     product_ids = [cp.product_id for cp in cast_products if cp.product_id]
     if product_ids:
         pa_result = await db.execute(
             select(ProductAsset)
-            .where(
-                ProductAsset.product_id.in_(product_ids),
-                ProductAsset.media_type == "video",
-            )
+            .where(ProductAsset.product_id.in_(product_ids))
             .order_by(ProductAsset.position)
         )
         _name_by_id = {cp.product_id: cp.product.name for cp in cast_products if cp.product}
@@ -653,7 +653,7 @@ async def generate_smart_outline_endpoint(
             url = pa.r2_url or ""
             if not url:
                 continue
-            product_video_assets.append({
+            item = {
                 "id": pa.id,
                 "product_id": pa.product_id,
                 "product_name": _name_by_id.get(pa.product_id),
@@ -662,7 +662,12 @@ async def generate_smart_outline_endpoint(
                 "duration_seconds": pa.duration_seconds,
                 "width": pa.width,
                 "height": pa.height,
-            })
+                "media_type": pa.media_type,
+            }
+            if pa.media_type == "video":
+                product_video_assets.append(item)
+            else:
+                product_image_assets.append(item)
 
     avatar = await db.get(Avatar, cast.avatar_id)
     persona = dict(avatar.persona_profile) if avatar and avatar.persona_profile else {}
@@ -674,6 +679,8 @@ async def generate_smart_outline_endpoint(
         persona["style_dna"] = avatar.style_dna
     _enrich_persona_visual(persona, avatar)
     target_audience = getattr(avatar, "target_audience", None) or {}
+
+    selected_template = get_template(getattr(cast, "template_id", None))
 
     # 1. Generate the smart outline.
     from engine.cast_generator import generate_smart_outline, auto_populate_stock_media
@@ -697,9 +704,8 @@ async def generate_smart_outline_endpoint(
         platform_target=platform,
         quality_tier=quality,
         aspect_ratio=getattr(cast, "aspect_ratio", None) or "9:16",
-        user_id=ctx.workspace_owner_id,        # Stage-1 creative template (null = Auto). Constrains the smart outline
-        # to the template's block sequence + bias ratios when set.
-        template=get_template(getattr(cast, "template_id", None)),
+        user_id=ctx.workspace_owner_id,
+        template=selected_template,
         product_video_assets=product_video_assets,
         live_assessment=live_assessment,
         live_mode_defaults=getattr(cast, "live_mode_defaults", None),
@@ -708,11 +714,9 @@ async def generate_smart_outline_endpoint(
     if not outline:
         raise HTTPException(502, "Smart outline generation failed — try again.")
 
-    # 2. Auto-populate Pexels stock media for blocks that asked for it.
-    #    Passing products makes the search product-relevant (product name +
-    #    feature words) instead of brand/topic, and enables multi-angle pairs.
-    #    PR #162 — when the user picked uploaded videos (user_video_ids), resolve
-    #    them to R2 URLs and prefer them as b-roll over Pexels.
+    # 2. Auto-populate stock media for blocks that asked for it.
+    #    Pass template so 100% avatar templates skip b-roll overlays, and pass
+    #    product_image_assets so product cutaways display real product images.
     preferred_broll_urls = await _resolve_user_video_urls(
         db, getattr(cast, "user_video_ids", None), ctx.workspace_owner_id,
     )
@@ -724,6 +728,8 @@ async def generate_smart_outline_endpoint(
             if getattr(cast, "format_family", "vertical") == "horizontal"
             else "portrait"
         ),
+        template=selected_template,
+        product_image_assets=product_image_assets,
     )
 
     # 3. Wipe any existing blocks for this cast (they'll be replaced).
@@ -1095,7 +1101,9 @@ async def generate_scripts(
         voice_profile=voice_profile,
         description=cast_description,
         products=cast_products or None,
-        user_id=ctx.workspace_owner_id,    )
+        user_id=ctx.workspace_owner_id,
+        template=get_template(getattr(cast, "template_id", None)),
+    )
 
     # Track which blocks already have an active variant to avoid duplicates
     blocks_with_active = set()
