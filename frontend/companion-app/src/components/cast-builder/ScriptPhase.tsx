@@ -508,11 +508,21 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     });
   }, [freshCast]);
 
-  // Poll for blocks if none yet (auto-fired from Setup)
+  // Poll for blocks if none yet (auto-fired from Setup).
+  //
+  // Only when a script was genuinely NEVER produced — a fresh DRAFT cast that
+  // landed here before Setup's generate chain finished. A cast already in
+  // outline_review / script_review (or beyond) with zero blocks means the
+  // user deleted every block on purpose; re-generating over that on a page
+  // refresh (the bug this guard fixes) is wrong. blocksEverLoadedRef covers
+  // the in-session delete; the status check covers a refresh.
   useEffect(() => {
     if (!freshCast) return;
     const hasBlocks = freshCast.blocks && freshCast.blocks.length > 0;
-    if (!hasBlocks && !generating) {
+    const status = (freshCast.status as string | undefined)?.toLowerCase();
+    const scriptNeverGenerated =
+      !blocksEverLoadedRef.current && (status == null || status === "draft");
+    if (!hasBlocks && !generating && scriptNeverGenerated) {
       setGenerating(true);
       const interval = setInterval(async () => {
         try {
@@ -541,7 +551,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
       }, 45000);
       return () => { clearInterval(interval); clearTimeout(fallback); };
     }
-  }, [freshCast?.id, freshCast?.blocks?.length]);
+  }, [freshCast?.id, freshCast?.blocks?.length, freshCast?.status]);
 
   const generateOutline = useCallback(async () => {
     setGenerating(true);
@@ -1271,6 +1281,12 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
               "pip_talking_head",
             ].includes(block.category || "avatar_speaking");
             const blockCaptionOn = captionsPerBlock[block.id] ?? captionsGlobal;
+            // Speaking / talking-head blocks carry an extra "Avatar size"
+            // dropdown in the header, which pushes the word-count + edit
+            // controls onto a wrapped second line. For those, render that
+            // cluster just above the script textarea instead.
+            const hasAvatarSizeDropdown =
+              block.category === "avatar_speaking" || block.category === "pip_talking_head";
             // The outline normaliser retyped this beat (a single b-roll clip
             // would otherwise have covered the whole avatar_speaking shot).
             // Only badge it while the block still IS the auto-assigned type —
@@ -1279,6 +1295,63 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
             const showAutoCatBadge =
               !!autoCat && autoCat.to === (block.category || "avatar_speaking");
             const switchNotice = categoryNotice[block.id];
+
+            // Word count + per-block edit controls. Rendered in the header
+            // normally, but moved to just above the textarea when the header
+            // also carries the Avatar-size dropdown (see hasAvatarSizeDropdown).
+            const metaControls = (
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
+
+                {/* 4.7.8 — Per-block caption toggle */}
+                <button
+                  onClick={() => setCaptionsPerBlock(prev => ({
+                    ...prev,
+                    [block.id]: !(prev[block.id] ?? captionsGlobal),
+                  }))}
+                  className={cn(
+                    "p-1 rounded",
+                    blockCaptionOn ? "text-accent/60" : "text-white/20"
+                  )}
+                  title={blockCaptionOn ? "Captions on for this block" : "Captions off for this block"}
+                >
+                  <Captions className="w-3 h-3" />
+                </button>
+
+                {/* 4.7.4 — Undo / Redo */}
+                <button
+                  onClick={() => handleUndo(block.id)}
+                  disabled={!history.canUndo(block.id)}
+                  className="text-white/20 hover:text-white/50 disabled:opacity-30"
+                  title="Undo (Ctrl+Z)"
+                >
+                  <Undo2 className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => handleRedo(block.id)}
+                  disabled={!history.canRedo(block.id)}
+                  className="text-white/20 hover:text-white/50 disabled:opacity-30"
+                  title="Redo (Ctrl+Shift+Z)"
+                >
+                  <Redo2 className="w-3 h-3" />
+                </button>
+
+                <button
+                  onClick={() => handleRewriteInVoice(block.id)}
+                  className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                  title="Rewrite in your voice"
+                >
+                  <RefreshCw className="w-3 h-3" /> Voice
+                </button>
+                <button
+                  onClick={() => handleDeleteBlock(block.id)}
+                  className="text-xs text-red-400 hover:text-red-300"
+                  title="Delete block"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
 
             // Animated slide-aside for neighbors during drag. The dragged
             // block stays in place (just dimmed) while neighbors translate to
@@ -1420,57 +1493,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
-
-                    {/* 4.7.8 — Per-block caption toggle */}
-                    <button
-                      onClick={() => setCaptionsPerBlock(prev => ({
-                        ...prev,
-                        [block.id]: !(prev[block.id] ?? captionsGlobal),
-                      }))}
-                      className={cn(
-                        "p-1 rounded",
-                        blockCaptionOn ? "text-accent/60" : "text-white/20"
-                      )}
-                      title={blockCaptionOn ? "Captions on for this block" : "Captions off for this block"}
-                    >
-                      <Captions className="w-3 h-3" />
-                    </button>
-
-                    {/* 4.7.4 — Undo / Redo */}
-                    <button
-                      onClick={() => handleUndo(block.id)}
-                      disabled={!history.canUndo(block.id)}
-                      className="text-white/20 hover:text-white/50 disabled:opacity-30"
-                      title="Undo (Ctrl+Z)"
-                    >
-                      <Undo2 className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={() => handleRedo(block.id)}
-                      disabled={!history.canRedo(block.id)}
-                      className="text-white/20 hover:text-white/50 disabled:opacity-30"
-                      title="Redo (Ctrl+Shift+Z)"
-                    >
-                      <Redo2 className="w-3 h-3" />
-                    </button>
-
-                    <button
-                      onClick={() => handleRewriteInVoice(block.id)}
-                      className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"
-                      title="Rewrite in your voice"
-                    >
-                      <RefreshCw className="w-3 h-3" /> Voice
-                    </button>
-                    <button
-                      onClick={() => handleDeleteBlock(block.id)}
-                      className="text-xs text-red-400 hover:text-red-300"
-                      title="Delete block"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  {!hasAvatarSizeDropdown && metaControls}
                 </div>
 
                 {/* Auto-retype notice — the outline normaliser changed this
@@ -1794,6 +1817,12 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     same padding (px-3 py-2). */}
                 {variant && (
                   <div className="space-y-1">
+                    {/* Speaking / talking-head blocks: word count + edit
+                        controls live here (not the header) so the header's
+                        Avatar-size dropdown doesn't force a wrapped row. */}
+                    {hasAvatarSizeDropdown && (
+                      <div className="flex justify-end">{metaControls}</div>
+                    )}
                     <div className="relative">
                       <ProsodyHighlighter text={rawText} />
                       <textarea
