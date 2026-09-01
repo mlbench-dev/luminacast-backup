@@ -65,8 +65,11 @@ def test_normalize_defaults_unknown_values_to_standard():
 # ── _production_level_block_cap ──────────────────────────────────────────────
 
 
-def test_block_cap_none_without_template():
-    assert _production_level_block_cap(None, "quick") is None
+def test_block_cap_without_template():
+    # Auto mode: Quick still gets a fixed lean cap so a bloated outline is
+    # trimmed; Standard / Premium stay uncapped.
+    assert _production_level_block_cap(None, "quick") == 5
+    assert _production_level_block_cap(None, "standard") is None
     assert _production_level_block_cap(None, "premium") is None
 
 
@@ -152,8 +155,21 @@ def test_enforce_block_cap_stops_early_if_everything_left_is_protected():
 # ── _effective_duration_target_seconds ───────────────────────────────────────
 
 
-def test_effective_duration_unchanged_without_template():
+def test_effective_duration_manual_value_wins_without_template():
+    # An explicitly-set manual duration always wins, template or not.
     assert _effective_duration_target_seconds(60, None, "quick") == 60
+    assert _effective_duration_target_seconds(120, None, "premium") == 120
+
+
+def test_effective_duration_auto_quick_default_when_nothing_set():
+    # Auto mode + Quick + no manual duration -> the fixed short default,
+    # so "Quick" actually produces a shorter cast without a template.
+    assert _effective_duration_target_seconds(None, None, "quick") == 35
+
+
+def test_effective_duration_auto_standard_and_premium_have_no_default():
+    assert _effective_duration_target_seconds(None, None, "standard") is None
+    assert _effective_duration_target_seconds(None, None, "premium") is None
 
 
 def test_effective_duration_unchanged_for_standard():

@@ -691,8 +691,13 @@ async def update_block(
             look = await db.get(AvatarLook, avatar_look_id)
             if not look:
                 raise HTTPException(404, "Look not found")
-            if look.status != "ready":
-                raise HTTPException(400, "Look is not ready")
+            # Allow assigning a scene that's still generating — the Script tab
+            # optimistically pre-selects the in-flight look so it appears the
+            # moment it's ready, and the renderer already falls back to the
+            # clean face for any look that isn't ready at bake time. Only a
+            # hard-failed look is rejected.
+            if look.status == "failed":
+                raise HTTPException(400, "That scene failed to generate — pick another or regenerate it.")
         block.avatar_look_id = avatar_look_id or None
 
     # Body motion fields

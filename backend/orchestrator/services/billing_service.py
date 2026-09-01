@@ -1157,6 +1157,46 @@ async def mark_subscription_past_due(db: AsyncSession, owner_id: str) -> Optiona
 # ── Dashboard aggregation ────────────────────────────────────────────────
 
 
+def _describe_next_render_billing(
+    subscription: Optional[Subscription], period, wallet
+) -> dict:
+    """How the NEXT render will be paid for — so the UI can warn the user
+    BEFORE a render that will charge their card as overage (there is no other
+    prompt anywhere; the current flow just fires an off-session charge per
+    render — see _attempt_overage_charge). Mirrors the cascade used by
+    check_render_preflight + deduct_render_usage: included -> credits ->
+    overage / blocked.
+    """
+    remaining = max(
+        period.render_minutes_included - period.render_minutes_used, 0.0
+    )
+    billable = _is_billable(subscription)
+    has_card = bool(subscription and subscription.stripe_customer_id)
+
+    if remaining > 0 and (billable or period.is_free_tier):
+        source = "included"
+    elif wallet.balance_cents > 0:
+        source = "credits"
+    elif billable:
+        source = "overage"
+    else:
+        source = "blocked"
+
+    return {
+        "source": source,
+        # True only when the next render triggers an immediate off-session
+        # card charge (active subscription + a saved card on the customer).
+        "will_charge_card": source == "overage" and has_card,
+        "overage_rate_cents_per_minute": {
+            "standard": get_overage_render_rate_cents("standard"),
+            "premium": get_overage_render_rate_cents("premium"),
+        },
+        "non_subscriber_rate_cents_per_minute": (
+            NON_SUBSCRIBER_RENDER_RATE_CENTS_PER_MINUTE
+        ),
+    }
+
+
 async def get_billing_dashboard(db: AsyncSession, owner_id: str) -> dict:
     subscription = await get_active_subscription(db, owner_id)
     period = await get_or_create_current_usage_period(db, owner_id)
@@ -1188,4 +1228,5 @@ async def get_billing_dashboard(db: AsyncSession, owner_id: str) -> dict:
             "auto_topup_threshold_cents": wallet.auto_topup_threshold_cents,
             "auto_topup_amount_cents": wallet.auto_topup_amount_cents,
         },
+        "render_billing": _describe_next_render_billing(subscription, period, wallet),
     }

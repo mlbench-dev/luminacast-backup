@@ -262,8 +262,8 @@ export const castsApi = {
       { headers: { "Content-Type": "multipart/form-data" } },
     ).then((r) => r.data);
   },
-  generateTts: (castId: string) =>
-    api.post(`/casts/${castId}/generate-tts`).then((r) => r.data),
+  generateTts: (castId: string, force = false) =>
+    api.post(`/casts/${castId}/generate-tts`, { force }).then((r) => r.data),
   generateCaptions: (castId: string) =>
     api.post(`/casts/${castId}/generate-captions`).then((r) => r.data),
   generateVideos: (castId: string) =>
@@ -350,9 +350,6 @@ export const castsApi = {
       self: { cast_id: string; format_family: string; name: string };
       siblings: { cast_id: string; format_family: string; name: string }[];
     }>(`/casts/${castId}/siblings`).then(r => r.data),
-  estimateCost: (data: { duration_s: number; quality: string; layout: string }) =>
-    api.post<{ cost_cents: number; breakdown: Record<string, number> }>(`/casts/estimate-cost`, data).then(r => r.data),
-
   // Cast versioning
   fork: (castId: string, name?: string) =>
     api.post<{ forked: boolean; old_version: number; new_version: number; version_id?: string }>(`/casts/${castId}/fork`, { name: name || "" }).then(r => r.data),

@@ -3072,6 +3072,31 @@ async def _ensure_fresh_tts_for_block(
                     sentry_sdk.capture_exception(head_exc)
 
             if not stale:
+                # Snapshot backfill: the editor timeline can pre-date the
+                # audio — e.g. an avatar_action block whose script + TTS were
+                # added AFTER the timeline was last saved, so it carries no
+                # audio element. The variant's audio is valid and fresh; use
+                # it instead of returning the empty snapshot URL, which would
+                # make the block bake silently (no voiceover in the render).
+                if not (snapshot_audio_url or "").strip():
+                    for _key in (
+                        (variant.tts_r2_key or "").strip(),
+                        (getattr(variant, "audio_key", None) or "").strip(),
+                    ):
+                        if not _key:
+                            continue
+                        try:
+                            _backfilled = r2.get_public_url(_key)
+                        except Exception as _url_exc:
+                            sentry_sdk.capture_exception(_url_exc)
+                            _backfilled = ""
+                        if _backfilled:
+                            logger.info(
+                                "Block %s: timeline snapshot had no audio — "
+                                "backfilled voiceover from variant key %s",
+                                block_id, _key,
+                            )
+                            return _backfilled, float(variant.tts_duration_seconds or 0)
                 return snapshot_audio_url, float(variant.tts_duration_seconds or 0)
 
             logger.warning(
@@ -4661,6 +4686,49 @@ async def _render_async(task, render_id: str):
         except Exception as _th_exc:
             sentry_sdk.capture_exception(_th_exc)
 
+        # Per-block SCENE override. The editor timeline bakes the cast's
+        # default avatar face into v1.props.src for every speaking block, so a
+        # scene the user picked in the Script tab (block.avatar_look_id) was
+        # silently ignored at bake time — the render always showed the default
+        # backdrop. If that look is a ready background/scene look with an
+        # image, use it as the lip-sync reference. An explicit pick wins over
+        # the framing-matched talking-head look resolved above.
+        try:
+            from models.avatar_look import AvatarLook as _SceneLook
+            from models.block import Block as _SceneBlock
+            from models.cast import Cast as _SceneCast
+            async with factory() as _sc_session:
+                _sc_blk = await _sc_session.get(_SceneBlock, block_id)
+                _sc_look_id = getattr(_sc_blk, "avatar_look_id", None) if _sc_blk else None
+                _sc_is_action = bool(_sc_blk) and (
+                    _sc_blk.category == "avatar_action"
+                    or _sc_blk.render_mode == "body_motion"
+                )
+                if _sc_look_id and not _sc_is_action:
+                    _sc_look = await _sc_session.get(_SceneLook, _sc_look_id)
+                    if (
+                        _sc_look is not None
+                        and _sc_look.status == "ready"
+                        and getattr(_sc_look, "face_ref_key", None)
+                    ):
+                        _sc_cst = await _sc_session.get(_SceneCast, cast_id) if cast_id else None
+                        _sc_avatar_id = getattr(_sc_cst, "avatar_id", None) if _sc_cst else None
+                        _sc_mic_on = getattr(_sc_blk, "mic_on", None)
+                        if _sc_mic_on is None:
+                            _sc_mic_on = bool(getattr(_sc_look, "mic_visible", False))
+                        from services.mic_on_look import resolve_mic_on_face_key
+                        _sc_key = await resolve_mic_on_face_key(
+                            _sc_mic_on, _sc_avatar_id, _sc_look.id,
+                            _sc_look.face_ref_key, _sc_session,
+                        )
+                        face_ref_url = r2.get_public_url(_sc_key)
+                        logger.info(
+                            "Block %s: using picked scene look=%s (%s) mic_on=%s",
+                            block_id, _sc_look.id, _sc_look.name, _sc_mic_on,
+                        )
+        except Exception as _sc_exc:
+            sentry_sdk.capture_exception(_sc_exc)
+
         # avatar_motion blocks: T2V renders directly from the prompt and
         # has no face/audio dependency at the dispatch layer (voiceover, if
         # any, is muxed in by the FFmpeg compose pass via the A1 element).
@@ -5502,8 +5570,31 @@ async def _render_async(task, render_id: str):
                     # the avatar; prepending appearance text here drowns the
                     # motion description in Wan's prompt budget and produces
                     # a different-looking person performing arbitrary motion.
-                    raw_motion_prompt = (blk.body_motion_prompt if blk else "") or motion_prompt or "performs a natural action"
+                    # Prefer the block's Motion-description field. If the user
+                    # left it empty, fall back to the frame-box text (the
+                    # action they typed for the start/end still) BEFORE the
+                    # generic "talking to camera" default — otherwise a typed
+                    # action ("hurls the product at the wall") never reaches
+                    # the motion engine and the clip is just a talking head.
+                    _bm = ((blk.body_motion_prompt if blk else "") or "").strip()
+                    _frame_action = ""
+                    if not _bm and blk is not None:
+                        _frame_action = (
+                            (getattr(blk, "action_start_prompt", None) or "").strip()
+                            or (getattr(blk, "body_motion_start_prompt", None) or "").strip()
+                            or (getattr(blk, "action_end_prompt", None) or "").strip()
+                        )
+                    _passthru = (motion_prompt or "").strip()
+                    if _passthru.lower() == "a person talking naturally to the camera":
+                        _passthru = ""
+                    raw_motion_prompt = (
+                        _bm or _frame_action or _passthru or "performs a natural action"
+                    )
                     i2v_prompt = raw_motion_prompt
+                    # True when the user actually described a motion (vs a
+                    # generic fallback) — decides whether the Kling free-motion
+                    # path should win over the product-"hold" path below.
+                    has_real_motion = bool(_bm or _frame_action)
 
                     # ── Product gate (PR #92) ─────────────────────────────
                     # PRODUCT and PRODUCT_DEMO action blocks must condition
@@ -5585,6 +5676,19 @@ async def _render_async(task, render_id: str):
                 if not start_url:
                     raise RuntimeError(f"avatar_action block {block_id} has no usable start frame")
 
+                # Clean the user's Motion description before any engine sees it.
+                # Video models keep ~1 action and silently drop sequences,
+                # conditionals, physics and outcomes — this rewrites a rough
+                # note ("walk and throw it so it bounces off her head to prove
+                # it's tough") into one plausible action. The block keeps the
+                # user's original text; only i2v_prompt is cleaned. Best-effort.
+                if has_real_motion:
+                    try:
+                        from services.motion_prompt import sanitize_motion_prompt
+                        i2v_prompt = await sanitize_motion_prompt(i2v_prompt, cast_id=cast_id)
+                    except Exception as _mp_exc:
+                        sentry_sdk.capture_exception(_mp_exc)
+
                 # Route PRODUCT/PRODUCT_DEMO action blocks through the
                 # product-conditioned bake whenever an effective product
                 # image resolves. This replaces the previous unconditional
@@ -5593,15 +5697,30 @@ async def _render_async(task, render_id: str):
                 # instead of whatever the I2V model paints in. HOOK blocks
                 # and other non-PRODUCT types intentionally keep their
                 # artistic latitude via the wan_body_motion path below.
+                _action_engine = os.environ.get("ACTION_MOTION_ENGINE", "wan").strip().lower()
+                # When the Kling free-motion experiment is on AND the user
+                # actually described an action, let that path handle the beat
+                # even for product blocks. The product-"hold" path below can
+                # only ever show the avatar holding the item, never performing
+                # the action — so a "throw it at the wall" beat routed there
+                # always came back as a talking-head with the product. Product-
+                # elements stays the fallback if Kling free-motion errors.
+                _prefer_kling_free_motion = (_action_engine == "kling" and has_real_motion)
                 route_through_product_elements = bool(
-                    is_product_typed and effective_product_image_url_bm
+                    is_product_typed
+                    and effective_product_image_url_bm
+                    and not _prefer_kling_free_motion
                 )
                 logger.info(
-                    "product gate: block %s type=%s effective_product=%s → route=%s",
+                    "product gate: block %s type=%s effective_product=%s "
+                    "has_real_motion=%s prefer_kling=%s → route=%s",
                     block_id,
                     block_type_str or "?",
                     effective_product_id_bm or "None",
-                    "product_elements" if route_through_product_elements else "avatar_action",
+                    has_real_motion,
+                    _prefer_kling_free_motion,
+                    "product_elements" if route_through_product_elements
+                    else ("kling_free_motion" if _prefer_kling_free_motion else "avatar_action"),
                 )
 
                 wan_video_url: str | None = None
@@ -5705,6 +5824,55 @@ async def _render_async(task, render_id: str):
                         )
                         wan_video_url = None
                         product_bake_backend = None
+
+                if not wan_video_url:
+                    # EXPERIMENT (env ACTION_MOTION_ENGINE=kling): drive the
+                    # motion with Kling 2.5 Turbo Pro from the START frame +
+                    # the motion prompt ONLY — no end/tail frame. Wan's default
+                    # path passes both frames and interpolates between them, so
+                    # a dynamic action ("throw the product at the wall") can
+                    # never happen — the clip is boxed in by two near-identical
+                    # stills. Single-frame + prompt lets the model actually
+                    # animate the described motion. Falls back to Wan on any
+                    # error or when the flag is unset. `_action_engine` was
+                    # resolved at the product gate above.
+                    if _action_engine == "kling":
+                        try:
+                            from services.acting_video_client import ActingVideoClient
+                            _cw_k, _ch_k, _ = _canvas_dims_for_render(timeline)
+                            _ar_k = (
+                                "16:9" if _cw_k > _ch_k
+                                else "1:1" if _cw_k == _ch_k
+                                else "9:16"
+                            )
+                            _kdur = max(1, min(10, int(round(float(duration_s or 5.0)))))
+                            _kc = ActingVideoClient(getattr(settings, "FAL_API_KEY", "") or "")
+                            _kres = await _kc.generate(
+                                first_frame_url=start_url,
+                                last_frame_url=None,  # free-run the motion, don't interpolate
+                                prompt=i2v_prompt,
+                                duration_seconds=_kdur,
+                                aspect_ratio=_ar_k,
+                            )
+                            wan_video_url = _kres["video_url"]
+                            provider_reported_duration_s = float(
+                                _kres.get("duration_seconds") or 0.0
+                            )
+                            motion_requested_tier_s = provider_reported_duration_s or None
+                            product_bake_backend = "kling_acting_experiment"
+                            logger.info(
+                                "avatar_action block %s: Kling free-motion bake "
+                                "(engine=%s, dur=%ds, ar=%s)",
+                                block_id, _kres.get("engine"), _kdur, _ar_k,
+                            )
+                        except Exception as _kexc:
+                            sentry_sdk.capture_exception(_kexc)
+                            logger.warning(
+                                "avatar_action block %s: Kling free-motion bake "
+                                "failed (%s) — falling back to Wan",
+                                block_id, _kexc,
+                            )
+                            wan_video_url = None
 
                 if not wan_video_url:
                     wan_result = await generate_body_motion_clip(

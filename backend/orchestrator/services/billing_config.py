@@ -62,10 +62,9 @@ PRODUCTION_LEVEL_MULTIPLIERS: dict[str, float] = {
 # Cast.quality (simple/hd/hd_plus) is a SEPARATE, independent multiplier on
 # billable render-minutes, applied alongside (multiplied with) the
 # production-level multiplier above — quality previously had zero effect on
-# real billing despite being a real render-resolution/cost driver. Values
-# match routers/casts/crud.py's estimate-cost endpoint (the number users
-# already see live in Setup), so the displayed estimate and the real charge
-# agree.
+# real billing despite being a real render-resolution/cost driver. The Setup
+# tab surfaces these same multipliers on the Quality slider (×1.0 / ×1.4 /
+# ×2.0 render minutes) so the displayed estimate and the real charge agree.
 #
 # Deliberately NOT normalized via normalize_production_level/
 # PRODUCTION_LEVEL_ALIASES above — that dict already contains "hd"/"hd_plus"

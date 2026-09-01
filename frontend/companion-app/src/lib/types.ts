@@ -1316,6 +1316,14 @@ export interface BillingDashboard {
     auto_topup_threshold_cents: number | null;
     auto_topup_amount_cents: number | null;
   };
+  // How the NEXT render will be paid for — used to warn before a render that
+  // charges the card as overage.
+  render_billing: {
+    source: "included" | "credits" | "overage" | "blocked";
+    will_charge_card: boolean;
+    overage_rate_cents_per_minute: { standard: number; premium: number };
+    non_subscriber_rate_cents_per_minute: number;
+  };
 }
 
 export interface CreditTransactionDto {

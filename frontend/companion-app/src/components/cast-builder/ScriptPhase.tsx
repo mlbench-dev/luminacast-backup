@@ -330,6 +330,10 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   const queryClient = useQueryClient();
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [generating, setGenerating] = useState(false);
+  // True once this component has seen at least one block — lets the empty
+  // state tell "you deleted every block" apart from "generation failed / is
+  // still loading" (same blocks.length === 0, very different messages).
+  const blocksEverLoadedRef = useRef(false);
   // Drag-and-drop state. We split into TWO indices so the visual feedback
   // is rich without mutating the list mid-drag:
   //   dragSrcIdx: the block being dragged (renders semi-transparent + scaled)
@@ -468,6 +472,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   useEffect(() => {
     if (!freshCast?.blocks) return;
     const sorted = [...freshCast.blocks].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    if (sorted.length > 0) blocksEverLoadedRef.current = true;
     setBlocks((prev) => {
       const sameSet =
         prev.length > 0 &&
@@ -503,11 +508,21 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     });
   }, [freshCast]);
 
-  // Poll for blocks if none yet (auto-fired from Setup)
+  // Poll for blocks if none yet (auto-fired from Setup).
+  //
+  // Only when a script was genuinely NEVER produced — a fresh DRAFT cast that
+  // landed here before Setup's generate chain finished. A cast already in
+  // outline_review / script_review (or beyond) with zero blocks means the
+  // user deleted every block on purpose; re-generating over that on a page
+  // refresh (the bug this guard fixes) is wrong. blocksEverLoadedRef covers
+  // the in-session delete; the status check covers a refresh.
   useEffect(() => {
     if (!freshCast) return;
     const hasBlocks = freshCast.blocks && freshCast.blocks.length > 0;
-    if (!hasBlocks && !generating) {
+    const status = (freshCast.status as string | undefined)?.toLowerCase();
+    const scriptNeverGenerated =
+      !blocksEverLoadedRef.current && (status == null || status === "draft");
+    if (!hasBlocks && !generating && scriptNeverGenerated) {
       setGenerating(true);
       const interval = setInterval(async () => {
         try {
@@ -536,7 +551,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
       }, 45000);
       return () => { clearInterval(interval); clearTimeout(fallback); };
     }
-  }, [freshCast?.id, freshCast?.blocks?.length]);
+  }, [freshCast?.id, freshCast?.blocks?.length, freshCast?.status]);
 
   const generateOutline = useCallback(async () => {
     setGenerating(true);
@@ -723,9 +738,12 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   }, [focusBlockId, blocks]);
 
   const handleDeleteBlock = useCallback(async (blockId: string) => {
+    const isLastBlock = blocks.length <= 1;
     const ok = await confirmAction({
-      title: "Delete block?",
-      text: "This removes the script text and any generated audio.",
+      title: isLastBlock ? "Delete the last block?" : "Delete block?",
+      text: isLastBlock
+        ? "This empties your script. You can add a new block or regenerate afterwards."
+        : "This removes the script text and any generated audio.",
       confirmButtonText: "Delete",
       cancelButtonText: "Cancel",
       icon: "warning",
@@ -742,7 +760,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         variant: "destructive",
       });
     }
-  }, [cast.id]);
+  }, [cast.id, blocks.length]);
 
   const handleChangeBackground = useCallback(async (blockId: string, lookId: string) => {
     setBlocks(prev => prev.map(b => b.id === blockId ? { ...b, avatar_look_id: lookId || undefined } : b));
@@ -1030,9 +1048,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   }, [castChatInput, cast.id, refetch]);
 
   const generateAudioMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (force: boolean = false) => {
       await flushPendingSaves();
-      await castsApi.generateTts(cast.id);
+      await castsApi.generateTts(cast.id, force);
       return castsApi.get(cast.id);
     },
     onSuccess: (updatedCast) => {
@@ -1135,6 +1153,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
           avatarId={cast.avatar_id}
           initialEnabled={!!castAvatar?.clip_mic_enabled}
           onChange={(enabled) => {
+            // Keep the cached avatar in sync so the toggle survives a
+            // refresh / remount (it reads back from this query).
+            queryClient.invalidateQueries({ queryKey: ["avatar-status", cast.avatar_id] });
             toast({
               title: `Default mic style: ${enabled ? "clip mic" : "phone mic"}`,
               description: "Applies to every cast using this avatar (unless a scene sets its own). Regenerate TTS to apply to existing blocks here.",
@@ -1200,15 +1221,42 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         </div>
       )}
 
-      {/* Empty state */}
-      {!generating && blocks.length === 0 && (
-        <div className="text-center py-12 space-y-4">
-          <p className="text-white/40 text-sm">Script generation failed or is still loading.</p>
-          <Button onClick={generateOutline} className="bg-accent hover:bg-accent/90">
-            <Wand2 className="w-4 h-4 mr-2" /> Retry Script Generation
-          </Button>
-        </div>
-      )}
+      {/* Empty state — two cases:
+          (a) the user deleted every block themselves → offer Add Block +
+              Regenerate, and don't call it a "failure";
+          (b) generation genuinely failed / hasn't arrived → Retry.
+          We know it's (a) if we've ever rendered a block this session, or the
+          cast is already past outline generation. */}
+      {!generating && blocks.length === 0 && (() => {
+        const s = (cast.status as string | undefined)?.toLowerCase();
+        const userEmptied =
+          blocksEverLoadedRef.current ||
+          (!!s && !["draft", "generating", "generation_failed", "template_select", "pending_payment"].includes(s));
+        return (
+          <div className="text-center py-12 space-y-4">
+            {userEmptied ? (
+              <>
+                <p className="text-white/40 text-sm">This script has no blocks.</p>
+                <div className="mx-auto flex max-w-xs flex-col items-stretch gap-2 sm:max-w-md sm:flex-row sm:justify-center">
+                  <div className="w-full sm:w-56">
+                    <AddBlockButton onAdd={handleAddBlock} />
+                  </div>
+                  <Button onClick={generateOutline} variant="outline" className="shrink-0">
+                    <Wand2 className="w-4 h-4 mr-2" /> Regenerate script
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-white/40 text-sm">Script generation failed or is still loading.</p>
+                <Button onClick={generateOutline} className="bg-accent hover:bg-accent/90">
+                  <Wand2 className="w-4 h-4 mr-2" /> Retry Script Generation
+                </Button>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Script blocks */}
       {!generating && blocks.length > 0 && (
@@ -1236,6 +1284,12 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
               "pip_talking_head",
             ].includes(block.category || "avatar_speaking");
             const blockCaptionOn = captionsPerBlock[block.id] ?? captionsGlobal;
+            // Speaking / talking-head blocks carry an extra "Avatar size"
+            // dropdown in the header, which pushes the word-count + edit
+            // controls onto a wrapped second line. For those, render that
+            // cluster just above the script textarea instead.
+            const hasAvatarSizeDropdown =
+              block.category === "avatar_speaking" || block.category === "pip_talking_head";
             // The outline normaliser retyped this beat (a single b-roll clip
             // would otherwise have covered the whole avatar_speaking shot).
             // Only badge it while the block still IS the auto-assigned type —
@@ -1244,6 +1298,63 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
             const showAutoCatBadge =
               !!autoCat && autoCat.to === (block.category || "avatar_speaking");
             const switchNotice = categoryNotice[block.id];
+
+            // Word count + per-block edit controls. Rendered in the header
+            // normally, but moved to just above the textarea when the header
+            // also carries the Avatar-size dropdown (see hasAvatarSizeDropdown).
+            const metaControls = (
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
+
+                {/* 4.7.8 — Per-block caption toggle */}
+                <button
+                  onClick={() => setCaptionsPerBlock(prev => ({
+                    ...prev,
+                    [block.id]: !(prev[block.id] ?? captionsGlobal),
+                  }))}
+                  className={cn(
+                    "p-1 rounded",
+                    blockCaptionOn ? "text-accent/60" : "text-white/20"
+                  )}
+                  title={blockCaptionOn ? "Captions on for this block" : "Captions off for this block"}
+                >
+                  <Captions className="w-3 h-3" />
+                </button>
+
+                {/* 4.7.4 — Undo / Redo */}
+                <button
+                  onClick={() => handleUndo(block.id)}
+                  disabled={!history.canUndo(block.id)}
+                  className="text-white/20 hover:text-white/50 disabled:opacity-30"
+                  title="Undo (Ctrl+Z)"
+                >
+                  <Undo2 className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => handleRedo(block.id)}
+                  disabled={!history.canRedo(block.id)}
+                  className="text-white/20 hover:text-white/50 disabled:opacity-30"
+                  title="Redo (Ctrl+Shift+Z)"
+                >
+                  <Redo2 className="w-3 h-3" />
+                </button>
+
+                <button
+                  onClick={() => handleRewriteInVoice(block.id)}
+                  className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                  title="Rewrite in your voice"
+                >
+                  <RefreshCw className="w-3 h-3" /> Voice
+                </button>
+                <button
+                  onClick={() => handleDeleteBlock(block.id)}
+                  className="text-xs text-red-400 hover:text-red-300"
+                  title="Delete block"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
 
             // Animated slide-aside for neighbors during drag. The dragged
             // block stays in place (just dimmed) while neighbors translate to
@@ -1385,57 +1496,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-white/40 whitespace-nowrap shrink-0">{wc} words · ~{dur}s</span>
-
-                    {/* 4.7.8 — Per-block caption toggle */}
-                    <button
-                      onClick={() => setCaptionsPerBlock(prev => ({
-                        ...prev,
-                        [block.id]: !(prev[block.id] ?? captionsGlobal),
-                      }))}
-                      className={cn(
-                        "p-1 rounded",
-                        blockCaptionOn ? "text-accent/60" : "text-white/20"
-                      )}
-                      title={blockCaptionOn ? "Captions on for this block" : "Captions off for this block"}
-                    >
-                      <Captions className="w-3 h-3" />
-                    </button>
-
-                    {/* 4.7.4 — Undo / Redo */}
-                    <button
-                      onClick={() => handleUndo(block.id)}
-                      disabled={!history.canUndo(block.id)}
-                      className="text-white/20 hover:text-white/50 disabled:opacity-30"
-                      title="Undo (Ctrl+Z)"
-                    >
-                      <Undo2 className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={() => handleRedo(block.id)}
-                      disabled={!history.canRedo(block.id)}
-                      className="text-white/20 hover:text-white/50 disabled:opacity-30"
-                      title="Redo (Ctrl+Shift+Z)"
-                    >
-                      <Redo2 className="w-3 h-3" />
-                    </button>
-
-                    <button
-                      onClick={() => handleRewriteInVoice(block.id)}
-                      className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"
-                      title="Rewrite in your voice"
-                    >
-                      <RefreshCw className="w-3 h-3" /> Voice
-                    </button>
-                    <button
-                      onClick={() => handleDeleteBlock(block.id)}
-                      className="text-xs text-red-400 hover:text-red-300"
-                      title="Delete block"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  {!hasAvatarSizeDropdown && metaControls}
                 </div>
 
                 {/* Auto-retype notice — the outline normaliser changed this
@@ -1545,7 +1606,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     />
                     <div className="space-y-1">
                       <div className="text-[10px] font-medium uppercase tracking-wider text-orange-200/80">
-                        Motion description (avatar appearance is auto-prepended)
+                        Motion description — the actual movement (avatar appearance is auto-prepended)
                       </div>
                       <textarea
                         value={
@@ -1554,11 +1615,15 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                           ""
                         }
                         onChange={(e) => handleChangeMotionPrompt(block.id, e.target.value)}
-                        placeholder="Describe action + scene + camera: 'running through a sunlit jungle trail, confident stride, hair flowing, golden hour, slow-motion cinematic'"
+                        placeholder="What actually moves + scene + camera: 'winds up and hurls the product at the brick wall, it bounces off, she catches it — handheld, punchy'"
                         rows={3}
                         className="w-full bg-black/25 border border-white/10 rounded-md px-2 py-1.5 text-[11px] text-white/85 placeholder:text-white/30 focus:outline-none focus:border-orange-400/50 resize-none"
                       />
                       <p className="text-[10px] text-white/35">
+                        This is what drives the video — put the throw / walk / gesture here, not in the frame boxes above.
+                        Keep it to <span className="text-white/55">one clear action</span>: the AI can't do step-by-step
+                        sequences, real physics, or outcomes ("no dent", "hits her on the head", "proves it's tough") —
+                        those get dropped. For a freer take, generate only a Start Frame and leave End Frame empty.
                         Voiceover below is optional — leave the script empty for a silent action shot.
                       </p>
                     </div>
@@ -1755,6 +1820,12 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                     same padding (px-3 py-2). */}
                 {variant && (
                   <div className="space-y-1">
+                    {/* Speaking / talking-head blocks: word count + edit
+                        controls live here (not the header) so the header's
+                        Avatar-size dropdown doesn't force a wrapped row. */}
+                    {hasAvatarSizeDropdown && (
+                      <div className="flex justify-end">{metaControls}</div>
+                    )}
                     <div className="relative">
                       <ProsodyHighlighter text={rawText} />
                       <textarea
@@ -1931,7 +2002,26 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
           <Button
             size="lg"
             disabled={generateAudioMutation.isPending || blocks.length === 0}
-            onClick={() => generateAudioMutation.mutate()}
+            onClick={async () => {
+              const hasExistingAudio = blocks.some(b =>
+                (b.variants || []).some(v => !!(v as any).audio_key)
+              );
+              if (hasExistingAudio) {
+                // Blocks already have audio — a plain run would skip them, so a
+                // mic-style / scene change wouldn't take. Offer a full rebuild.
+                const ok = await confirmAction({
+                  title: "Regenerate all audio?",
+                  text: "Every block already has audio. Regenerating replaces it for all of them — needed to apply a changed mic style or scene.",
+                  confirmButtonText: "Regenerate all",
+                  cancelButtonText: "Cancel",
+                  icon: "warning",
+                });
+                if (!ok) return;
+                generateAudioMutation.mutate(true);
+                return;
+              }
+              generateAudioMutation.mutate(false);
+            }}
             className="bg-accent hover:bg-accent/90"
           >
             {generateAudioMutation.isPending ? (
@@ -2129,7 +2219,7 @@ function AddBlockButton({
   return (
     <div
       ref={ref}
-      className="relative"
+      className="relative w-full"
       data-testid="add-block-track-tile"
     >
       <button

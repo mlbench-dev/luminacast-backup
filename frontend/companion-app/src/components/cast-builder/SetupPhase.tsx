@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, UserCircle, Package, Wand2, Radio, Clock, Monitor, Pencil, Sparkles, ImageIcon, Mic, Film, Layers, BarChart3, ArrowLeftRight, Camera } from "lucide-react";
+import { Loader2, UserCircle, Package, Wand2, Radio, Clock, Monitor, Pencil, Sparkles, ImageIcon, Mic, Film, Layers, BarChart3, ArrowLeftRight, Camera, Check } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,17 +20,45 @@ import { RenderLockBanner } from "@/components/cast-builder/RenderLockBanner";
 // Kept in sync with the backend (CastCreate/CastPatchRequest name max_length).
 const CAST_NAME_MAX_LENGTH = 80;
 
-const QUALITY_OPTIONS = [
-  { value: "simple", label: "Simple", price: "$14.99", desc: "Fast generation" },
-  { value: "hd", label: "HD", price: "$19.99", desc: "High quality" },
-  { value: "hd_plus", label: "HD+", price: "$29.99", desc: "Premium quality" },
-] as const;
+// Render billing is metered in MINUTES, not dollars. Each tier applies a
+// multiplier to the video's runtime (simple ×1.0, HD ×1.4, HD+ ×2.0); those
+// billable minutes come out of the plan's monthly allowance first, then PAYG
+// credits, then overage. See services/billing_service.compute_billable_minutes.
+const QUALITY_MINUTE_MULTIPLIER: Record<string, number> = {
+  simple: 1.0,
+  hd: 1.4,
+  hd_plus: 2.0,
+};
+// standard & quick bill at the same rate — quick is cheaper only because it
+// produces a SHORTER video (fewer minutes), not a lower per-minute rate.
+const PRODUCTION_MINUTE_MULTIPLIER: Record<string, number> = {
+  quick: 1.0,
+  standard: 1.0,
+  premium: 1.5,
+};
 
 const LAYOUT_OPTIONS = [
   { value: "9:16", label: "Vertical 9:16", desc: "1080×1920", icon: "📱" },
   { value: "16:9", label: "Horizontal 16:9", desc: "1920×1080", icon: "🖥" },
   { value: "1:1", label: "Square 1:1", desc: "1080×1080", icon: "⬜" },
   { value: "4:5", label: "4:5 Feed", desc: "1080×1350", icon: "📷" },
+] as const;
+
+const BROLL_SOURCE_OPTIONS = [
+  {
+    value: "stock",
+    label: "Generic stock",
+    desc: "Pexels clips matched to your script.",
+    hint: "Fast",
+    Icon: Film,
+  },
+  {
+    value: "ai_generated",
+    label: "AI-generated from product",
+    desc: "Product-only shots made from your product's own photo.",
+    hint: "Slower · runs in the background",
+    Icon: Sparkles,
+  },
 ] as const;
 
 const PLATFORM_BY_LAYOUT: Record<string, { value: string; label: string }[]> = {
@@ -214,8 +242,6 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
     queryFn: () => castsApi.templates(),
     staleTime: 60 * 60 * 1000,
   });
-  const [costEstimate, setCostEstimate] = useState<{ cost_cents: number; breakdown: Record<string, number> } | null>(null);
-  const costTimer = useRef<NodeJS.Timeout | null>(null);
 
   // Rehydrate the form from an already-created cast — e.g. the user
   // generated a script/outline, hit Back, and landed here again. Without
@@ -288,24 +314,17 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
     }
   }, [autoCast, quality]);
 
-  // Live cost estimate — debounced. We only fetch when Auto Cast is OFF
-  // because that's the only mode where the user sees the cost number; in
-  // Auto mode the cost is summarized inline in the AI plan strip below.
-  useEffect(() => {
-    if (autoCast || !durationManual) { setCostEstimate(null); return; }
-    if (costTimer.current) clearTimeout(costTimer.current);
-    costTimer.current = setTimeout(async () => {
-      try {
-        const result = await castsApi.estimateCost({
-          duration_s: durationTarget,
-          quality,
-          layout: outputFormat,
-        });
-        setCostEstimate(result);
-      } catch { /* ignore estimate failures */ }
-    }, 300);
-    return () => { if (costTimer.current) clearTimeout(costTimer.current); };
-  }, [durationTarget, quality, outputFormat, durationManual, autoCast]);
+  // Rough billable-minute estimate for a manual-duration render, shown so the
+  // user knows a render spends MINUTES (not dollars): runtime × quality mult
+  // × production mult. Only meaningful when the user set an explicit target;
+  // Auto mode's length isn't known here. Mirrors
+  // services/billing_service.compute_billable_minutes.
+  const estimatedRenderMinutes = useMemo(() => {
+    if (autoCast || !durationManual || !durationTarget) return null;
+    const qMult = QUALITY_MINUTE_MULTIPLIER[quality] ?? 1.0;
+    const pMult = PRODUCTION_MINUTE_MULTIPLIER[productionLevel] ?? 1.0;
+    return Math.max(0.1, (durationTarget / 60) * qMult * pMult);
+  }, [autoCast, durationManual, durationTarget, quality, productionLevel]);
 
   // When layout changes, reset platforms to all in that family
   const handleLayoutChange = useCallback((layout: string) => {
@@ -894,32 +913,59 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           generation runs) — previously gated on selectedProducts.length,
           which buried it below Background Music and made it look missing
           until a product was picked. */}
-      <div className="space-y-1.5">
-        <p className="text-xs text-white/40">B-roll visual source</p>
-        <div className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.02] p-1">
-          <button
-            type="button"
-            onClick={() => setBrollMediaSource("stock")}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-              brollMediaSource === "stock" ? "bg-accent text-white" : "text-white/40"
-            }`}
-          >
-            Generic stock
-          </button>
-          <button
-            type="button"
-            onClick={() => setBrollMediaSource("ai_generated")}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-              brollMediaSource === "ai_generated" ? "bg-accent text-white" : "text-white/40"
-            }`}
-          >
-            AI-generated from product
-          </button>
+      <div className="space-y-2">
+        <div className="text-[10px] font-medium uppercase tracking-wider text-white/50 flex items-center gap-1.5">
+          <Film className="w-3 h-3" /> B-roll visual source
         </div>
-        <p className="text-[10px] text-white/25">
-          {brollMediaSource === "stock"
-            ? "B-roll is auto-selected from Pexels based on script content."
-            : "B-roll is generated from your product's own photo — takes a few minutes per clip, runs in the background."}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {BROLL_SOURCE_OPTIONS.map((opt) => {
+            const active = brollMediaSource === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setBrollMediaSource(opt.value)}
+                aria-pressed={active}
+                className={cn(
+                  "relative rounded-lg border p-3 text-left transition-all",
+                  active
+                    ? "border-accent bg-accent/10"
+                    : "border-white/10 bg-white/[0.02] hover:border-white/25"
+                )}
+              >
+                {active && (
+                  <span className="absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-white">
+                    <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                  </span>
+                )}
+                <div className="flex items-center gap-1.5 pr-5">
+                  <opt.Icon
+                    className={cn("w-3.5 h-3.5 shrink-0", active ? "text-accent" : "text-white/45")}
+                  />
+                  <span
+                    className={cn(
+                      "text-xs font-semibold",
+                      active ? "text-white" : "text-white/80"
+                    )}
+                  >
+                    {opt.label}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-white/45">{opt.desc}</p>
+                <p
+                  className={cn(
+                    "mt-1.5 text-[10px] font-medium",
+                    active ? "text-accent/90" : "text-white/35"
+                  )}
+                >
+                  {opt.hint}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-white/35">
+          Default for product b-roll blocks — you can still override any single block in the Script step.
         </p>
       </div>
 
@@ -1104,7 +1150,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
               <span className="flex items-center gap-1.5"><Clock className="w-3 h-3" /> Duration</span>
               {durationManual ? (
                 <button
-                  onClick={() => { setDurationManual(false); setCostEstimate(null); }}
+                  onClick={() => setDurationManual(false)}
                   className="text-[10px] text-white/40 hover:text-white/60 normal-case tracking-normal"
                 >
                   auto
@@ -1198,15 +1244,15 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
                 {tierDurationCapSeconds && (
                   <p className="text-[10px] text-amber-400/70">
                     Capped at {tierDurationCapSeconds}s — {productionLevel === "quick"
-                      ? "Quick's cost savings come from a shorter render."
+                      ? "Quick uses fewer render minutes because the cut is shorter."
                       : "Standard stays within this format's normal length — pick Premium for a longer cut."}
                   </p>
                 )}
-                {costEstimate && (
+                {estimatedRenderMinutes != null && (
                   <div className="flex items-center justify-between pt-1 border-t border-white/5">
-                    <span className="text-[10px] text-white/40">Estimated render</span>
+                    <span className="text-[10px] text-white/40">Uses about</span>
                     <span className="text-xs font-semibold text-accent">
-                      ${(costEstimate.cost_cents / 100).toFixed(2)}
+                      {estimatedRenderMinutes.toFixed(1)} render min
                     </span>
                   </div>
                 )}
@@ -1221,9 +1267,9 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
             TikTok max post length varies by account tier. Confirm your TikTok allows longer posts before rendering.
           </p>
         )}
-        {durationManual && durationTarget > 3600 && quality !== "simple" && costEstimate && (
+        {durationManual && durationTarget > 3600 && estimatedRenderMinutes != null && (
           <p className="mt-3 text-[11px] text-amber-400/80 bg-amber-500/10 rounded px-2 py-1.5">
-            Long renders at {quality.toUpperCase()} cost ${(costEstimate.cost_cents / 100).toFixed(2)}. Confirm.
+            A render this long at {quality.toUpperCase()} uses about {estimatedRenderMinutes.toFixed(0)} render minutes — check your remaining allowance first.
           </p>
         )}
       </div>
@@ -1542,8 +1588,10 @@ function TemplateGrid({
  * per-template data to derive a lean/full cut from, same as how the
  * Template constraint itself only applies once one is picked.
  *
- * The numbers shown are rough per-cast GPU estimates so the user knows
- * the order of magnitude before they hit Generate.
+ * Billing note shown per card is the render-MINUTE multiplier (renders are
+ * metered in minutes, not dollars). Quick and Standard bill at the same
+ * ×1.0 rate — Quick only uses fewer minutes because it produces a shorter
+ * video. Premium is ×1.5.
  */
 function ProductionLevelSelector({
   value,
@@ -1559,22 +1607,28 @@ function ProductionLevelSelector({
       id: "quick" as const,
       name: "Quick",
       icon: "⚡",
-      desc: "Fewer beats (no repeats), mostly talking-head, shortest cut of your chosen format.",
-      price: "~$0.35",
+      desc: hasTemplate
+        ? "Fewer beats (no repeats), mostly talking-head, shortest cut of your chosen format."
+        : "Fewer, shorter beats — a lean ~35s talking-head cut.",
+      minutes: "×1.0 render minutes · shorter, so fewer used",
     },
     {
       id: "standard" as const,
       name: "Standard",
       icon: "✦",
-      desc: "Your template's natural beat count, shot mix, and length — unchanged.",
-      price: "~$0.85",
+      desc: hasTemplate
+        ? "Your template's natural beat count, shot mix, and length — unchanged."
+        : "Balanced length and shot mix — whatever the script calls for.",
+      minutes: "×1.0 render minutes",
     },
     {
       id: "premium" as const,
       name: "Premium",
       icon: "★",
-      desc: "One extra beat, more b-roll, longest cut of your chosen format.",
-      price: "~$1.50",
+      desc: hasTemplate
+        ? "One extra beat, more b-roll, longest cut of your chosen format."
+        : "Longer and richer — more beats and more b-roll.",
+      minutes: "×1.5 render minutes",
     },
   ];
   
@@ -1601,7 +1655,7 @@ function ProductionLevelSelector({
               <div className="text-lg mb-1">{level.icon}</div>
               <div className="text-sm font-medium text-white/90">{level.name}</div>
               <div className="text-[10px] text-white/40 mt-1 leading-snug">{level.desc}</div>
-              <div className="text-[10px] text-accent mt-2">{level.price}</div>
+              <div className="text-[10px] text-accent/80 mt-2">{level.minutes}</div>
             </button>
           );
         })}
@@ -1724,9 +1778,9 @@ function QualitySlider({
   onChange: (v: string) => void;
 }) {
   const STOPS = [
-    { value: "simple", short: "LQ", label: "Lite", price: "$14.99", desc: "Fast generation" },
-    { value: "hd", short: "HQ", label: "HD", price: "$19.99", desc: "High quality" },
-    { value: "hd_plus", short: "HQ+", label: "HD+", price: "$29.99", desc: "Premium quality" },
+    { value: "simple", short: "LQ", label: "Lite", mult: "1.0× minutes", desc: "Fast generation" },
+    { value: "hd", short: "HQ", label: "HD", mult: "1.4× minutes", desc: "High quality" },
+    { value: "hd_plus", short: "HQ+", label: "HD+", mult: "2.0× minutes", desc: "Premium quality" },
   ];
   const idx = Math.max(0, STOPS.findIndex((s) => s.value === value));
   const pct = (idx / (STOPS.length - 1)) * 100;
@@ -1804,7 +1858,7 @@ function QualitySlider({
         <div className="text-[10px] font-medium uppercase tracking-wider text-white/50">Quality</div>
         <div className="flex items-baseline gap-2">
           <span className="text-[11px] text-white/40">{STOPS[previewIdx].desc}</span>
-          <span className="text-sm font-semibold text-accent tabular-nums">{STOPS[previewIdx].price}</span>
+          <span className="text-xs font-semibold text-accent tabular-nums">{STOPS[previewIdx].mult}</span>
         </div>
       </div>
 

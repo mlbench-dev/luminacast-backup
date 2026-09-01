@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { ChevronDown, Loader2, Sparkles, Plus, X, Mic, MicOff } from "lucide-react";
 import { avatarLooksApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
+import { confirmAction } from "@/lib/swal";
 import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
 import type { AvatarLook } from "@/lib/types";
@@ -107,6 +108,23 @@ export function AvatarLookPicker({
   // request was to decide this "when the scene is created, not after," but
   // people will still want to change their mind about an already-generated
   // scene without regenerating it, so this is available on every look too.
+  const deleteMutation = useMutation({
+    mutationFn: (lookId: string) => avatarLooksApi.delete(avatarId, lookId),
+    onSuccess: (_res, lookId) => {
+      // If the deleted scene was selected on this block, drop the override.
+      if (value === lookId) onChange(null);
+      onLookCreated?.();
+      toast({ title: "Scene deleted" });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Couldn't delete scene",
+        description: err?.response?.data?.detail || err?.message || "Try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const toggleMicMutation = useMutation({
     mutationFn: ({ lookId, next }: { lookId: string; next: boolean }) =>
       avatarLooksApi.update(avatarId, lookId, { mic_visible: next }),
@@ -151,6 +169,20 @@ export function AvatarLookPicker({
             micVisible={look.mic_visible}
             onToggleMic={() =>
               toggleMicMutation.mutate({ lookId: look.id, next: !look.mic_visible })
+            }
+            onDelete={
+              look.is_default || look.is_original
+                ? undefined
+                : async () => {
+                    const ok = await confirmAction({
+                      title: "Delete this scene?",
+                      text: `"${look.name}" will be removed from every block using it. This can't be undone.`,
+                      confirmButtonText: "Delete",
+                      cancelButtonText: "Cancel",
+                      icon: "warning",
+                    });
+                    if (ok) deleteMutation.mutate(look.id);
+                  }
             }
           />
         ))}
@@ -271,6 +303,7 @@ function LookChip({
   size,
   micVisible,
   onToggleMic,
+  onDelete,
 }: {
   label: string;
   thumbUrl: string | null;
@@ -280,6 +313,8 @@ function LookChip({
   /** Only meaningful for a real generated look (has a thumbnail). */
   micVisible?: boolean;
   onToggleMic?: () => void;
+  /** Absent for the default/original look (can't be deleted). */
+  onDelete?: () => void;
 }) {
   const dim = size === "md" ? "h-52 w-52" : "h-36 w-36";
 
@@ -355,6 +390,21 @@ function LookChip({
           )}
         >
           {micVisible ? <Mic className="w-3 h-3" /> : <MicOff className="w-3 h-3" />}
+        </button>
+      )}
+      {/* Delete this scene — top-left, shown on hover so it doesn't crowd
+          the picker. Hidden for the default/original look. */}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          title="Delete scene"
+          className="absolute top-1 left-1 z-10 rounded-full p-1 bg-black/60 text-white/60 opacity-0 transition group-hover:opacity-100 hover:text-red-400"
+        >
+          <X className="w-3 h-3" />
         </button>
       )}
     </div>
