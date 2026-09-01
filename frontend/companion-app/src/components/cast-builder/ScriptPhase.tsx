@@ -330,6 +330,10 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   const queryClient = useQueryClient();
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [generating, setGenerating] = useState(false);
+  // True once this component has seen at least one block — lets the empty
+  // state tell "you deleted every block" apart from "generation failed / is
+  // still loading" (same blocks.length === 0, very different messages).
+  const blocksEverLoadedRef = useRef(false);
   // Drag-and-drop state. We split into TWO indices so the visual feedback
   // is rich without mutating the list mid-drag:
   //   dragSrcIdx: the block being dragged (renders semi-transparent + scaled)
@@ -468,6 +472,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   useEffect(() => {
     if (!freshCast?.blocks) return;
     const sorted = [...freshCast.blocks].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    if (sorted.length > 0) blocksEverLoadedRef.current = true;
     setBlocks((prev) => {
       const sameSet =
         prev.length > 0 &&
@@ -723,9 +728,12 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
   }, [focusBlockId, blocks]);
 
   const handleDeleteBlock = useCallback(async (blockId: string) => {
+    const isLastBlock = blocks.length <= 1;
     const ok = await confirmAction({
-      title: "Delete block?",
-      text: "This removes the script text and any generated audio.",
+      title: isLastBlock ? "Delete the last block?" : "Delete block?",
+      text: isLastBlock
+        ? "This empties your script. You can add a new block or regenerate afterwards."
+        : "This removes the script text and any generated audio.",
       confirmButtonText: "Delete",
       cancelButtonText: "Cancel",
       icon: "warning",
@@ -742,7 +750,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         variant: "destructive",
       });
     }
-  }, [cast.id]);
+  }, [cast.id, blocks.length]);
 
   const handleChangeBackground = useCallback(async (blockId: string, lookId: string) => {
     setBlocks(prev => prev.map(b => b.id === blockId ? { ...b, avatar_look_id: lookId || undefined } : b));
@@ -1200,15 +1208,40 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         </div>
       )}
 
-      {/* Empty state */}
-      {!generating && blocks.length === 0 && (
-        <div className="text-center py-12 space-y-4">
-          <p className="text-white/40 text-sm">Script generation failed or is still loading.</p>
-          <Button onClick={generateOutline} className="bg-accent hover:bg-accent/90">
-            <Wand2 className="w-4 h-4 mr-2" /> Retry Script Generation
-          </Button>
-        </div>
-      )}
+      {/* Empty state — two cases:
+          (a) the user deleted every block themselves → offer Add Block +
+              Regenerate, and don't call it a "failure";
+          (b) generation genuinely failed / hasn't arrived → Retry.
+          We know it's (a) if we've ever rendered a block this session, or the
+          cast is already past outline generation. */}
+      {!generating && blocks.length === 0 && (() => {
+        const s = (cast.status as string | undefined)?.toLowerCase();
+        const userEmptied =
+          blocksEverLoadedRef.current ||
+          (!!s && !["draft", "generating", "generation_failed", "template_select", "pending_payment"].includes(s));
+        return (
+          <div className="text-center py-12 space-y-4">
+            {userEmptied ? (
+              <>
+                <p className="text-white/40 text-sm">This script has no blocks.</p>
+                <div className="flex items-center justify-center gap-2">
+                  <AddBlockButton onAdd={handleAddBlock} />
+                  <Button onClick={generateOutline} variant="outline">
+                    <Wand2 className="w-4 h-4 mr-2" /> Regenerate script
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-white/40 text-sm">Script generation failed or is still loading.</p>
+                <Button onClick={generateOutline} className="bg-accent hover:bg-accent/90">
+                  <Wand2 className="w-4 h-4 mr-2" /> Retry Script Generation
+                </Button>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Script blocks */}
       {!generating && blocks.length > 0 && (
