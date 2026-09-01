@@ -401,49 +401,12 @@ async def list_review_queue(
         ]
     }
 
-class EstimateCostRequest(BaseModel):
-    duration_s: int
-    quality: str = "simple"
-    layout: str = "9:16"
-
-class EstimateCostResponse(BaseModel):
-    cost_cents: int
-    breakdown: dict
-
-@router.post("/estimate-cost", response_model=EstimateCostResponse)
-async def estimate_cost(
-    req: EstimateCostRequest,
-    user: User = Depends(get_current_user),
-    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
-):
-    """Live cost estimate: duration × quality multiplier × GPU rate."""
-    try:
-        # Base rate per second of video (in cents)
-        quality_multipliers = {"simple": 1.0, "hd": 1.4, "hd_plus": 2.0}
-        base_rate_per_second = 0.25  # $0.0025 per second base
-
-        multiplier = quality_multipliers.get(req.quality, 1.0)
-        duration_cost = req.duration_s * base_rate_per_second * multiplier
-
-        # Quality base fees
-        quality_fees = {"simple": 1499, "hd": 1999, "hd_plus": 2999}
-        base_fee = quality_fees.get(req.quality, 1499)
-
-        # Total: base fee + duration cost
-        total_cents = base_fee + int(duration_cost)
-
-        return EstimateCostResponse(
-            cost_cents=total_cents,
-            breakdown={
-                "base_fee_cents": base_fee,
-                "duration_cost_cents": int(duration_cost),
-                "quality_multiplier": multiplier,
-                "duration_s": req.duration_s,
-            },
-        )
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
-        raise HTTPException(500, "Failed to estimate cost")
+# NOTE: the legacy POST /casts/estimate-cost endpoint was removed — it
+# returned a flat "$14.99/$19.99/$29.99 base fee + GPU cents" number that no
+# billing path ever charged (real billing is metered in render MINUTES via
+# services/billing_service.compute_billable_minutes). It only ever produced a
+# misleading dollar figure in the Setup tab. The UI now shows the render-minute
+# multiplier instead.
 
 @router.get("", response_model=CastListResponse)
 async def list_casts(
