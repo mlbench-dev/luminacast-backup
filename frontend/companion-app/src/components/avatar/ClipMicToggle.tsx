@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Mic } from "lucide-react";
 import { avatarApi } from "@/lib/api";
 import { toast } from "@/hooks/useToast";
@@ -42,6 +42,16 @@ export function ClipMicToggle({
 }: ClipMicToggleProps) {
   const [enabled, setEnabled] = useState<boolean>(!!initialEnabled);
   const [saving, setSaving] = useState(false);
+
+  // The parent usually renders this before the avatar query has resolved, so
+  // `initialEnabled` starts false and then flips to the persisted value once
+  // the fetch lands. A plain useState(prop) would keep the stale `false` —
+  // making the toggle read OFF after a refresh even though it's saved ON.
+  // Re-sync whenever the persisted value changes (never during our own save).
+  useEffect(() => {
+    if (!saving) setEnabled(!!initialEnabled);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialEnabled]);
 
   const handleChange = async (next: boolean) => {
     if (!avatarId) return;

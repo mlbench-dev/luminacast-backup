@@ -1153,6 +1153,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
           avatarId={cast.avatar_id}
           initialEnabled={!!castAvatar?.clip_mic_enabled}
           onChange={(enabled) => {
+            // Keep the cached avatar in sync so the toggle survives a
+            // refresh / remount (it reads back from this query).
+            queryClient.invalidateQueries({ queryKey: ["avatar-status", cast.avatar_id] });
             toast({
               title: `Default mic style: ${enabled ? "clip mic" : "phone mic"}`,
               description: "Applies to every cast using this avatar (unless a scene sets its own). Regenerate TTS to apply to existing blocks here.",
