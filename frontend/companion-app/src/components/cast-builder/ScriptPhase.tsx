@@ -1224,9 +1224,11 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
             {userEmptied ? (
               <>
                 <p className="text-white/40 text-sm">This script has no blocks.</p>
-                <div className="flex items-center justify-center gap-2">
-                  <AddBlockButton onAdd={handleAddBlock} />
-                  <Button onClick={generateOutline} variant="outline">
+                <div className="mx-auto flex max-w-xs flex-col items-stretch gap-2 sm:max-w-md sm:flex-row sm:justify-center">
+                  <div className="w-full sm:w-56">
+                    <AddBlockButton onAdd={handleAddBlock} />
+                  </div>
+                  <Button onClick={generateOutline} variant="outline" className="shrink-0">
                     <Wand2 className="w-4 h-4 mr-2" /> Regenerate script
                   </Button>
                 </div>
@@ -2166,7 +2168,7 @@ function AddBlockButton({
   return (
     <div
       ref={ref}
-      className="relative"
+      className="relative w-full"
       data-testid="add-block-track-tile"
     >
       <button
