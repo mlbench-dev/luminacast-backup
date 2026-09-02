@@ -22,6 +22,7 @@ import {
 } from "@/lib/editorStarterMapping";
 import type { UndoableState } from "@/components/cast-builder/editor-starter/state/types";
 import { LuminacastEditor } from "@/components/cast-builder/editor-starter";
+import { RenderLockBanner } from "@/components/cast-builder/RenderLockBanner";
 import type { Cast } from "@/lib/types";
 import { Loader2, ExternalLink, RefreshCw } from "lucide-react";
 import { toast } from "@/hooks/useToast";
@@ -31,6 +32,11 @@ interface ArrangePhaseProps {
   cast: Cast;
   onEditScript?: () => void;
   onEdited?: () => void;
+  // True while a render is actively queued/baking/composing for this cast.
+  // Makes the timeline editor read-only so a mid-render edit can't race the
+  // render task's live reads — same treatment as the Setup / Script tabs.
+  renderInProgress?: boolean;
+  onCancelRender?: () => void;
 }
 
 export interface ArrangePhaseHandle {
@@ -49,7 +55,7 @@ const AUTO_SAVE_DEBOUNCE_MS = 1500;
  *  Matches the historical MUSIC_DEFAULT_VOLUME and editorStarterMapping. */
 const AUDIBLE_MUSIC_BED_DEFAULT = 0.15;
 
-export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(function ArrangePhase({ cast, onEditScript, onEdited }, ref) {
+export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(function ArrangePhase({ cast, onEditScript, onEdited, renderInProgress, onCancelRender }, ref) {
   const navigate = useNavigate();
   const [initialState, setInitialState] = useState<UndoableState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -518,6 +524,16 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
 
   return (
     <div className="h-full flex flex-col">
+      {renderInProgress && <RenderLockBanner onCancelRender={onCancelRender} />}
+      {/* Everything below is made read-only while a render is running so a
+          mid-render timeline edit can't race the render task (matches the
+          Setup / Script tabs). */}
+      <div
+        className={
+          "flex-1 min-h-0 flex flex-col" + (renderInProgress ? " opacity-60" : "")
+        }
+        inert={renderInProgress}
+      >
       {/* Phase 2.5.2 — Stale audio notification banner */}
       {audioStaleSince && !staleDismissed && (
         <div className="flex items-center gap-3 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-sm text-amber-200 shrink-0">
@@ -601,6 +617,7 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
           onUndoableStateChange={handleStateChange}
           musicVolume={hasMusic ? musicVolume : undefined}
         />
+      </div>
       </div>
     </div>
   );

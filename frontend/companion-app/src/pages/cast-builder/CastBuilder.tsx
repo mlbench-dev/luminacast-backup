@@ -806,7 +806,7 @@ export function CastBuilderPage() {
               </div>
             }
           >
-            <ArrangePhase ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} onEdited={() => {
+            <ArrangePhase ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} renderInProgress={renderStatus.status === "rendering"} onCancelRender={handleCancelRender} onEdited={() => {
               editsSinceRenderRef.current += 1;
               // Instant UI flip: if showing "Render Ready" and user edits, switch to idle immediately
               setRenderStatus((prev) => {
