@@ -34,7 +34,10 @@ from services.cast_templates import get_template
 
 router = APIRouter()
 
-_VALID_VOICING_MODES = ("tts_dialogue", "prosody_only", "motion_sfx_only")
+# "prosody_only" was removed — the whole prosody family is deferred to a later
+# phase. A legacy or stray "prosody_only" value now clamps to "tts_dialogue"
+# (the renderer already treated the two identically).
+_VALID_VOICING_MODES = ("tts_dialogue", "motion_sfx_only")
 
 def _enrich_persona_visual(persona: dict, avatar) -> None:
     """Surface the avatar's visual/physical description into the persona dict

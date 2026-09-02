@@ -337,7 +337,10 @@ def _is_third_person_narrator(script: str) -> bool:
         return False
 
 
-_VALID_VOICING_MODES = ("tts_dialogue", "prosody_only", "motion_sfx_only")
+# "prosody_only" removed (prosody family deferred). Legacy/stray values clamp
+# to "tts_dialogue" via _normalize_voicing_mode — the render path below already
+# handled the two identically.
+_VALID_VOICING_MODES = ("tts_dialogue", "motion_sfx_only")
 
 
 def _script_references_product(
@@ -5474,8 +5477,8 @@ async def _render_async(task, render_id: str):
                     # blocks regardless of voicing_mode — TTS becomes a
                     # paired voiceover audio track muxed onto the motion
                     # clip. The voicing_mode still distinguishes silent
-                    # beats (motion_sfx_only / prosody_only with empty
-                    # audio) from dialogue blocks.
+                    # beats (motion_sfx_only, or an empty-script action
+                    # block) from dialogue blocks.
                     block_voicing_mode = _normalize_voicing_mode(
                         getattr(blk, "voicing_mode", None) if blk else None
                     )
@@ -5898,7 +5901,6 @@ async def _render_async(task, render_id: str):
                 # voicing_mode behavior matrix (no lipsync anywhere):
                 #   tts_dialogue   -> mux TTS audio over the motion clip
                 #                     (subject to voiceover_enabled toggle).
-                #   prosody_only   -> mux the single prosody beat audio.
                 #   motion_sfx_only -> silent; the audio plan covers SFX.
                 #
                 # Runtime guard: Opus is instructed to use first-person
@@ -5943,8 +5945,6 @@ async def _render_async(task, render_id: str):
                     or user_disabled_voiceover
                 ):
                     audio_url_for_mux = None
-                elif block_voicing_mode == "prosody_only":
-                    audio_url_for_mux = audio_url or None
                 else:
                     audio_url_for_mux = audio_url or None
 

@@ -209,11 +209,12 @@ class Block(Base):
 
     # voicing_mode (avatar_action / generated_video blocks):
     #   tts_dialogue   — TTS + lipsync (default; legacy behavior).
-    #   prosody_only   — TTS plays but lipsync is skipped (single
-    #                    non-verbal beat like [laugh] / [gasp]; mouth
-    #                    stays closed because it would look weird).
     #   motion_sfx_only — no TTS, no lipsync; the block plays silent and
     #                    the audio plan covers ambient/SFX.
+    # ("prosody_only" was a third mode for a single non-verbal beat like
+    #  [laugh]/[gasp] — removed with the rest of the prosody family, to
+    #  return in a later phase. Legacy rows carrying it normalize to
+    #  tts_dialogue.)
     # Persisted from the Opus outline; the renderer reads it in the
     # avatar_action branch.
     voicing_mode = Column(

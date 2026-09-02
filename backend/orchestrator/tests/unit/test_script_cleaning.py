@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import pytest
 
-from utils.script_cleaning import strip_script_markers, clean_script_tokens
+from utils.script_cleaning import (
+    strip_script_markers,
+    clean_script_tokens,
+    strip_prosody_pause_markers,
+)
 
 
 @pytest.mark.parametrize(
@@ -49,6 +53,42 @@ def test_clean_script_tokens_drops_empty():
 
 def test_clean_script_tokens_no_markers():
     assert clean_script_tokens("one two three") == ["one", "two", "three"]
+
+
+# ── strip_prosody_pause_markers — removes deferred (excited)/[pause] tags,
+#    keeps [sfx:NAME] and genuine parenthetical asides ────────────────────
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("(excited) This is amazing!", "This is amazing!"),
+        ("Honestly (whispering) you need this", "Honestly you need this"),
+        ("Wait for it [pause] here it comes", "Wait for it here it comes"),
+        ("Hold [pause:1.5] now look", "Hold now look"),
+        ("Big (super happy) news today", "Big news today"),
+        # bare non-verbal beats (the old "prosody_only" tags)
+        ("So good [laugh] you have to try it", "So good you have to try it"),
+        ("[gasp] no way", "no way"),
+        ("hmm [sigh] anyway", "hmm anyway"),
+        ("case-insensitive (EXCITED) works [PAUSE] too", "case-insensitive works too"),
+        # tidy spacing before punctuation left by a trailing tag
+        ("This $7 cream (excited) ! Right now.", "This $7 cream! Right now."),
+        # [sfx:...] is preserved
+        ("[sfx:record_scratch] Okay wait. (excited) This cream [sfx:sparkle] won.",
+         "[sfx:record_scratch] Okay wait. This cream [sfx:sparkle] won."),
+        # a real parenthetical aside is NOT a prosody tag — leave it
+        ("It works (and yes, really) every time", "It works (and yes, really) every time"),
+        # nothing to strip
+        ("Plain line, no tags.", "Plain line, no tags."),
+        ("", ""),
+    ],
+)
+def test_strip_prosody_pause_markers(raw, expected):
+    assert strip_prosody_pause_markers(raw) == expected
+
+
+def test_strip_prosody_pause_markers_none_safe():
+    assert strip_prosody_pause_markers(None) == ""  # type: ignore[arg-type]
 
 
 def _build_fallback_caption_words(script_text: str, duration: float) -> list[dict]:

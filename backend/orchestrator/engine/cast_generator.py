@@ -3534,10 +3534,9 @@ CATEGORY_SCRIPT_RULES: dict[str, str] = {
         "the same vocabulary, showing where the motion lands. "
         "The user can later edit either frame prompt in the editor's frame "
         "carousel and click Regenerate. "
-        "VOICING MODE (required field `voicing_mode`): pick one of three modes: "
+        "VOICING MODE (required field `voicing_mode`): pick one of two modes: "
         "(1) tts_dialogue — voiceover narrates the action; script is non-empty, ≤18s; "
-        "(2) prosody_only — a single prosody beat like '[laugh]', '[gasp]', '[sigh]' and nothing else; "
-        "(3) motion_sfx_only — script MUST be \"\" (empty) and the block carries a `motion_sfx[]` array "
+        "(2) motion_sfx_only — script MUST be \"\" (empty) and the block carries a `motion_sfx[]` array "
         "(cues like footstep_soft, fabric_rustle, object_pickup, breath_out, hand_clap…) — "
         "the *movement* makes the sound, no TTS is rendered. Use motion_sfx_only for "
         "fashion walks, transitions, product handling, or any visual-first beat. "
@@ -3545,7 +3544,7 @@ CATEGORY_SCRIPT_RULES: dict[str, str] = {
         "NEVER lip-synced — the lipsync engines distort moving subjects. If the block "
         "has dialogue, the renderer plays it as a paired voiceover audio track over the "
         "motion clip. Emit `voiceover_enabled`: true when the dialogue should play over "
-        "the action (DEFAULT for any tts_dialogue/prosody_only block), false for pure "
+        "the action (DEFAULT for any tts_dialogue block), false for pure "
         "silent visual beats where the line should be dropped. The user can override "
         "this in the Script step."
     ),
@@ -3571,8 +3570,7 @@ CATEGORY_SCRIPT_RULES: dict[str, str] = {
         "overlay (max 10 words) OR a short voiceover line if the scene "
         "benefits from narration. "
         "VOICING MODE (required field `voicing_mode`): pick "
-        "tts_dialogue (script non-empty, ≤18s narration over the generated visual), "
-        "prosody_only (a single prosody marker like '[gasp]'), or "
+        "tts_dialogue (script non-empty, ≤18s narration over the generated visual) or "
         "motion_sfx_only (script MUST be \"\" and `motion_sfx[]` carries ≥1 cue — "
         "use this when the generated scene depicts a discrete physical action whose "
         "foley should drive the audio rather than dialogue)."
@@ -3937,6 +3935,14 @@ async def generate_scripts(
         script_text = script_text.replace("[product_name]", product_name)
         script_text = script_text.replace("[Product Name]", product_name)
 
+        # Belt-and-suspenders: the prompt no longer asks for (excited)-style
+        # prosody tags or [pause] (delivery support is a later phase, and the
+        # voice engine strips them anyway), but the model still emits one now
+        # and then from training priors. Drop them from the stored script so
+        # they don't reappear in the editor. [sfx:NAME] markers are kept.
+        from utils.script_cleaning import strip_prosody_pause_markers
+        script_text = strip_prosody_pause_markers(script_text)
+
         # Post-generation HARD enforcement: if this block's script exceeds
         # the per-block word budget at SPEAKING_WPM by >SCRIPT_OVERSHOOT_SLACK,
         # trim from the END (sentence-by-sentence) until it fits. This is the
@@ -4000,7 +4006,8 @@ async def generate_scripts(
 def _trim_to_word_cap(text: str, max_words: int) -> str:
     """Trim text to ≤max_words by dropping trailing sentences. Falls back to a
     hard word-slice if even one sentence exceeds the cap (rare). Preserves
-    prosody markers — they don't count toward the budget."""
+    bracket/paren direction markers (e.g. [sfx:NAME]) — they don't count
+    toward the budget."""
     import re as _re
     if max_words <= 0 or _count_words(text) <= max_words:
         return text
@@ -4014,8 +4021,8 @@ def _trim_to_word_cap(text: str, max_words: int) -> str:
         out.append(s)
         used += w
     if not out:
-        # Single overly-long sentence — emergency word-slice. Strip prosody
-        # before counting so we don't waste budget on markers.
+        # Single overly-long sentence — emergency word-slice. Strip direction
+        # markers before counting so we don't waste budget on them.
         words = text.split()
         clean_words = [
             w for w in words
@@ -4023,8 +4030,8 @@ def _trim_to_word_cap(text: str, max_words: int) -> str:
         ]
         if len(clean_words) <= max_words:
             return text
-        # Take the first max_words actual words, preserving prosody markers
-        # that fall before them.
+        # Take the first max_words actual words, preserving any direction
+        # markers that fall before them.
         kept = []
         kept_count = 0
         for w in words:
