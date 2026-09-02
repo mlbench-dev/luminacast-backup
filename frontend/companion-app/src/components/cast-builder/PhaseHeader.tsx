@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { cn } from "@/lib/cn";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 
@@ -29,6 +30,18 @@ interface PhaseHeaderProps {
 export function PhaseHeader({ currentPhase, castName, onPhaseClick, actions, renderState = "none" }: PhaseHeaderProps) {
   const currentIdx = PHASES.findIndex((p) => p.key === currentPhase);
 
+  // The pill strip scrolls horizontally when it can't fit (compact viewports).
+  // Keep the meaningful pill in view: the "Ready" step whenever a render exists
+  // (its colour is the render status), otherwise the current step.
+  const stripRef = useRef<HTMLDivElement>(null);
+  const focusIdx = renderState === "none" ? currentIdx : PHASES.length - 1;
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const el = strip.querySelector<HTMLElement>(`[data-phase-idx="${focusIdx}"]`);
+    el?.scrollIntoView({ inline: "end", block: "nearest" });
+  }, [focusIdx]);
+
   return (
     // The actions (Finalize & Render, kebab, …) must never leave the viewport,
     // so they stay shrink-0 and everything to their left is allowed to give:
@@ -45,7 +58,10 @@ export function PhaseHeader({ currentPhase, castName, onPhaseClick, actions, ren
           {castName}
         </span>
       )}
-      <div className="flex items-center gap-1 flex-1 min-w-0 overflow-hidden">
+      <div
+        ref={stripRef}
+        className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         {PHASES.map((phase, idx) => {
           const isComplete = idx < currentIdx;
           const isCurrent = idx === currentIdx;
@@ -59,11 +75,11 @@ export function PhaseHeader({ currentPhase, castName, onPhaseClick, actions, ren
           const renderReady = isReadyStep && renderState === "ready";
           const renderStale = isReadyStep && renderState === "stale";
           return (
-            <div key={phase.key} className="flex items-center gap-1">
+            <div key={phase.key} data-phase-idx={idx} className="flex items-center gap-1 shrink-0">
               {idx > 0 && (
                 <div
                   className={cn(
-                    "w-4 md:w-6 h-px shrink-0",
+                    "w-3 md:w-5 lg:w-6 h-px shrink-0",
                     renderReady && idx === PHASES.length - 1 ? "bg-emerald-500" :
                     renderStale && idx === PHASES.length - 1 ? "bg-amber-400" :
                     isComplete ? "bg-green-500" : "bg-white/20"
@@ -81,7 +97,7 @@ export function PhaseHeader({ currentPhase, castName, onPhaseClick, actions, ren
                       : undefined
                 }
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors",
+                  "flex items-center gap-1.5 shrink-0 whitespace-nowrap px-2.5 sm:px-3 py-1 rounded-full text-xs font-medium transition-colors",
                   renderReady && "bg-emerald-500/20 text-emerald-400",
                   renderStale && "bg-amber-500/15 text-amber-400",
                   !renderReady && !renderStale && isComplete && "bg-green-500/20 text-green-400",

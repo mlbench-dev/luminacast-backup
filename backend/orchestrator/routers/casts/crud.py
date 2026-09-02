@@ -185,6 +185,18 @@ async def create_cast(
     quality_prices = {"simple": 1499, "hd": 1999, "hd_plus": 2999}
     fee = quality_prices.get(req.quality, 1499)
 
+    # A picked "custom" background track — the SetupPhase music picker sends
+    # url/mood at create time. This handler used to ignore them entirely, so
+    # the pick was lost the moment the cast reloaded ("no track selected").
+    # Re-host an external URL (Mubert generations expire) so the render can
+    # always fetch it.
+    bg_music_url = req.background_music_url
+    if bg_music_url:
+        from services.music_library import rehost_external_music_url
+        bg_music_url = await rehost_external_music_url(
+            bg_music_url, owner_id=ctx.workspace_owner_id
+        )
+
     cast = Cast(
         id=cast_id,
         user_id=ctx.workspace_owner_id,        avatar_id=req.avatar_id,
@@ -216,9 +228,13 @@ async def create_cast(
         # cast for the outline generator. Wiring into the prompt itself is
         # a follow-up — column lands now so client + DB are in sync.
         production_level=req.production_level or "standard",
-        # Music handling: "off" | "auto" | "track_id:<id>". Default "auto".
+        # Music handling: "off" | "auto" | "custom" | "track_id:<id>". "custom"
+        # carries an explicit picked track in the fields below.
         music_track_choice=req.music_track_choice or "auto",
         music_volume=req.music_volume,
+        background_music_url=bg_music_url,
+        background_music_mood=req.background_music_mood,
+        background_music_tags=req.background_music_tags,
         broll_media_source=req.broll_media_source or "stock",
         # PR #162 — Stage-1 LIVE/Recorded toggle payload. Persisted as-is; both
         # nullable. The outline generator reads live_mode_defaults; the b-roll

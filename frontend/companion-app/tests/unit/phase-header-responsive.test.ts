@@ -33,8 +33,22 @@ describe("PhaseHeader — responsive header", () => {
     expect(cls).not.toContain("shrink-0");
   });
 
-  it("phase-pill strip clips instead of pushing siblings", () => {
-    expect(src).toMatch(/flex-1 min-w-0 overflow-hidden/);
+  it("phase-pill strip scrolls (hidden bar) instead of pushing siblings or clipping the last pill", () => {
+    // flex-1 min-w-0 so it yields space; overflow-x-auto (not -hidden) so the
+    // last pill ("Ready") stays reachable; scrollbar hidden both engines.
+    expect(src).toMatch(/flex-1 min-w-0 overflow-x-auto/);
+    expect(src).toContain("[scrollbar-width:none]");
+    expect(src).toContain("[&::-webkit-scrollbar]:hidden");
+  });
+
+  it("keeps the meaningful pill in view and each pill un-squished", () => {
+    // pills never shrink — the strip scrolls instead
+    expect(src).toMatch(/data-phase-idx=\{idx\} className="[^"]*\bshrink-0\b/);
+    expect(src).toMatch(/whitespace-nowrap[^"]*\bshrink-0\b|\bshrink-0\b[^"]*whitespace-nowrap/);
+    // Ready pill (last) is scrolled into view whenever a render exists, else
+    // the current step
+    expect(src).toContain("scrollIntoView");
+    expect(src).toMatch(/renderState === "none" \? currentIdx : PHASES\.length - 1/);
   });
 
   it("actions stay pinned (shrink-0)", () => {

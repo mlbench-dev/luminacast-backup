@@ -15,6 +15,7 @@ import {REQUIRED_WIDTH_BETWEEN_FADE_HANDLES} from '../timeline-item-extend-handl
 import {FADE_HANDLE_WIDTH} from './fade-drag-handles';
 import {getFadeValue} from './get-fade-value';
 import {FadeMediaType, FadeType} from './item-fade-handles';
+import {getCanFadeAudio, getCanFadeVisual} from '../../../utils/fade';
 
 const clampFadeDuration = (duration: number, maxDuration: number): number => {
 	return Math.max(0, Math.min(maxDuration, duration));
@@ -152,15 +153,18 @@ export const useFadeDrag = ({
 				setState({
 					update: (state) => {
 						return changeItem(state, item.id, (prevItem) => {
-							if (
-								prevItem.type !== 'audio' &&
-								prevItem.type !== 'video' &&
-								prevItem.type !== 'image' &&
-								prevItem.type !== 'text' &&
-								prevItem.type !== 'solid' &&
-								prevItem.type !== 'gif'
-							) {
-								throw new Error('expected fadeable item');
+							// Use the canonical fade-capability maps (utils/fade)
+							// rather than a hand-rolled type list — the list here
+							// was never updated when 'captions' became its own
+							// item type, so dragging a caption's fade handle
+							// threw 'expected fadeable item' and crashed the
+							// editor even though captions ARE visually fadeable.
+							const canFade =
+								fadeType === 'audio'
+									? getCanFadeAudio(prevItem)
+									: getCanFadeVisual(prevItem);
+							if (!canFade) {
+								throw new Error(`expected ${fadeType} fadeable item`);
 							}
 
 							if (
@@ -185,6 +189,7 @@ export const useFadeDrag = ({
 		[
 			element,
 			fadeProperty,
+			fadeType,
 			fps,
 			item.id,
 			setState,
