@@ -196,6 +196,31 @@ describe("castToEditorStarterTimeline", () => {
     expect(pipTrack.items).not.toContain("v1_b_002");
   });
 
+  it("never lays b-roll over an action block (its own clip is the visual)", () => {
+    const castWithAction: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          category: "avatar_action",
+          // a legacy action block still carrying b-roll must not overlay it
+          parallel_media: [
+            { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 3 },
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+    const { state } = castToEditorStarterTimeline(castWithAction, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    expect(state.tracks.map((t) => t.id)).not.toContain("track-broll");
+    for (const item of Object.values(state.items)) {
+      expect(item.metadata?.track_type).not.toBe("parallel_media");
+    }
+  });
+
   it("keeps a full-frame cast on just video + audio tracks (no pip track)", () => {
     const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
       avatarFaceKey: AVATAR_FACE_KEY,

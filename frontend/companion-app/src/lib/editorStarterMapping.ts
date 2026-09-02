@@ -34,7 +34,7 @@ import type { CaptionsItem } from "@/components/cast-builder/editor-starter/item
 import type { Caption } from "@remotion/captions";
 import { CAPTION_PRESETS, presetPositionFraction } from "./captionPresets";
 import { cdnUrl } from "./cdn";
-import { getCategoryInfo } from "@/lib/blockCategories";
+import { getCategoryInfo, blockOwnsItsVisual } from "@/lib/blockCategories";
 
 // Re-export BlockRegion for backward compat with existing callers
 export interface BlockRegion {
@@ -768,7 +768,19 @@ export function castToEditorStarterTimeline(
           duration_s?: number | null;
         }>
       | undefined;
-    if (Array.isArray(parallelMedia) && parallelMedia.length > 0) {
+    // An action / motion block's own generated clip IS its visual — never
+    // overlay b-roll on it (it would just cover the action). Defensive: the
+    // backend also strips parallel_media from these on save/create, this
+    // catches any legacy block that still carries it.
+    const blockOwnsVisual = blockOwnsItsVisual(
+      block.category,
+      (block as any).render_mode,
+    );
+    if (
+      Array.isArray(parallelMedia) &&
+      parallelMedia.length > 0 &&
+      !blockOwnsVisual
+    ) {
       // Compute default per-item slot when offsets are missing.
       const slot = dur / parallelMedia.length;
       // Safety net for casts generated BEFORE the outline b-roll normaliser:

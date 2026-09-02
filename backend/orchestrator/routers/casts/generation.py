@@ -31,6 +31,7 @@ from schemas.cast import (
 from routers.auth import get_current_user, WorkspaceContext, require_role, require_owner
 from services import audit_log
 from services.cast_templates import get_template
+from utils.block_visual import block_owns_its_visual
 
 router = APIRouter()
 
@@ -832,8 +833,14 @@ async def generate_smart_outline_endpoint(
             stock_media_pexels_id=str(s.get("stock_media_pexels_id")) if s.get("stock_media_pexels_id") else None,
             # AI-suggested parallel b-roll — the auto_populate step writes
             # one parallel_media item for avatar/PIP blocks so the editor
-            # shows a suggested visual the moment the script loads.
-            parallel_media=s.get("parallel_media"),
+            # shows a suggested visual the moment the script loads. Never on
+            # an action/motion block: its own generated clip is the visual, a
+            # b-roll overlay would just hide the action.
+            parallel_media=(
+                None
+                if block_owns_its_visual(s.get("category"), s.get("render_mode"))
+                else s.get("parallel_media")
+            ),
             # Inherit the cast-wide background look picked at SetupPhase.
             # The user can still override per-block in ScriptPhase.
             avatar_look_id=cast.default_avatar_look_id,

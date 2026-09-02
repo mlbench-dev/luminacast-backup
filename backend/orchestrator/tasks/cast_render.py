@@ -3606,6 +3606,11 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
             # Track-type hint for the compositor
             if meta.get("track_type"):
                 overlay["track_type"] = meta["track_type"]
+            # Block this overlay belongs to — lets the compose worker pair a
+            # full-frame b-roll with its PIP/talking-head block so the face is
+            # composited OVER the b-roll instead of hidden behind it.
+            if meta.get("block_id"):
+                overlay["block_id"] = meta["block_id"]
 
             overlays.append(overlay)
             accepted += 1
@@ -7349,6 +7354,10 @@ async def _render_async(task, render_id: str):
                     "url": _vurl,
                     "s": _s, "e": _e,
                     "block_id": _block_id,
+                    # Carry the block's PIP layout so the compose worker knows
+                    # to shrink this clip into a corner window (it otherwise
+                    # renders every baked clip full-frame).
+                    "pip_layout": _meta.get("pip_layout") or "fullscreen",
                 })
             elif _meta.get("paired_video_element_id"):
                 _src = (_el.get("props") or {}).get("src") or ""
@@ -7358,6 +7367,64 @@ async def _render_async(task, render_id: str):
                         "s": _s, "e": _e,
                         "block_id": _block_id,
                     })
+
+    # ── PIP / talking-head geometry for the compose worker ──────────────────
+    # worker_ffmpeg_compose has no PIP support — it lays every baked clip
+    # full-frame and then paints b-roll on top, which hides the talking head.
+    # Resolve each PIP block's corner-window rect here (canvas pixels, the
+    # same space the worker composes in) and pair it with its full-frame
+    # b-roll so the worker builds face-OVER-background instead.
+    try:
+        from services.timeline_builder import pip_geometry, is_pip_layout
+
+        _bg_by_block: dict[str, dict] = {}
+        for _ov in overlay_elements:
+            if _ov.get("type") != "video":
+                continue
+            _bid = _ov.get("block_id")
+            if not _bid or _bid in _bg_by_block:
+                continue
+            _ow = _ov.get("width") or cw_for_overlays
+            _oh = _ov.get("height") or ch_for_overlays
+            _ox = _ov.get("x") or 0
+            _oy = _ov.get("y") or 0
+            if (
+                _ow >= cw_for_overlays * 0.95
+                and _oh >= ch_for_overlays * 0.95
+                and _ox <= cw_for_overlays * 0.05
+                and _oy <= ch_for_overlays * 0.05
+            ):
+                _bg_by_block[_bid] = _ov
+
+        for _vt in compose_video_tracks:
+            _pl = _vt.get("pip_layout") or "fullscreen"
+            if not is_pip_layout(_pl):
+                continue
+            _g = pip_geometry(_pl, cw_for_overlays, ch_for_overlays)
+            if not _g.get("visible") or _g.get("w", 0) <= 0 or _g.get("h", 0) <= 0:
+                continue
+            _vt["pip"] = {
+                "x": int(_g["x"]), "y": int(_g["y"]),
+                "w": int(_g["w"]), "h": int(_g["h"]),
+                "layout": _g["pip_layout"],
+            }
+            _bg = _bg_by_block.get(_vt.get("block_id") or "")
+            if _bg and _bg.get("src"):
+                _vt["pip"]["bg_src"] = _bg["src"]
+                # Worker drops this from the top overlay pass — it's now the
+                # PIP background, baked in behind the face.
+                _bg["_pip_bg"] = True
+        _n_pip = sum(1 for _vt in compose_video_tracks if _vt.get("pip"))
+        if _n_pip:
+            logger.info(
+                "Render %s: %d PIP block(s) resolved for compose "
+                "(%d with a b-roll background)",
+                render_id, _n_pip,
+                sum(1 for _vt in compose_video_tracks if (_vt.get("pip") or {}).get("bg_src")),
+            )
+    except Exception as _pip_exc:
+        sentry_sdk.capture_exception(_pip_exc)
+        logger.warning("Render %s: PIP geometry resolve failed (%s)", render_id, _pip_exc)
 
     composition_payload = {
         "render_id": render_id,
