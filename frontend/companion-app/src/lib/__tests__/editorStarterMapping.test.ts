@@ -151,6 +151,58 @@ describe("castToEditorStarterTimeline", () => {
     expect(state.tracks[1].items).toHaveLength(3);
   });
 
+  it("stacks a talking-head PIP avatar ABOVE its own b-roll background", () => {
+    // Regression: a pip_talking_head block with b-roll behind it put the
+    // avatar on track-video (under track-broll), so the b-roll background
+    // painted over the PIP and the head disappeared.
+    const castWithPip: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          // b-roll behind a corner talking-head window
+          category: "pip_talking_head",
+          parallel_media: [
+            { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 3 },
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+
+    const { state } = castToEditorStarterTimeline(castWithPip, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+
+    const ids = state.tracks.map((t) => t.id);
+    const pipIdx = ids.indexOf("track-pip-avatar");
+    const brollIdx = ids.indexOf("track-broll");
+    const videoIdx = ids.indexOf("track-video");
+
+    expect(pipIdx).toBeGreaterThanOrEqual(0);
+    expect(brollIdx).toBeGreaterThanOrEqual(0);
+    // Layers paints tracks in REVERSED array order, so a lower index paints
+    // last = on top. The PIP avatar must come before the b-roll.
+    expect(pipIdx).toBeLessThan(brollIdx);
+
+    // The PIP block's avatar item lives on the pip track, not track-video.
+    const pipTrack = state.tracks[pipIdx];
+    const videoTrack = state.tracks[videoIdx];
+    expect(pipTrack.items).toContain("v1_b_001");
+    expect(videoTrack.items).not.toContain("v1_b_001");
+    // A non-PIP block's avatar stays on track-video.
+    expect(videoTrack.items).toContain("v1_b_002");
+    expect(pipTrack.items).not.toContain("v1_b_002");
+  });
+
+  it("keeps a full-frame cast on just video + audio tracks (no pip track)", () => {
+    const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    expect(state.tracks.map((t) => t.id)).not.toContain("track-pip-avatar");
+  });
+
   it("sets correct timing in frames (fps=30)", () => {
     const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
       avatarFaceKey: AVATAR_FACE_KEY,

@@ -1190,7 +1190,17 @@ def _rewrite_mux_audio_to_lipsync(
         for el in track.get("elements") or []:
             if not isinstance(el, dict):
                 continue
-            bid = (el.get("metadata") or {}).get("block_id") or ""
+            meta = el.get("metadata") or {}
+            # Only the block's spoken VOICE follows the lipsync driver. SFX
+            # accents and per-block music also carry the block_id, but
+            # repointing their src to the voice URL both loses the effect and
+            # doubles that block's narration in the mix ("two voices at once"
+            # exactly where the SFX should have been).
+            if (meta.get("kind") or "").lower() in ("sfx", "music"):
+                continue
+            if (meta.get("track_type") or "").lower() in ("audio_sfx", "audio_music"):
+                continue
+            bid = meta.get("block_id") or ""
             driver_url = lipsync_audio_by_block.get(bid)
             if not driver_url:
                 continue
@@ -1228,7 +1238,12 @@ async def _assert_lipsync_mux_audio_identity(
     tol_s = _lipsync_audio_drift_max_s()
     mux_by_block: dict[str, str] = {}
     for el in _audio_track_elements(timeline):
-        bid = (el.get("metadata") or {}).get("block_id") or ""
+        meta = el.get("metadata") or {}
+        if (meta.get("kind") or "").lower() in ("sfx", "music"):
+            continue
+        if (meta.get("track_type") or "").lower() in ("audio_sfx", "audio_music"):
+            continue
+        bid = meta.get("block_id") or ""
         if bid and bid not in mux_by_block:
             mux_by_block[bid] = (el.get("props") or {}).get("src") or ""
 

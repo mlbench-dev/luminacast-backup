@@ -172,8 +172,15 @@ export function castToEditorStarterTimeline(
   const musicTrackId = "track-music";
   const sfxTrackId = "track-sfx";
   const brollTrackId = "track-broll";
+  // Talking-head / PIP avatar sits in a corner window ON TOP of that block's
+  // background b-roll — the opposite of a full-frame avatar_speaking block
+  // where b-roll covers the (voice-only) avatar. It therefore needs its own
+  // track placed ABOVE track-broll in the stacking order below; on track-video
+  // the b-roll background painted over it and the head vanished.
+  const pipAvatarTrackId = "track-pip-avatar";
 
   const videoTrackItemIds: string[] = [];
+  const pipAvatarTrackItemIds: string[] = [];
   const audioTrackItemIds: string[] = [];
   const musicTrackItemIds: string[] = [];
   const sfxTrackItemIds: string[] = [];
@@ -640,7 +647,10 @@ export function castToEditorStarterTimeline(
         };
         items[snapshotItemId] = imageItem;
       }
-      videoTrackItemIds.push(snapshotItemId);
+      // PIP / talking-head avatars go on their own track that stacks above the
+      // b-roll background (see pipAvatarTrackId); a full-frame avatar stays on
+      // track-video, under the b-roll that's meant to cover it.
+      (isAnyPip ? pipAvatarTrackItemIds : videoTrackItemIds).push(snapshotItemId);
     } else if (isVoiceover && voiceoverPlaceholderSrc) {
       // Voiceover placeholder V1 — invisible (opacity 0), full-canvas,
       // pinned to the same time range as A1 so the bonded pair lines up.
@@ -1525,9 +1535,10 @@ export function castToEditorStarterTimeline(
   // want, top to bottom:
   //    1. Captions (always readable over everything)
   //    2. Product images / chips
-  //    3. B-roll (plays over the avatar for the same block)
-  //    4. Avatar (V1 video face)
-  //    5. Audio (no visual, irrelevant for stacking)
+  //    3. PIP / talking-head avatar (corner window over its own b-roll bg)
+  //    4. B-roll (plays over a FULL-FRAME avatar for the same block)
+  //    5. Avatar (V1 video face — full-frame)
+  //    6. Audio (no visual, irrelevant for stacking)
   // Any other overlays the user adds default to the video track — placing
   // the avatar track below products keeps avatar from covering them and
   // matches the 'avatar in the back, product chip on top of avatar' layout
@@ -1536,13 +1547,18 @@ export function castToEditorStarterTimeline(
   // avatar item's exact from/duration range for that block, and every item
   // in one TimelineTrack renders at the same top/height — sharing a track
   // would make the avatar clip an invisible drag-collision blocker sitting
-  // directly under the B-roll clip.
+  // directly under the B-roll clip. The PIP avatar is split off ABOVE b-roll
+  // for the inverse reason: on a talking-head block the b-roll is the
+  // background and the head must stay visible over it.
   const tracks: TrackType[] = [
     ...(captionTrackItemIds.length > 0
       ? [{ id: captionTrackId, items: captionTrackItemIds, hidden: false, muted: false }]
       : []),
     ...(productTrackItemIds.length > 0
       ? [{ id: productTrackId, items: productTrackItemIds, hidden: false, muted: false }]
+      : []),
+    ...(pipAvatarTrackItemIds.length > 0
+      ? [{ id: pipAvatarTrackId, items: pipAvatarTrackItemIds, hidden: false, muted: false }]
       : []),
     ...(brollTrackItemIds.length > 0
       ? [{ id: brollTrackId, items: brollTrackItemIds, hidden: false, muted: false }]
