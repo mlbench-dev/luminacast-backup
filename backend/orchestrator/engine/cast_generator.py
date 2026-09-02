@@ -3149,6 +3149,7 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
     reliable beat length and its blocks already have written scripts, so it is
     intentionally left untouched.
     """
+    last_idx = len(outline) - 1
     for i, block in enumerate(outline):
         if (block.get("category") or "avatar_speaking") != "avatar_speaking":
             continue
@@ -3171,6 +3172,28 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
             beat_s > 0 and float(dur) >= beat_s - 0.25
         )
         if not covers_whole_beat:
+            continue
+
+        # The hook (first) and CTA (last) beats of a real multi-beat cast are
+        # direct-to-camera bookends — the payoff is the avatar making the ask,
+        # not stock footage over it. If a full-cover clip landed on one of
+        # these, drop it rather than retyping to voiceover or cutting the
+        # middle (both hide the face). Other guards (_apply_preferred_broll
+        # etc.) already protect the bookends; this pass was the gap. A
+        # single-beat outline has no bookends, so it still takes the normal
+        # retype/cutaway path below.
+        if last_idx > 0 and (i == 0 or i == last_idx):
+            block["parallel_media"] = []
+            if block.get("stock_media_url"):
+                block["stock_media_url"] = None
+            _log(
+                "info",
+                "Dropped full-cover b-roll from a bookend beat (hook/CTA "
+                "stays avatar-on-camera)",
+                cast_id=cast_id,
+                block_index=i,
+                is_cta=(i == last_idx),
+            )
             continue
 
         if beat_s <= 0 or beat_s < _CUTAWAY_MIN_BEAT_SEC:

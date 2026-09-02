@@ -111,3 +111,38 @@ def test_two_clip_speaking_beat_is_left_alone():
     snapshot = repr(outline)
     _normalize_full_cover_broll(outline, "cst_test")
     assert repr(outline) == snapshot
+
+
+def test_last_beat_cta_drops_full_cover_broll_and_stays_on_camera():
+    """The CTA is always the last avatar_speaking beat — the avatar must be
+    visible making the ask, so a full-cover clip is dropped outright rather
+    than retyped/cutaway (both still hide the face)."""
+    outline = [_spk(6), _spk(6), _spk(6, extra={"stock_media_url": "https://x/c.mp4"})]
+    _normalize_full_cover_broll(outline, "cst_test")
+    last = outline[-1]
+    assert last["category"] == "avatar_speaking"
+    assert "auto_categorized" not in last
+    assert last["parallel_media"] == []
+    assert last.get("stock_media_url") is None
+
+
+def test_first_beat_hook_drops_full_cover_broll_and_stays_on_camera():
+    outline = [_spk(6), _spk(6), _spk(6)]
+    _normalize_full_cover_broll(outline, "cst_test")
+    first = outline[0]
+    assert first["category"] == "avatar_speaking"
+    assert "auto_categorized" not in first
+    assert first["parallel_media"] == []
+
+
+def test_middle_beat_in_multi_block_outline_still_normalizes():
+    """Bookend protection must not disable the retype/cutaway pass for the
+    interior beats."""
+    outline = [_spk(6), _spk(6), _spk(15)]
+    _normalize_full_cover_broll(outline, "cst_test")
+    mid = outline[1]
+    assert mid["category"] == "avatar_voiceover"
+    assert mid["auto_categorized"]["reason"] == "broll_full_cover"
+    tail = outline[2]
+    assert tail["category"] == "avatar_speaking"
+    assert tail["parallel_media"] == []
