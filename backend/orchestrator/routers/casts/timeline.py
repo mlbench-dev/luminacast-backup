@@ -358,6 +358,12 @@ async def auto_arrange_cast_timeline(
         if caption_words:
             from utils.script_cleaning import strip_script_markers
             tokens: list[dict] = []
+            # WhisperX occasionally emits a word with a wildly out-of-range
+            # timestamp (hallucination on trailing silence / music bleed / a
+            # short clip). Clamp every token to this block's own slot so a bad
+            # value can't mis-time a burned-in caption page. +0.05s keeps a
+            # legitimate last word that lands exactly on the boundary.
+            clamp_max_s = duration + 0.05 if duration > 0 else float("inf")
             try:
                 for w in caption_words:
                     if not isinstance(w, dict):
@@ -372,6 +378,8 @@ async def auto_arrange_cast_timeline(
                         continue
                     word_start = float(w.get("start", 0) or 0)
                     word_end = float(w.get("end", word_start) or word_start)
+                    word_start = min(max(word_start, 0.0), clamp_max_s)
+                    word_end = min(max(word_end, word_start), clamp_max_s)
                     start_ms = round((word_start + start_s) * 1000)
                     end_ms = max(round((word_end + start_s) * 1000), start_ms + 1)
                     confidence = w.get("probability", w.get("score"))

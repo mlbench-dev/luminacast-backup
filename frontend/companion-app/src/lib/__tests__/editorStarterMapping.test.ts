@@ -228,6 +228,44 @@ describe("castToEditorStarterTimeline", () => {
     expect(state.tracks.map((t) => t.id)).not.toContain("track-pip-avatar");
   });
 
+  it("clamps a caption strip to its block when WhisperX hallucinates a timestamp", () => {
+    // b_001 is a 4.5s block. WhisperX gave the last word end=30 (a common
+    // trailing-silence hallucination) — the caption item must NOT stretch to
+    // 30s past its block.
+    const castWithBadCaption: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          variants: [
+            {
+              ...FIXTURE_CAST.blocks![0].variants![0],
+              caption_words: [
+                { word: "Alright", start: 0.1, end: 0.5, probability: 0.9 },
+                { word: "listen", start: 0.5, end: 0.9, probability: 0.9 },
+                { word: "up", start: 0.9, end: 30.0, probability: 0.2 },
+              ],
+            } as any,
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+
+    const { state } = castToEditorStarterTimeline(castWithBadCaption, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+      fps: 30,
+    });
+
+    const cap = state.items["cap_b_001"];
+    expect(cap).toBeDefined();
+    // block is 4.5s (135 frames) — allow the +0.05s epsilon → ~136 frames max
+    expect(cap.durationInFrames).toBeLessThanOrEqual(137);
+    // and it should still start near the first word (~0.1s → 3 frames)
+    expect(cap.from).toBeLessThanOrEqual(6);
+  });
+
   it("sets correct timing in frames (fps=30)", () => {
     const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
       avatarFaceKey: AVATAR_FACE_KEY,

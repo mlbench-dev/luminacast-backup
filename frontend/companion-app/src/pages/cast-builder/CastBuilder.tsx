@@ -768,8 +768,15 @@ export function CastBuilderPage() {
 
       {/* Phase content */}
       <div className={phase === "editor" ? "flex-1 overflow-hidden min-h-0" : "flex-1 overflow-auto"}>
+        {/* key on cast.id: navigating straight from one cast to a sibling
+            (e.g. the "vertical version → Open" banner) is a param-only route
+            change — React keeps the same phase component mounted, and its
+            internal load effects don't fully re-seed (the editor kept showing
+            the previous cast's timeline while the URL had already changed).
+            Keying forces a clean remount per cast. */}
         {phase === "setup" && (
           <SetupPhase
+            key={cast?.id ?? "new"}
             cast={cast}
             onCreated={handleCastCreated}
             renderInProgress={renderStatus.status === "rendering"}
@@ -781,6 +788,7 @@ export function CastBuilderPage() {
 
         {phase === "script" && cast && (
           <ScriptPhase
+            key={cast.id}
             cast={cast}
             onDone={handleScriptDone}
             renderInProgress={renderStatus.status === "rendering"}
@@ -806,7 +814,7 @@ export function CastBuilderPage() {
               </div>
             }
           >
-            <ArrangePhase ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} renderInProgress={renderStatus.status === "rendering"} onCancelRender={handleCancelRender} onEdited={() => {
+            <ArrangePhase key={cast.id} ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} renderInProgress={renderStatus.status === "rendering"} onCancelRender={handleCancelRender} onEdited={() => {
               editsSinceRenderRef.current += 1;
               // Instant UI flip: if showing "Render Ready" and user edits, switch to idle immediately
               setRenderStatus((prev) => {
@@ -820,7 +828,7 @@ export function CastBuilderPage() {
         )}
 
         {phase === "ready" && cast && (
-          <ReadyPhase cast={cast} onEdit={handleEditFromReady} onEditScript={handleEditScript} />
+          <ReadyPhase key={cast.id} cast={cast} onEdit={handleEditFromReady} onEditScript={handleEditScript} />
         )}
       </div>
     </div>

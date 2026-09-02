@@ -1298,7 +1298,22 @@ export function castToEditorStarterTimeline(
       // (e.g. "Alright guys listen up I have ..."), not 30 separate word
       // fragments. Word-level data is preserved — just grouped at render
       // time by Remotion's captions API.
-      const captionTokens: Caption[] = workingCaptions.map((w) => {
+      //
+      // WhisperX occasionally emits a trailing (or, rarely, leading) word with
+      // a wildly out-of-range timestamp — a hallucination on trailing silence,
+      // music bleed, or a very short clip. Left alone it stretches this
+      // block's caption strip far past its own voice/video block on the
+      // timeline (and mis-times the burned-in captions). Clamp every token to
+      // the block's own slot [0, blockDur]; a small epsilon past the end keeps
+      // a legitimate last word that lands exactly on the boundary.
+      const blockDurS = Math.max(end - start, 0);
+      const clampMaxS = blockDurS > 0 ? blockDurS + 0.05 : Infinity;
+      const clampedCaptions = workingCaptions.map((w) => {
+        const cs = Math.min(Math.max(Number(w.start) || 0, 0), clampMaxS);
+        const ce = Math.min(Math.max(Number(w.end) || cs, cs), clampMaxS);
+        return { ...w, start: cs, end: ce };
+      });
+      const captionTokens: Caption[] = clampedCaptions.map((w) => {
         const startMs = Math.round((w.start + start) * 1000);
         const endMs = Math.max(Math.round((w.end + start) * 1000), startMs + 1);
         return {
