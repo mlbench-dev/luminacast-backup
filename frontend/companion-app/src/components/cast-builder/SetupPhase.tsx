@@ -118,18 +118,19 @@ function serializeRegenFields(f: {
   durationTarget: number;
   avatar: string | null;
   products: string[];
-  quality: string;
   productionLevel: string;
   castType: string;
   template: string | null;
   brollMediaSource: string;
 }): string {
+  // NOTE: `quality` is deliberately NOT here. It only changes the next
+  // render's resolution/price, never the script — so changing it alone
+  // must not trigger the "Regenerate script?" prompt.
   return JSON.stringify({
     description: f.description.trim(),
     durationTarget: f.durationManual ? f.durationTarget : null,
     avatar: f.avatar,
     products: [...f.products].sort(),
-    quality: f.quality,
     productionLevel: f.productionLevel,
     castType: f.castType,
     template: f.template,
@@ -297,7 +298,6 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
       durationTarget: cast.duration_target_seconds ?? 60,
       avatar: cast.avatar_id ?? null,
       products: (cast.products || []).map((p) => p.id),
-      quality: cast.quality || "hd",
       productionLevel: (cast.production_level as string) || "standard",
       castType: cast.cast_type || "recorded",
       template: cast.template_id ?? null,
@@ -475,7 +475,6 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           durationTarget,
           avatar: selectedAvatar ?? null,
           products: selectedProducts,
-          quality,
           productionLevel,
           castType,
           template: selectedTemplate ?? null,
@@ -488,7 +487,10 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           somethingChanged &&
           (await confirmAction({
             title: "Regenerate script?",
-            text: "This replaces the current script and any edits you've made to it, using your new settings.",
+            text:
+              "This rebuilds the script from your new settings — the current " +
+              "script and any edits to it are replaced, and the voice audio " +
+              "is marked stale so you'll re-generate it.",
             confirmButtonText: "Regenerate",
             cancelButtonText: "Keep current",
             icon: "warning",
@@ -504,13 +506,16 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           default_avatar_look_id: selectedLookId || "",
           music_track_choice: musicChoice,
           broll_media_source: brollMediaSource,
+          // Render-only — safe to send on every Continue; the next render
+          // picks it up. Never triggers a script rebuild.
+          quality,
           ...(musicChoice === "custom" && pickedTrack
             ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || null }
             : {}),
           ...(regenRequestedRef.current
             ? {
+                regen: true,
                 avatar_id: selectedAvatar || undefined,
-                quality,
                 cast_type: castType,
                 production_level: productionLevel,
                 template_id: selectedTemplate || "",

@@ -885,13 +885,17 @@ class CastPatchRequest(BaseModel):
     # PR #162 — Stage-1 LIVE/Recorded toggle payload (see CastCreate).
     live_mode_defaults: Optional[dict] = None
     user_video_ids: Optional[List[str]] = None
-    # Structural fields — the ones that shape the generated outline/script.
-    # Historically these were create-only ("editing them means a new cast"),
-    # but the SetupPhase "Generate Script" button now re-submits them when the
-    # user goes back and changes something, then regenerates. Only applied
-    # while the cast is still pre-render/editable (status check below).
-    avatar_id: Optional[str] = None
+    # Render-only: `quality` (simple/hd/hd_plus) only decides the NEXT render's
+    # resolution + price — it never rewrites the script or the audio — so it's
+    # accepted at any point (the next render just picks it up).
     quality: Optional[str] = None
+    # Script-shaping fields — they change the generated outline/blocks, so the
+    # existing script + audio no longer match them. Accepted while the cast is
+    # still pre-render/editable, OR when the caller sets `regen=true` (the
+    # SetupPhase "Regenerate script" flow, which then rebuilds the outline and
+    # marks the audio stale). Rejected otherwise so a stale edit is visible.
+    regen: Optional[bool] = None
+    avatar_id: Optional[str] = None
     cast_type: Optional[str] = None
     production_level: Optional[str] = None
     template_id: Optional[str] = None
@@ -993,31 +997,43 @@ async def patch_cast(
         if val is not None:
             setattr(cast, field, val)
 
-    # ── Structural fields (avatar / products / quality / template / cast_type
-    # / production_level). These reshape the outline+script, so they're only
-    # accepted while the cast is still pre-render/editable and the caller is
-    # about to regenerate. Reject rather than silently drop so a stale edit
-    # on a finished cast is visible.
+    # ── Quality (render-only). Changing simple/hd/hd_plus only affects the
+    # NEXT render's resolution + price — never the script or audio — so it's
+    # accepted at any point. Existing renders keep the quality they were made
+    # at; the user re-renders to apply the new one.
+    if req.quality is not None:
+        cast.quality = CastQuality(req.quality)
+        cast.creation_fee_cents = {
+            "simple": 1499, "hd": 1999, "hd_plus": 2999,
+        }.get(req.quality, cast.creation_fee_cents)
+
+    # ── Script-shaping fields (avatar / products / template / cast_type /
+    # production_level). These reshape the outline + blocks, so the existing
+    # script and audio no longer match them. Accepted while the cast is still
+    # pre-render/editable, OR when the caller asks to regenerate (`regen=true`,
+    # the SetupPhase "Regenerate script" flow) — in which case the audio is
+    # marked stale so the UI prompts to re-generate it. Rejected otherwise so
+    # a stale edit on a finished cast is visible rather than silently dropped.
     _structural = (
         req.avatar_id,
-        req.quality,
         req.cast_type,
         req.production_level,
         req.template_id,
         req.product_ids,
     )
     if any(v is not None for v in _structural):
-        if cast.status not in (
+        _editable = cast.status in (
             CastStatus.DRAFT,
             CastStatus.OUTLINE_REVIEW,
             CastStatus.SCRIPT_REVIEW,
             CastStatus.TEMPLATE_SELECT,
-        ):
+        )
+        if not _editable and not req.regen:
             raise HTTPException(
                 400,
-                "Avatar, products, quality, template, cast type and production "
-                "level can only be changed before audio/render. Start a new cast "
-                "to change them here.",
+                "Avatar, products, template, cast type and production level "
+                "change the script — send regen=true to rebuild it, or start a "
+                "new cast.",
             )
 
         if req.avatar_id is not None and req.avatar_id != cast.avatar_id:
@@ -1033,11 +1049,12 @@ async def patch_cast(
             # A look belongs to exactly one avatar — drop it on an avatar switch.
             cast.default_avatar_look_id = None
 
-        if req.quality is not None:
-            cast.quality = CastQuality(req.quality)
-            cast.creation_fee_cents = {
-                "simple": 1499, "hd": 1999, "hd_plus": 2999,
-            }.get(req.quality, cast.creation_fee_cents)
+        if not _editable:
+            # Regenerating on a finished cast: the current TTS no longer
+            # matches the about-to-change script. Mirrors variants.py's
+            # naive-UTC convention (audio_stale_since is TIMESTAMP WITHOUT
+            # TIME ZONE).
+            cast.audio_stale_since = datetime.now(tz.utc).replace(tzinfo=None)
 
         if req.cast_type is not None:
             cast.cast_type = req.cast_type
