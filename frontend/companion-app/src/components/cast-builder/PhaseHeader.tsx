@@ -30,13 +30,16 @@ export function PhaseHeader({ currentPhase, castName, onPhaseClick, actions, ren
   const currentIdx = PHASES.findIndex((p) => p.key === currentPhase);
 
   return (
-    // min-w-0 on the row + min-w-0 on each flex child is what lets the phase
-    // row shrink instead of pushing the actions off-screen. title={castName}
-    // gives the user the full name on hover when it's been truncated.
-    <div className="flex items-center gap-4 px-4 py-3 border-b border-white/10 bg-black/30 backdrop-blur-xs min-w-0">
+    // The actions (Finalize & Render, kebab, …) must never leave the viewport,
+    // so they stay shrink-0 and everything to their left is allowed to give:
+    // the row + the phase-pill strip carry min-w-0, and the cast name
+    // truncates (shrink, not shrink-0). title={castName} keeps the full name
+    // available on hover once it's been truncated. Requires min-w-0 on the
+    // CastBuilder wrappers above this so the shrink can actually propagate.
+    <div className="flex items-center gap-3 sm:gap-4 px-4 py-3 border-b border-white/10 bg-black/30 backdrop-blur-xs w-full min-w-0">
       {castName && (
         <span
-          className="text-sm font-medium text-white/70 truncate shrink-0 max-w-[260px]"
+          className="text-sm font-medium text-white/70 truncate min-w-0 max-w-[200px]"
           title={castName}
         >
           {castName}

@@ -596,20 +596,20 @@ export function CastBuilderPage() {
     <div className="flex flex-col h-full">
       {/* Phase header */}
       {!(isNew && phase === "setup") && phase !== "generating_script" && (
-        <div className="flex items-center">
+        <div className="flex items-center min-w-0">
           {/* Back button — shown on all phases except setup */}
           {phase !== "setup" && (
             <Button
               variant="ghost"
               size="sm"
               onClick={handleBack}
-              className="ml-2 text-white/50 hover:text-white px-2"
+              className="ml-2 shrink-0 text-white/50 hover:text-white px-2"
               data-testid="cast-back-btn"
             >
               <ChevronLeft className="w-4 h-4" />
             </Button>
           )}
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <PhaseHeader
               currentPhase={phase}
               castName={cast?.name}
