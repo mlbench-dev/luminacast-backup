@@ -1115,6 +1115,74 @@ def translate_timeline_to_ffmpeg(
     # ── Build filter_complex ──
     filters: list[str] = []
 
+    # Geometry + layout vocabulary — single source of truth in
+    # services.timeline_builder / layouts.primitives (see the per-loop use
+    # below). Imported here (not just in-loop) so the PIP-background wiring
+    # can classify segments before Step 1 runs.
+    from layouts.primitives import LayoutPrimitive, coerce_to_primitive  # noqa: WPS433
+    from services.timeline_builder import pip_geometry  # noqa: WPS433
+
+    # ── PIP / split background wiring ────────────────────────────────────
+    # A talking-head (pip_quarter) or split_h block puts the face in a
+    # corner / half; the REST of the canvas is background. A FULL-FRAME
+    # b-roll clip on such a block is that background — it belongs BEHIND the
+    # face, not as a cutaway painted over it. Without this, Step 1 composites
+    # the face onto flat black and Step 3b then lays the full-frame b-roll
+    # on top, hiding the face entirely. For every PIP/split segment that has
+    # a full-frame b-roll for the same block, use that b-roll as the PIP
+    # base (in place of black) and drop it from the Step-3b overlay pass.
+    _PIP_BG_PRIMS = {
+        LayoutPrimitive.PIP_QUARTER_BL.value,
+        LayoutPrimitive.PIP_QUARTER_BR.value,
+        LayoutPrimitive.SPLIT_H.value,
+    }
+    _pip_bg_block_ids: set[str] = set()
+    for _seg in bonded_segments:
+        _sm = (_seg.get("metadata") or {}) if isinstance(_seg, dict) else {}
+        if coerce_to_primitive(_sm.get("pip_layout") or "fullscreen") in _PIP_BG_PRIMS:
+            _bid = _sm.get("block_id")
+            if _bid:
+                _pip_bg_block_ids.add(_bid)
+
+    pip_bg_by_block: dict[str, str] = {}  # block_id -> overlay input label
+    if _pip_bg_block_ids:
+        for _lbl, _ov in overlay_video_labels:
+            _bid = (_ov.get("metadata") or {}).get("block_id")
+            if not _bid or _bid not in _pip_bg_block_ids or _bid in pip_bg_by_block:
+                continue
+            _op = _ov.get("props") or {}
+            try:
+                _w = float(_op.get("width", canvas_width) or canvas_width)
+                _h = float(_op.get("height", canvas_height) or canvas_height)
+                _x = float(_op.get("x", 0) or 0)
+                _y = float(_op.get("y", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if (
+                _w >= canvas_width * 0.95
+                and _h >= canvas_height * 0.95
+                and _x <= canvas_width * 0.05
+                and _y <= canvas_height * 0.05
+            ):
+                pip_bg_by_block[_bid] = _lbl
+
+    _consumed_pip_bg_labels: set[str] = set()
+
+    def _pip_base_filter(seg_block_id: object, base_label: str) -> str:
+        """Filter line producing the canvas-sized PIP base for a segment:
+        the block's full-frame b-roll (cover-fit) when present, else black.
+        Mirrors the Step-3b cover-fit scale so background aspect matches."""
+        bg_lbl = pip_bg_by_block.get(seg_block_id or "")  # type: ignore[arg-type]
+        if not bg_lbl:
+            return f"color=c=black:s={canvas_width}x{canvas_height}:d=1[{base_label}]"
+        bg_idx = next(j for j, inp in enumerate(all_inputs) if inp.label == bg_lbl)
+        _consumed_pip_bg_labels.add(bg_lbl)
+        return (
+            f"[{bg_idx}:v]scale={canvas_width}:{canvas_height}:"
+            f"force_original_aspect_ratio=increase,"
+            f"crop={canvas_width}:{canvas_height},setsar=1[{base_label}]"
+        )
+
     # Step 1: Scale each bonded segment to canvas size.
     #
     # PR #83 — when a bonded segment carries pip_layout metadata other
@@ -1146,20 +1214,17 @@ def translate_timeline_to_ffmpeg(
 
         # Geometry + edge treatment — single source of truth lives in
         # services.timeline_builder / layouts.primitives so the renderer +
-        # frontend stay in lockstep. We delay the import to module-call time
-        # because cast_ffmpeg_composer is reused in places where services/
-        # isn't on the path during static analysis. Coercing here keeps the
-        # composer working both pre- and post-migration (legacy strings like
-        # ``pip_small`` / ``top_half`` still resolve to a primitive).
-        from layouts.primitives import LayoutPrimitive, coerce_to_primitive  # noqa: WPS433
-        from services.timeline_builder import pip_geometry  # noqa: WPS433
-
+        # frontend stay in lockstep (imported once above the loop). Coercing
+        # here keeps the composer working both pre- and post-migration
+        # (legacy strings like ``pip_small`` / ``top_half`` still resolve to
+        # a primitive).
         primitive = coerce_to_primitive(pip_layout)
 
         if primitive == LayoutPrimitive.SPLIT_H.value:
             # split_h face half is a full-bleed rectangle (no rounded window).
             # Scale the baked clip to the face half and overlay it onto a
-            # canvas-sized black base so the concat step sees a canvas frame.
+            # canvas-sized base (the block's full-frame b-roll when present,
+            # else black) so the concat step sees a canvas frame.
             placement = pip_geometry(pip_layout, canvas_width, canvas_height)
             half_w = max(2, int(placement.get("w", 0)))
             half_h = max(2, int(placement.get("h", 0)))
@@ -1171,9 +1236,7 @@ def translate_timeline_to_ffmpeg(
                 f"[{i}:v]scale={half_w}:{half_h}:force_original_aspect_ratio=increase,"
                 f"crop={half_w}:{half_h},setsar=1[{scaled}]"
             )
-            filters.append(
-                f"color=c=black:s={canvas_width}x{canvas_height}:d=1[{base}]"
-            )
+            filters.append(_pip_base_filter(seg_meta.get("block_id"), base))
             filters.append(
                 f"[{base}][{scaled}]overlay=x={half_x}:y={half_y}[{v_label}]"
             )
@@ -1246,12 +1309,12 @@ def translate_timeline_to_ffmpeg(
                 f"[{scaled}][{mask}]alphamerge[{masked}]"
             )
 
-            # 4. Build the canvas-sized base. Drop-shadow is a blurred
-            #    copy of the mask, alpha-scaled, overlaid at +6 px
-            #    offset (135° / lower-right per Adobe's PIP convention).
-            filters.append(
-                f"color=c=black:s={canvas_width}x{canvas_height}:d=1[{base}]"
-            )
+            # 4. Build the canvas-sized base — the block's full-frame b-roll
+            #    when it has one (that b-roll is the talking-head background,
+            #    not a cutaway), else flat black. Drop-shadow is a blurred
+            #    copy of the mask, alpha-scaled, overlaid at +6 px offset
+            #    (135° / lower-right per Adobe's PIP convention).
+            filters.append(_pip_base_filter(seg_meta.get("block_id"), base))
             if shadow_blur > 0 and shadow_alpha > 0:
                 # Shadow is just the mask itself, blurred + alpha-scaled,
                 # overlaid as a dark layer at the PIP offset.
@@ -1301,6 +1364,16 @@ def translate_timeline_to_ffmpeg(
         )
 
     current_v_label = "timeline_v"
+
+    # Full-frame b-roll that was baked in as a PIP/split background above is
+    # already on-screen behind the face — don't re-lay it over the whole
+    # frame here (that's what hid the talking head).
+    if _consumed_pip_bg_labels:
+        overlay_video_labels = [
+            (lbl, ov)
+            for (lbl, ov) in overlay_video_labels
+            if lbl not in _consumed_pip_bg_labels
+        ]
 
     # Step 3b: Apply non-bonded video overlays (stock track).
     #

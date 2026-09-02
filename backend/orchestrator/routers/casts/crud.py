@@ -940,7 +940,12 @@ async def update_cast(
     if req.script_direction is not None:
         cast.script_direction = req.script_direction
     if getattr(req, "background_music_url", None) is not None:
-        cast.background_music_url = req.background_music_url
+        # Re-host a picked external track (Mubert etc.) on our CDN — those URLs
+        # expire and the render's audio remux then silently drops the music.
+        from services.music_library import rehost_external_music_url
+        cast.background_music_url = await rehost_external_music_url(
+            req.background_music_url, owner_id=ctx.workspace_owner_id
+        )
     if getattr(req, "background_music_mood", None) is not None:
         cast.background_music_mood = req.background_music_mood
     if getattr(req, "background_music_tags", None) is not None:
@@ -1002,6 +1007,15 @@ async def patch_cast(
         val = getattr(req, field)
         if val is not None:
             setattr(cast, field, val)
+
+    if req.background_music_url is not None:
+        # Re-host a picked external track (Mubert etc.) on our CDN — those URLs
+        # expire and the render's audio remux then silently drops the music,
+        # so "auto" music renders fine but a manually-picked one never does.
+        from services.music_library import rehost_external_music_url
+        cast.background_music_url = await rehost_external_music_url(
+            req.background_music_url, owner_id=ctx.workspace_owner_id
+        )
 
     # ── Quality (render-only). Changing simple/hd/hd_plus only affects the
     # NEXT render's resolution + price — never the script or audio — so it's
