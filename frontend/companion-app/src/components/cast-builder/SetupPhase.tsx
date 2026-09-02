@@ -95,6 +95,40 @@ const LIVE_DEFAULT_DURATION = 1800;
 const RECORDED_MAX_SECONDS = 720;
 const LIVE_MAX_SECONDS = 7200;
 
+/**
+ * Tick marks for the manual-duration slider.
+ *
+ * Predefined marks that fall within the active ceiling, PLUS the tier cap
+ * itself whenever Quick/Standard pins the max to a template value (e.g. 20s,
+ * 45s) that isn't already one of the predefined marks — otherwise that exact
+ * duration is only reachable by dragging the slider to its far end, never as a
+ * labelled one-tap option. Premium (no tier cap) is unchanged.
+ */
+export function computeDurationMarks(
+  durationUnit: "seconds" | "minutes",
+  isLive: boolean,
+  effectiveDurationMaxSeconds: number,
+  tierDurationCapSeconds: number | undefined,
+): number[] {
+  const secondMarks = isLive ? DURATION_MARKS_SECONDS_LIVE : DURATION_MARKS_SECONDS;
+  const base =
+    durationUnit === "seconds"
+      ? secondMarks
+      : isLive
+        ? secondMarks.map((s) => s / 60)
+        : DURATION_MARKS_MINUTES;
+  const toSeconds = (m: number) => (durationUnit === "minutes" ? m * 60 : m);
+  const marks = base.filter((m) => toSeconds(m) <= effectiveDurationMaxSeconds);
+  if (
+    tierDurationCapSeconds &&
+    durationUnit === "seconds" &&
+    !marks.includes(effectiveDurationMaxSeconds)
+  ) {
+    marks.push(effectiveDurationMaxSeconds);
+  }
+  return [...marks].sort((a, b) => a - b);
+}
+
 // Per-template icon for the Stage-1 picker cards. Keyed by template id from
 // GET /api/casts/templates. Unknown ids fall back to the generic Film icon.
 const TEMPLATE_ICONS: Record<string, LucideIcon> = {
@@ -626,9 +660,9 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
 
   // Duration ceiling and tick marks depend on the cast type. LIVE lifts the
   // cap to 2h and uses the longer mark set; recorded keeps the legacy 720s cap.
+  // The mark set itself is derived inside computeDurationMarks.
   const isLive = castType === "live";
   const durationMaxSeconds = isLive ? LIVE_MAX_SECONDS : RECORDED_MAX_SECONDS;
-  const secondMarks = isLive ? DURATION_MARKS_SECONDS_LIVE : DURATION_MARKS_SECONDS;
 
   // A real three-tier progression instead of "Quick is capped, the other two
   // are identical": Quick caps at the template's low end (cost savings from
@@ -649,6 +683,11 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   const effectiveDurationMaxSeconds = tierDurationCapSeconds
     ? Math.min(durationMaxSeconds, tierDurationCapSeconds)
     : durationMaxSeconds;
+
+  const durationMarkValues = useMemo(
+    () => computeDurationMarks(durationUnit, isLive, effectiveDurationMaxSeconds, tierDurationCapSeconds),
+    [durationUnit, isLive, effectiveDurationMaxSeconds, tierDurationCapSeconds],
+  );
 
   // Snap an existing manual value down the moment it's capped (switching
   // tier or template while a manual duration is already set) — the cap is
@@ -1224,12 +1263,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
                     </button>
                   </div>
                   <div className="flex flex-wrap gap-0.5 justify-end" data-testid="duration-marks">
-                    {(durationUnit === "seconds"
-                      ? secondMarks
-                      : isLive
-                        ? secondMarks.map((s) => s / 60)
-                        : DURATION_MARKS_MINUTES
-                    ).filter((m) => (durationUnit === "minutes" ? m * 60 : m) <= effectiveDurationMaxSeconds).map((m) => {
+                    {durationMarkValues.map((m) => {
                       const val = durationUnit === "minutes" ? m * 60 : m;
                       return (
                         <button

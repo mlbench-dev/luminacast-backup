@@ -617,6 +617,12 @@ async def get_cast(
                 "motion_prompt": getattr(v, 'motion_prompt', '') or '',
                 "caption_words": v.caption_words,
                 "caption_segments": v.caption_segments,
+                # Resolved [sfx:NAME] markers — the editor's timeline builder
+                # (castToEditorStarterTimeline) reads variant.sfx_timings to
+                # emit the SFX audio track. Omitting these here is why SFX
+                # never showed in the editor even when the DB had them.
+                "sfx_markers": getattr(v, "sfx_markers", None),
+                "sfx_timings": getattr(v, "sfx_timings", None),
                 "is_active": v.is_active,
             })
         blocks_data.append({
