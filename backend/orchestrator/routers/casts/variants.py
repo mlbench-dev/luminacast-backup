@@ -100,6 +100,18 @@ async def _cascade_audio_to_siblings(
     if not parent_id:
         return results
 
+    # Same script → same [sfx:*] markers for every sibling. Resolve once so
+    # the cascaded variants carry the effect too (matches regenerate_block_audio).
+    cascade_sfx_markers: list = []
+    cascade_sfx_timings: list = []
+    try:
+        from utils.sfx_extraction import resolve_sfx_for_script
+        cascade_sfx_markers, cascade_sfx_timings = resolve_sfx_for_script(
+            script_text, None, tts_duration_seconds=tts_result.get("duration_seconds"),
+        )
+    except Exception as _sfx_exc:
+        sentry_sdk.capture_exception(_sfx_exc)
+
     try:
         from sqlalchemy import or_
         sibling_rows = (await db.execute(
@@ -157,6 +169,8 @@ async def _cascade_audio_to_siblings(
                     tts_r2_key=tts_result["audio_key"],
                     tts_duration_seconds=tts_result["duration_seconds"],
                     duration_seconds=tts_result["duration_seconds"],
+                    sfx_markers=cascade_sfx_markers or None,
+                    sfx_timings=cascade_sfx_timings or None,
                 )
                 db.add(cascade_var)
 
@@ -733,6 +747,26 @@ async def regenerate_block_audio(
         new_variant.tts_duration_seconds = tts_result["duration_seconds"]
         new_variant.duration_seconds = tts_result["duration_seconds"]
         new_variant.status = VariantStatus.READY
+
+        # Capture [sfx:NAME] markers from the script and resolve them to
+        # absolute timings so the effect is mixed into this block's audio
+        # track (services/casts/timeline.py reads variant.sfx_timings). The
+        # full-cast TTS task does this after its own WhisperX pass; this
+        # per-block path has no transcription step, so align falls back to
+        # spreading the markers across the clip duration. Without this the
+        # tag was silently dropped — TTS strips it and nothing else looked
+        # for it. Non-fatal: a failure here must never block the regen.
+        try:
+            from utils.sfx_extraction import resolve_sfx_for_script
+            sfx_markers, sfx_timings = resolve_sfx_for_script(
+                req.script_text,
+                new_variant.caption_words,
+                tts_duration_seconds=new_variant.tts_duration_seconds,
+            )
+            new_variant.sfx_markers = sfx_markers or None
+            new_variant.sfx_timings = sfx_timings or None
+        except Exception as _sfx_exc:
+            sentry_sdk.capture_exception(_sfx_exc)
 
         await db.commit()
 

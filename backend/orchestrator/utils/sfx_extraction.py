@@ -137,3 +137,35 @@ def align_sfx_to_words(
             start_s = last_end
         out.append({"name": mk.name, "start_s": round(max(start_s, 0.0), 3)})
     return out
+
+
+def resolve_sfx_for_script(
+    script_text: str,
+    caption_words: list[dict] | None = None,
+    *,
+    tts_duration_seconds: float | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Extract ``[sfx:NAME]`` markers from a script and resolve them to timings.
+
+    One-shot convenience over :func:`extract_sfx_markers` +
+    :func:`align_sfx_to_words` for callers that already hold the script text
+    and (optionally) WhisperX word timings. Returns
+    ``(markers_json, timings_json)`` — both plain-dict lists ready to persist
+    onto a ``Variant``'s ``sfx_markers`` / ``sfx_timings`` JSON columns.
+
+    When ``caption_words`` is falsy the markers are distributed evenly across
+    ``tts_duration_seconds`` (the no-transcription fallback documented on
+    :func:`align_sfx_to_words`). Both lists are empty when the script carries
+    no markers.
+    """
+    markers = extract_sfx_markers(script_text or "")
+    if not markers:
+        return [], []
+    markers_json = [
+        {"name": m.name, "char_offset": m.char_offset, "word_index": m.word_index}
+        for m in markers
+    ]
+    timings_json = align_sfx_to_words(
+        markers, caption_words, tts_duration_seconds=tts_duration_seconds
+    )
+    return markers_json, timings_json

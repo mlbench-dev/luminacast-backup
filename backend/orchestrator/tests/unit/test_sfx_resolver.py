@@ -26,6 +26,7 @@ from utils.sfx_extraction import (
     SfxMarker,
     align_sfx_to_words,
     extract_sfx_markers,
+    resolve_sfx_for_script,
 )
 
 CANVAS_W = 1080
@@ -121,6 +122,35 @@ def test_align_no_words_no_duration_defaults_zero():
 
 def test_align_empty_markers():
     assert align_sfx_to_words([], _words()) == []
+
+
+# ── resolve_sfx_for_script (one-shot helper used by per-block regen) ──────
+
+def test_resolve_for_script_no_markers_returns_empty_pair():
+    assert resolve_sfx_for_script("just plain narration") == ([], [])
+    assert resolve_sfx_for_script("", tts_duration_seconds=5.0) == ([], [])
+
+
+def test_resolve_for_script_with_word_timings():
+    markers_json, timings_json = resolve_sfx_for_script(
+        "[sfx:record_scratch] Wait Coffee shop", _words()
+    )
+    assert [m["name"] for m in markers_json] == ["record_scratch"]
+    assert markers_json[0]["word_index"] == 0
+    assert timings_json == [{"name": "record_scratch", "start_s": 0.0}]
+
+
+def test_resolve_for_script_no_words_falls_back_to_even_distribution():
+    # The per-block regenerate path has no WhisperX pass, so caption_words is
+    # None and timing must spread across the clip instead of being dropped.
+    markers_json, timings_json = resolve_sfx_for_script(
+        "[sfx:whoosh] hello [sfx:ding] world", None, tts_duration_seconds=6.0
+    )
+    assert [m["name"] for m in markers_json] == ["whoosh", "ding"]
+    assert timings_json == [
+        {"name": "whoosh", "start_s": 2.0},
+        {"name": "ding", "start_s": 4.0},
+    ]
 
 
 # ── sfx_library ──────────────────────────────────────────────────────────
