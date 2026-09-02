@@ -9,6 +9,7 @@
 ## Research Summary — Best SaaS Avatar UIs
 Based on HeyGen, Synthesia, D-ID patterns:
 
+
 ### Avatar Library (top of page)
 - Grid of avatar cards showing: thumbnail, name, type (Clone/AI), status badge, created date
 - Processing avatars show animated progress indicator
