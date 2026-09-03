@@ -2937,6 +2937,8 @@ def _resize_slot_to_audio(timeline: dict, block_id: str, audio_s: float) -> bool
     if not timeline or not isinstance(timeline, dict) or audio_s <= 0:
         return False
     target_id = f"v1_{block_id}"
+    exact_el: dict | None = None
+    fallback_el: dict | None = None
     for track in timeline.get("tracks") or []:
         if not isinstance(track, dict):
             continue
@@ -2945,16 +2947,34 @@ def _resize_slot_to_audio(timeline: dict, block_id: str, audio_s: float) -> bool
         for el in track.get("elements") or []:
             if not isinstance(el, dict):
                 continue
-            meta_block = (el.get("metadata") or {}).get("block_id")
-            if el.get("id") == target_id or meta_block == block_id:
-                try:
-                    s = float(el.get("s") or 0)
-                except (TypeError, ValueError):
-                    s = 0.0
-                el["s"] = s
-                el["e"] = s + float(audio_s)
-                return True
-    return False
+            eid = el.get("id") or ""
+            if eid == target_id:
+                exact_el = el
+                break
+            # Fallback ONLY for V1-shaped ids — mirrors the guard in
+            # _slot_duration_for_block. NEVER match cap_/prod_/pm_/etc via
+            # metadata.block_id: those overlays intentionally carry the same
+            # block_id but shorter slots, and resizing one of THEM leaves the
+            # real V1 slot untouched (the talking-head bake then ships at the
+            # stale short length — render rnd_157ba7252d5b, blk_5d5230d5b801).
+            if (
+                fallback_el is None
+                and eid.startswith("v1_")
+                and (el.get("metadata") or {}).get("block_id") == block_id
+            ):
+                fallback_el = el
+        if exact_el is not None:
+            break
+    el = exact_el or fallback_el
+    if el is None:
+        return False
+    try:
+        s = float(el.get("s") or 0)
+    except (TypeError, ValueError):
+        s = 0.0
+    el["s"] = s
+    el["e"] = s + float(audio_s)
+    return True
 
 
 def _per_block_user_durations(cast_timeline_json: dict) -> dict[str, float]:
@@ -4881,6 +4901,29 @@ async def _render_async(task, render_id: str):
     # The rewritten snapshot is persisted to the CastRender row so
     # retries on the same render_id reuse the corrected layout.
     try:
+        # Probe each bonded block's REAL prepared voice track up front. The
+        # Arrange-timeline slot (_pj[5]) is a script-writer / editor estimate
+        # and drifts from the voice that TTS actually produced — a talking-head
+        # beat whose slot froze at ~3s while its line is ~8s is the failure
+        # this catches. Probing here, once, means the single reflow below lays
+        # the WHOLE timeline out against true durations, so V1, A1, captions,
+        # product cards and b-roll all stay aligned — instead of every
+        # consumer downstream re-discovering the mismatch and patching one
+        # element at a time.
+        _pj_audio_urls = [
+            (pj[1], pj[7]) for pj in pending_jobs
+            if pj[1] and pj[7]
+        ]
+        _audio_probe_results: dict[str, float] = {}
+        if _pj_audio_urls:
+            _probed = await asyncio.gather(
+                *[_probe_audio_duration_s(u) for _, u in _pj_audio_urls],
+                return_exceptions=True,
+            )
+            for (_bid, _), _res in zip(_pj_audio_urls, _probed):
+                if isinstance(_res, (int, float)) and _res > 0:
+                    _audio_probe_results[_bid] = float(_res)
+
         block_durations: dict[str, float] = {}
         for _pj in pending_jobs:
             # Tuple shape: (idx, block_id, v1_el, a1_el, baked_key,
@@ -4888,10 +4931,28 @@ async def _render_async(task, render_id: str):
             #               motion_prompt). duration_s == `using=`.
             try:
                 _bid = _pj[1]
-                _dur = float(_pj[5] or 0)
+                _slot_dur = float(_pj[5] or 0)
             except (IndexError, TypeError, ValueError) as _bd_exc:
                 sentry_sdk.capture_exception(_bd_exc)
                 continue
+            _v1_meta = (_pj[2] or {}).get("metadata") or {}
+            _is_fixed = bool(
+                _v1_meta.get("fixed_length") or _v1_meta.get("fixed_duration")
+            )
+            _real_audio = _audio_probe_results.get(_bid, 0.0)
+            # The bonded pair's length is driven by its voice. When the real
+            # audio meaningfully overruns the slot (stale/short slot), use the
+            # audio — the user rule allows extensions, never a silent cut.
+            # Fixed-length beats keep their slot (the video fills it instead).
+            if _real_audio > _slot_dur + 0.15 and not _is_fixed:
+                logger.info(
+                    "Block %s: reflowing slot %.2fs -> real voice %.2fs "
+                    "(stale/short Arrange slot)",
+                    _bid, _slot_dur, _real_audio,
+                )
+                _dur = _real_audio
+            else:
+                _dur = _slot_dur
             if _bid and _dur > 0:
                 block_durations[_bid] = _dur
         new_timeline, _rewritten, _dropped = _apply_real_block_durations(
@@ -4902,6 +4963,17 @@ async def _render_async(task, render_id: str):
         )
         if _rewritten:
             timeline = new_timeline
+            # pending_jobs still carries the pre-reflow slot; refresh each
+            # job's duration_s from the reflowed timeline so the bake
+            # dispatch, audio prep and slot trims all target the real length.
+            pending_jobs = [
+                (
+                    pj[0], pj[1], pj[2], pj[3], pj[4],
+                    _slot_duration_for_block(timeline, pj[1], pj[5]) or pj[5],
+                    pj[6], pj[7], pj[8],
+                )
+                for pj in pending_jobs
+            ]
             try:
                 from models.cast_render import CastRender as _CR
                 async with factory() as _persist_session:
