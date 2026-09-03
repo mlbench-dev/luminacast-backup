@@ -2679,6 +2679,70 @@ async def _enforce_speaking_tolerance(
         return video_bytes
 
 
+async def _enforce_pip_slot_duration(
+    video_bytes: bytes,
+    *,
+    timeline: dict,
+    block_id: str,
+    render_id: str,
+    fallback_duration_s: float,
+) -> None:
+    """Guardrail: a conformed PIP talking-head clip must land on its bonded slot.
+
+    PIP blocks skip ``_enforce_speaking_tolerance`` (audio-relative) and do not
+    feed ``slot_duration_s`` to the Phase 3 gate, so a silently-failed
+    extend-to-slot inside ``_normalize_for_canvas`` would ship a clip that is
+    materially shorter (or longer) than its bonded ``[s, e]``. The bonded concat
+    lays segments end-to-end and fully trusts each one to be its slot length —
+    a short PIP segment slides every following block earlier and opens a
+    background gap where the talking head should be (observed: a ~5s talking-head
+    beat that played ~2s in the render, preview fine).
+
+    Raises ``SpeakingBlockOutOfTolerance`` (caught by the per-block retry-once
+    pass) so the block re-bakes; a persistent miss fails the render loudly
+    rather than shipping the desync. Probe failure is a pass-through — Phase 3
+    still inspects the clip.
+    """
+    if not video_bytes:
+        return
+    slot_s = _slot_duration_for_block(timeline, block_id, fallback_duration_s)
+    if slot_s <= 0:
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"pip_slotdur_{block_id}_") as tmp:
+            in_path = os.path.join(tmp, "in.mp4")
+            with open(in_path, "wb") as fh:
+                fh.write(video_bytes)
+            from services.block_normalize import _probe_streams
+            probe = await asyncio.to_thread(_probe_streams, in_path)
+            dur = float(probe.get("duration_s") or 0.0)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        return
+    if dur <= 0:
+        return
+    # A correct conform lands within a frame of the slot; the fill ladder
+    # (loop / freeze) can be a hair off. Anything past this band is a failed
+    # conform, not rounding.
+    lower = slot_s * 0.90 - 0.10
+    upper = slot_s * 1.15 + 0.10
+    if lower <= dur <= upper:
+        return
+    err = SpeakingBlockOutOfTolerance(
+        f"block {block_id} render {render_id}: PIP clip conformed to {dur:.3f}s "
+        f"but its bonded slot is {slot_s:.3f}s (band=[{lower:.3f}, {upper:.3f}]). "
+        f"_normalize_for_canvas failed to land the clip on its slot — re-baking "
+        f"via retry pass rather than shipping a bonded-concat desync."
+    )
+    sentry_sdk.capture_exception(err)
+    logger.warning(
+        "[pip-slotdur] block %s render %s OUT OF BAND: dur=%.3fs slot=%.3fs; "
+        "raising for retry",
+        block_id, render_id, dur, slot_s,
+    )
+    raise err
+
+
 async def _probe_audio_duration_s(url_or_path: str) -> float:
     """Probe the duration of an audio (or media) URL/path via ffprobe.
 
@@ -6262,9 +6326,20 @@ async def _render_async(task, render_id: str):
         # slot disagrees with the audio beyond SLOT_AUDIO_MISMATCH_TOLERANCE
         # we resize the slot to the audio (preferred) so every downstream
         # consumer trims to the right length; a fixed-length slot instead
-        # fails the block as slot_audio_mismatch (never re-baked). PIP small
-        # bakes are excluded — their slot is the host window, not the audio.
-        if not (block_render_mode == "pip") and effective_audio_duration_s > 0:
+        # fails the block as slot_audio_mismatch (never re-baked).
+        #
+        # PIP talking-head blocks used to be skipped here entirely — but their
+        # TEMPORAL slot [s,e] is still just the beat (the PIP "host window" is
+        # a SPATIAL inset applied later in compose, unrelated to duration), so
+        # skipping meant a PIP beat whose slot ran longer than its short voice
+        # line was never reconciled: the bake came out audio-length and the
+        # bonded concat lost the difference (the next block slid earlier). PIP
+        # is now reconciled like any speaking block, but treated as
+        # fixed-length so a slot<audio mismatch fails loudly (planning defect)
+        # rather than silently mutating the element end and risking overlap;
+        # the common slot>audio case is held and filled downstream by
+        # trim_block_to_slot exactly as for full-frame speaking.
+        if effective_audio_duration_s > 0:
             _slot_now = _slot_duration_for_block(
                 timeline, block_id, float(duration_s or 0)
             )
@@ -6275,6 +6350,7 @@ async def _render_async(task, render_id: str):
             _fixed_len = bool(
                 _v1_meta.get("fixed_length")
                 or _v1_meta.get("fixed_duration")
+                or block_render_mode == "pip"
             )
             _reconciled_s, _mismatch = _reconcile_slot_vs_audio(
                 timeline,
@@ -6908,6 +6984,18 @@ async def _render_async(task, render_id: str):
             block_id=block_id,
             render_id=render_id,
         )
+        # Guardrail (PIP only): the conform above must land the clip on its
+        # bonded slot. PIP skips the speaking tolerance gate and the Phase 3
+        # duration gate, so without this a silently-failed extend-to-slot
+        # ships a short clip that desyncs the bonded concat.
+        if is_pip_block:
+            await _enforce_pip_slot_duration(
+                video_bytes,
+                timeline=timeline,
+                block_id=block_id,
+                render_id=render_id,
+                fallback_duration_s=duration_s,
+            )
         # Phase 3: reject black / frozen / truncated bakes before upload.
         await _validate_baked_clip_bytes(
             video_bytes, block_id=block_id, render_id=render_id,

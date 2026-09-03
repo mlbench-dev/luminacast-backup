@@ -3158,18 +3158,34 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
         if "estimated_duration_seconds" not in block:
             continue
         pm = block.get("parallel_media")
-        if not isinstance(pm, list) or len(pm) != 1:
+        if not isinstance(pm, list) or not pm:
             continue
-        entry = pm[0]
-        if not isinstance(entry, dict) or not entry.get("url"):
+        clips = [e for e in pm if isinstance(e, dict) and e.get("url")]
+        if not clips:
             continue
         try:
             beat_s = float(block.get("estimated_duration_seconds") or 0)
         except (TypeError, ValueError):
             beat_s = 0.0
-        dur = entry.get("duration_s")
-        covers_whole_beat = dur is None or (
-            beat_s > 0 and float(dur) >= beat_s - 0.25
+
+        # Does the b-roll, as authored, cover essentially the WHOLE beat?
+        #   * any clip with no explicit duration_s → the editor mapping tiles
+        #     it to fill the beat, so it covers on its own.
+        #   * otherwise the explicit durations together span the beat.
+        # A single sub-beat cutaway (b-roll < beat) is left alone — this pass
+        # only defuses full-cover b-roll on a speaking beat.
+        any_unbounded = any(e.get("duration_s") is None for e in clips)
+        explicit_total = 0.0
+        for e in clips:
+            d = e.get("duration_s")
+            if d is None:
+                continue
+            try:
+                explicit_total += float(d)
+            except (TypeError, ValueError):
+                pass
+        covers_whole_beat = any_unbounded or (
+            beat_s > 0 and explicit_total >= beat_s - 0.25
         )
         if not covers_whole_beat:
             continue
@@ -3193,6 +3209,7 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
                 cast_id=cast_id,
                 block_index=i,
                 is_cta=(i == last_idx),
+                broll_clips=len(clips),
             )
             continue
 
@@ -3210,18 +3227,49 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
                 cast_id=cast_id,
                 block_index=i,
                 beat_seconds=beat_s,
+                broll_clips=len(clips),
             )
-        else:
-            entry["start_offset_s"] = _CUTAWAY_START_OFFSET_SEC
-            entry["duration_s"] = min(_CUTAWAY_MAX_SEC, max(2.0, beat_s * 0.4))
+            continue
+
+        # Long enough for a cutaway: keep avatar_speaking but bound EVERY clip
+        # into one combined mid-beat window so the avatar bookends it. The
+        # budget matches the single-clip formula; N clips split it evenly and
+        # play back-to-back from the same start offset.
+        budget_s = min(_CUTAWAY_MAX_SEC, max(2.0, beat_s * 0.4))
+        per_clip_s = budget_s / len(clips)
+        if per_clip_s < 1.0:
+            # Too many clips to read as cutaways — keep the first as the whole
+            # cutaway and drop the rest.
+            first = clips[0]
+            first["start_offset_s"] = _CUTAWAY_START_OFFSET_SEC
+            first["duration_s"] = round(budget_s, 3)
+            block["parallel_media"] = [first]
             _log(
                 "info",
-                "Bounded full-cover b-roll to a mid-beat cutaway",
+                "Collapsed multi-clip full-cover b-roll to a single mid-beat "
+                "cutaway",
                 cast_id=cast_id,
                 block_index=i,
                 beat_seconds=beat_s,
-                cutaway_seconds=entry["duration_s"],
+                dropped_clips=len(clips) - 1,
+                cutaway_seconds=round(budget_s, 3),
             )
+            continue
+        cursor = float(_CUTAWAY_START_OFFSET_SEC)
+        for e in clips:
+            e["start_offset_s"] = round(cursor, 3)
+            e["duration_s"] = round(per_clip_s, 3)
+            cursor += per_clip_s
+        block["parallel_media"] = clips
+        _log(
+            "info",
+            "Bounded full-cover b-roll to a mid-beat cutaway",
+            cast_id=cast_id,
+            block_index=i,
+            beat_seconds=beat_s,
+            broll_clips=len(clips),
+            cutaway_seconds=round(budget_s, 3),
+        )
 
 
 def _apply_preferred_broll(

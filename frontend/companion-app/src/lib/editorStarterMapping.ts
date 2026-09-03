@@ -795,22 +795,44 @@ export function castToEditorStarterTimeline(
       // the b-roll IS meant to fill the frame — don't clamp it. (isPipHidden
       // is derived from metadata.pip_layout above.)
       const avatarDeliberatelyHidden = isPipHidden;
-      const unboundedSingleClip =
-        parallelMedia.length === 1 &&
-        typeof parallelMedia[0]?.start_offset_s !== "number" &&
-        (parallelMedia[0]?.duration_s === null ||
-          parallelMedia[0]?.duration_s === undefined);
+      // B-roll "dominates" a speaking beat when, left as authored, it would
+      // cover most/all of the beat and hide the avatar — either because a clip
+      // has no explicit duration (this mapping then tiles it to fill) or
+      // because the explicit durations together span ≥60% of the beat. When it
+      // does, we re-place EVERY clip into one bounded mid-beat cutaway window
+      // so the avatar bookends it. This generalises the old single-unbounded-
+      // clip guard to any clip count. Mirrors _normalize_full_cover_broll on
+      // the backend; the real fix is upstream (the script/outline shouldn't
+      // put full-cover b-roll on a speaking beat) and this is the safety net.
+      const brollTotalExplicitS = parallelMedia.reduce(
+        (sum, p) =>
+          sum +
+          (typeof p?.duration_s === "number" && p.duration_s != null
+            ? p.duration_s
+            : 0),
+        0,
+      );
+      const anyUnboundedClip = parallelMedia.some(
+        (p) => p && p.url && (p.duration_s === null || p.duration_s === undefined),
+      );
       const clampSpeakingCutaway =
-        isSpeakingBlock && !avatarDeliberatelyHidden && unboundedSingleClip && dur > 0;
+        isSpeakingBlock &&
+        !avatarDeliberatelyHidden &&
+        dur > 0 &&
+        (anyUnboundedClip || brollTotalExplicitS >= dur * 0.6);
+      // One cutaway budget + start shared across every clip on the beat.
+      const cutawayBudgetS = Math.min(4, Math.max(2, dur * 0.4));
+      const cutawayStartS = Math.min(1.5, dur * 0.2);
+      const cutawayPerClipS = cutawayBudgetS / parallelMedia.length;
       parallelMedia.forEach((pm, pmIdx) => {
         if (!pm || !pm.url || !pm.kind) return;
         const offset = clampSpeakingCutaway
-          ? Math.min(1.5, dur * 0.2)
+          ? Math.min(cutawayStartS + pmIdx * cutawayPerClipS, dur - 0.1)
           : typeof pm.start_offset_s === "number"
           ? Math.max(0, Math.min(pm.start_offset_s, dur - 0.1))
           : pmIdx * slot;
         const itemDur = clampSpeakingCutaway
-          ? Math.max(0.1, Math.min(4, Math.max(2, dur * 0.4), dur - offset))
+          ? Math.max(0.3, Math.min(cutawayPerClipS, dur - offset))
           : typeof pm.duration_s === "number" && pm.duration_s !== null
           ? Math.max(0.1, Math.min(pm.duration_s, dur - offset))
           : slot;
