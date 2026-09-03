@@ -1400,7 +1400,6 @@ def translate_timeline_to_ffmpeg(
             f"[{in_label}]scale={box_w}:{box_h}:force_original_aspect_ratio=increase,"
             f"crop={box_w}:{box_h},setsar=1[{out}]"
         )
-
     # Step 3b: Apply non-bonded video overlays (stock track).
     #
     # These inputs were declared above but, prior to this step, were never

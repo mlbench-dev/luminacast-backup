@@ -265,7 +265,6 @@ describe("castToEditorStarterTimeline", () => {
     // and it should still start near the first word (~0.1s → 3 frames)
     expect(cap.from).toBeLessThanOrEqual(6);
   });
-
   it("sets correct timing in frames (fps=30)", () => {
     const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
       avatarFaceKey: AVATAR_FACE_KEY,

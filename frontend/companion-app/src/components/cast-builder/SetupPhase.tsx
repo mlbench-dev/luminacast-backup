@@ -552,7 +552,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
                 avatar_id: selectedAvatar || undefined,
                 cast_type: castType,
                 production_level: productionLevel,
-                template_id: selectedTemplate || "",
+                template_id: selectedTemplate || undefined,
                 product_ids: selectedProducts,
               }
             : {}),

@@ -52,6 +52,10 @@ def test_each_template_has_required_fields(tpl_id):
     assert isinstance(tpl["default_mic_on"], bool)
     assert isinstance(tpl["default_caption_preset"], str) and tpl["default_caption_preset"]
     assert len(tpl["est_duration_range"]) == 2
+    assert isinstance(tpl.get("video_generation_prompt"), str) and tpl["video_generation_prompt"]
+    assert isinstance(tpl.get("visual_rules"), list) and len(tpl["visual_rules"]) > 0
+    assert isinstance(tpl.get("script_direction"), str) and tpl["script_direction"]
+    assert isinstance(tpl.get("block_blueprints"), list) and len(tpl["block_blueprints"]) > 0
     bias = tpl["bias"]
     assert set(bias.keys()) == {"avatar_speaking", "broll", "uploaded_video"}
     # Bias is a rough split — allow a little slack but it should sum near 1.
@@ -71,9 +75,14 @@ def test_list_templates_shape():
         assert set(item.keys()) == {
             "id", "name", "description", "preview_image_key", "block_count",
             "est_duration_range", "default_bias", "default_mic_on",
-            "default_caption_preset",
+            "default_caption_preset", "video_generation_prompt", "visual_rules",
+            "script_direction", "block_blueprints",
         }
         assert item["block_count"] == len(TEMPLATES[item["id"]]["block_sequence"])
+        assert item["video_generation_prompt"] is not None
+        assert isinstance(item["visual_rules"], list)
+        assert item["script_direction"] is not None
+        assert isinstance(item["block_blueprints"], list)
 
 
 def test_get_template_lookup_and_auto_fallthrough():
@@ -108,3 +117,15 @@ def test_constraint_renders_sequence_and_bias():
     # Bias percentages render (demo_heavy is 30/70/0).
     assert "30% avatar speaking" in constraint
     assert "70% b-roll" in constraint
+    assert "DEMO HEAVY FORMAT" in constraint
+    assert "Visual Composition Rules" in constraint
+    assert "Script & Pacing Rules" in constraint
+
+
+@pytest.mark.parametrize("tpl_id", sorted(EXPECTED_IDS))
+def test_all_templates_render_custom_prompt_directives(tpl_id):
+    tpl = get_template(tpl_id)
+    constraint = _build_template_constraint(tpl)
+    assert tpl["name"] in constraint
+    assert tpl["video_generation_prompt"] in constraint
+    assert tpl["script_direction"] in constraint
