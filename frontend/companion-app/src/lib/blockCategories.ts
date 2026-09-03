@@ -150,3 +150,17 @@ export function getCategoryInfo(value?: string | null): BlockCategoryInfo {
 	const v = normalizeCategory(value);
 	return CATEGORY_MAP[v] ?? CATEGORY_MAP["avatar_speaking"];
 }
+
+/**
+ * True when the block's own generated clip IS the visual (an action / motion
+ * block). B-roll must never be layered over these — it would just cover the
+ * action the block exists to show.
+ */
+export function blockOwnsItsVisual(
+	category?: string | null,
+	renderMode?: string | null,
+): boolean {
+	if (normalizeCategory(category) === "avatar_action") return true;
+	const rm = (renderMode || "").toLowerCase();
+	return rm === "motion" || rm === "body_motion";
+}

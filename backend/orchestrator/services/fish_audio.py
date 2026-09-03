@@ -216,13 +216,57 @@ class FishAudioService:
 
     @staticmethod
     def _probe_duration(path: str) -> float:
-        """Get audio duration in seconds using ffprobe."""
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=30,
-        )
-        return float(result.stdout.strip())
+        """Audio duration in seconds — robust.
+
+        Tries container duration, then stream duration, then a full decode
+        pass (always exact if ffmpeg can read the file at all). Returns 0.0
+        only when the file genuinely can't be measured.
+
+        NEVER estimate from byte count: Fish Audio MP3s vary in bitrate, and
+        ``len(bytes) / 16000`` stored a ~3s duration for an ~8s clip whenever
+        ffprobe hit an MP3 with no duration header — that bogus value froze
+        the timeline slot and the render then chopped the voiceover to it.
+        Callers treat 0.0 as "unknown" and fall back / probe again downstream.
+        """
+        for entries in ("format=duration", "stream=duration"):
+            try:
+                result = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                     "-show_entries", entries,
+                     "-of", "default=noprint_wrappers=1:nokey=1", path],
+                    capture_output=True, text=True, timeout=30,
+                )
+                raw = (result.stdout or "").strip().splitlines()
+                val = raw[0].strip() if raw else ""
+                if val and val.upper() != "N/A":
+                    d = float(val)
+                    if d > 0:
+                        return round(d, 3)
+            except Exception:
+                pass
+        # Full decode — exact for headerless / streamed MP3s that ffprobe
+        # can't measure from metadata alone.
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-nostats", "-i", path,
+                 "-map", "0:a:0", "-f", "null", "-progress", "-", "-"],
+                capture_output=True, text=True, timeout=90,
+            )
+            out = (result.stdout or "") + "\n" + (result.stderr or "")
+            us = _re_tts.findall(r"out_time_us=(\d+)", out)
+            if us:
+                d = int(us[-1]) / 1_000_000.0
+                if d > 0:
+                    return round(d, 3)
+            hms = _re_tts.findall(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)", out)
+            if hms:
+                h, m, s = hms[-1]
+                d = int(h) * 3600 + int(m) * 60 + float(s)
+                if d > 0:
+                    return round(d, 3)
+        except Exception:
+            pass
+        return 0.0
 
     @staticmethod
     def _trim_to_wav(input_path: str, output_path: str, max_seconds: float = 30.0):
@@ -363,10 +407,7 @@ class FishAudioService:
                     try:
                         with os.fdopen(tmp_fd_gpu, "wb") as f:
                             f.write(audio_bytes_gpu)
-                        try:
-                            duration_seconds_gpu = self._probe_duration(tmp_path_gpu)
-                        except Exception:
-                            duration_seconds_gpu = round(len(audio_bytes_gpu) / 16000.0, 2)
+                        duration_seconds_gpu = self._probe_duration(tmp_path_gpu)
                         await r2.upload_bytes(audio_bytes_gpu, output_key, content_type="audio/mpeg")
                         from services.usage_logger import log_api_usage
                         await log_api_usage(
@@ -418,12 +459,7 @@ class FishAudioService:
             with os.fdopen(tmp_fd, "wb") as f:
                 f.write(audio_bytes)
 
-            # Get duration via ffprobe on the temp file
-            try:
-                duration_seconds = self._probe_duration(tmp_path)
-            except Exception:
-                # Fallback: rough estimate for MP3 (~128kbps)
-                duration_seconds = round(len(audio_bytes) / 16000.0, 2)
+            duration_seconds = self._probe_duration(tmp_path)
 
             # Upload to R2
             await r2.upload_bytes(audio_bytes, output_key, content_type="audio/mpeg")
@@ -560,7 +596,7 @@ class FishAudioService:
             with os.fdopen(tmp_fd, "wb") as f:
                 f.write(audio_bytes)
 
-            duration_seconds = round(len(audio_bytes) / 16000.0, 2)
+            duration_seconds = self._probe_duration(tmp_path)
             audio_key = f"tts/{voice_id}/{int(time.time())}.mp3"
 
             # Upload to R2 so downstream consumers (RunPod) can access it
@@ -727,7 +763,7 @@ class FishAudioService:
             with os.fdopen(tmp_fd, "wb") as f:
                 f.write(audio_bytes)
 
-            duration_seconds = round(len(audio_bytes) / 16000.0, 2)
+            duration_seconds = self._probe_duration(tmp_path)
             audio_key = f"tts/{voice_id.replace('/', '_')}/{int(time.time())}.mp3"
 
             # Upload to R2 so downstream consumers (RunPod) can access it

@@ -337,7 +337,10 @@ def _is_third_person_narrator(script: str) -> bool:
         return False
 
 
-_VALID_VOICING_MODES = ("tts_dialogue", "prosody_only", "motion_sfx_only")
+# "prosody_only" removed (prosody family deferred). Legacy/stray values clamp
+# to "tts_dialogue" via _normalize_voicing_mode — the render path below already
+# handled the two identically.
+_VALID_VOICING_MODES = ("tts_dialogue", "motion_sfx_only")
 
 
 def _script_references_product(
@@ -1187,7 +1190,17 @@ def _rewrite_mux_audio_to_lipsync(
         for el in track.get("elements") or []:
             if not isinstance(el, dict):
                 continue
-            bid = (el.get("metadata") or {}).get("block_id") or ""
+            meta = el.get("metadata") or {}
+            # Only the block's spoken VOICE follows the lipsync driver. SFX
+            # accents and per-block music also carry the block_id, but
+            # repointing their src to the voice URL both loses the effect and
+            # doubles that block's narration in the mix ("two voices at once"
+            # exactly where the SFX should have been).
+            if (meta.get("kind") or "").lower() in ("sfx", "music"):
+                continue
+            if (meta.get("track_type") or "").lower() in ("audio_sfx", "audio_music"):
+                continue
+            bid = meta.get("block_id") or ""
             driver_url = lipsync_audio_by_block.get(bid)
             if not driver_url:
                 continue
@@ -1225,7 +1238,12 @@ async def _assert_lipsync_mux_audio_identity(
     tol_s = _lipsync_audio_drift_max_s()
     mux_by_block: dict[str, str] = {}
     for el in _audio_track_elements(timeline):
-        bid = (el.get("metadata") or {}).get("block_id") or ""
+        meta = el.get("metadata") or {}
+        if (meta.get("kind") or "").lower() in ("sfx", "music"):
+            continue
+        if (meta.get("track_type") or "").lower() in ("audio_sfx", "audio_music"):
+            continue
+        bid = meta.get("block_id") or ""
         if bid and bid not in mux_by_block:
             mux_by_block[bid] = (el.get("props") or {}).get("src") or ""
 
@@ -2661,6 +2679,70 @@ async def _enforce_speaking_tolerance(
         return video_bytes
 
 
+async def _enforce_pip_slot_duration(
+    video_bytes: bytes,
+    *,
+    timeline: dict,
+    block_id: str,
+    render_id: str,
+    fallback_duration_s: float,
+) -> None:
+    """Guardrail: a conformed PIP talking-head clip must land on its bonded slot.
+
+    PIP blocks skip ``_enforce_speaking_tolerance`` (audio-relative) and do not
+    feed ``slot_duration_s`` to the Phase 3 gate, so a silently-failed
+    extend-to-slot inside ``_normalize_for_canvas`` would ship a clip that is
+    materially shorter (or longer) than its bonded ``[s, e]``. The bonded concat
+    lays segments end-to-end and fully trusts each one to be its slot length —
+    a short PIP segment slides every following block earlier and opens a
+    background gap where the talking head should be (observed: a ~5s talking-head
+    beat that played ~2s in the render, preview fine).
+
+    Raises ``SpeakingBlockOutOfTolerance`` (caught by the per-block retry-once
+    pass) so the block re-bakes; a persistent miss fails the render loudly
+    rather than shipping the desync. Probe failure is a pass-through — Phase 3
+    still inspects the clip.
+    """
+    if not video_bytes:
+        return
+    slot_s = _slot_duration_for_block(timeline, block_id, fallback_duration_s)
+    if slot_s <= 0:
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"pip_slotdur_{block_id}_") as tmp:
+            in_path = os.path.join(tmp, "in.mp4")
+            with open(in_path, "wb") as fh:
+                fh.write(video_bytes)
+            from services.block_normalize import _probe_streams
+            probe = await asyncio.to_thread(_probe_streams, in_path)
+            dur = float(probe.get("duration_s") or 0.0)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        return
+    if dur <= 0:
+        return
+    # A correct conform lands within a frame of the slot; the fill ladder
+    # (loop / freeze) can be a hair off. Anything past this band is a failed
+    # conform, not rounding.
+    lower = slot_s * 0.90 - 0.10
+    upper = slot_s * 1.15 + 0.10
+    if lower <= dur <= upper:
+        return
+    err = SpeakingBlockOutOfTolerance(
+        f"block {block_id} render {render_id}: PIP clip conformed to {dur:.3f}s "
+        f"but its bonded slot is {slot_s:.3f}s (band=[{lower:.3f}, {upper:.3f}]). "
+        f"_normalize_for_canvas failed to land the clip on its slot — re-baking "
+        f"via retry pass rather than shipping a bonded-concat desync."
+    )
+    sentry_sdk.capture_exception(err)
+    logger.warning(
+        "[pip-slotdur] block %s render %s OUT OF BAND: dur=%.3fs slot=%.3fs; "
+        "raising for retry",
+        block_id, render_id, dur, slot_s,
+    )
+    raise err
+
+
 async def _probe_audio_duration_s(url_or_path: str) -> float:
     """Probe the duration of an audio (or media) URL/path via ffprobe.
 
@@ -2855,6 +2937,8 @@ def _resize_slot_to_audio(timeline: dict, block_id: str, audio_s: float) -> bool
     if not timeline or not isinstance(timeline, dict) or audio_s <= 0:
         return False
     target_id = f"v1_{block_id}"
+    exact_el: dict | None = None
+    fallback_el: dict | None = None
     for track in timeline.get("tracks") or []:
         if not isinstance(track, dict):
             continue
@@ -2863,16 +2947,34 @@ def _resize_slot_to_audio(timeline: dict, block_id: str, audio_s: float) -> bool
         for el in track.get("elements") or []:
             if not isinstance(el, dict):
                 continue
-            meta_block = (el.get("metadata") or {}).get("block_id")
-            if el.get("id") == target_id or meta_block == block_id:
-                try:
-                    s = float(el.get("s") or 0)
-                except (TypeError, ValueError):
-                    s = 0.0
-                el["s"] = s
-                el["e"] = s + float(audio_s)
-                return True
-    return False
+            eid = el.get("id") or ""
+            if eid == target_id:
+                exact_el = el
+                break
+            # Fallback ONLY for V1-shaped ids — mirrors the guard in
+            # _slot_duration_for_block. NEVER match cap_/prod_/pm_/etc via
+            # metadata.block_id: those overlays intentionally carry the same
+            # block_id but shorter slots, and resizing one of THEM leaves the
+            # real V1 slot untouched (the talking-head bake then ships at the
+            # stale short length — render rnd_157ba7252d5b, blk_5d5230d5b801).
+            if (
+                fallback_el is None
+                and eid.startswith("v1_")
+                and (el.get("metadata") or {}).get("block_id") == block_id
+            ):
+                fallback_el = el
+        if exact_el is not None:
+            break
+    el = exact_el or fallback_el
+    if el is None:
+        return False
+    try:
+        s = float(el.get("s") or 0)
+    except (TypeError, ValueError):
+        s = 0.0
+    el["s"] = s
+    el["e"] = s + float(audio_s)
+    return True
 
 
 def _per_block_user_durations(cast_timeline_json: dict) -> dict[str, float]:
@@ -3545,6 +3647,12 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
                 # Images/stickers can also fade in/out
                 overlay["fadeInDurationInSeconds"] = props.get("fadeInDurationInSeconds", 0) or 0
                 overlay["fadeOutDurationInSeconds"] = props.get("fadeOutDurationInSeconds", 0) or 0
+                # How to fit a mismatched-aspect asset into its box:
+                # "contain" (fit + pad, product shots) vs "cover" (fill + crop,
+                # the default for b-roll / backgrounds). Set by the editor
+                # mapping; a plain scale-to-box downstream stretches anything
+                # off-ratio.
+                overlay["fit"] = props.get("fit") or "cover"
 
             # Video fields
             if normalized_type == "video":
@@ -3561,6 +3669,8 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
                 overlay["borderRadius"] = props.get("borderRadius", 0) or 0
                 overlay["fadeInDurationInSeconds"] = props.get("fadeInDurationInSeconds", 0) or 0
                 overlay["fadeOutDurationInSeconds"] = props.get("fadeOutDurationInSeconds", 0) or 0
+                # See the image branch — "contain" vs "cover" fit, default cover.
+                overlay["fit"] = props.get("fit") or "cover"
 
             # Audio fields
             if normalized_type == "audio":
@@ -3588,6 +3698,11 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
             # Track-type hint for the compositor
             if meta.get("track_type"):
                 overlay["track_type"] = meta["track_type"]
+            # Block this overlay belongs to — lets the compose worker pair a
+            # full-frame b-roll with its PIP/talking-head block so the face is
+            # composited OVER the b-roll instead of hidden behind it.
+            if meta.get("block_id"):
+                overlay["block_id"] = meta["block_id"]
 
             overlays.append(overlay)
             accepted += 1
@@ -4786,6 +4901,29 @@ async def _render_async(task, render_id: str):
     # The rewritten snapshot is persisted to the CastRender row so
     # retries on the same render_id reuse the corrected layout.
     try:
+        # Probe each bonded block's REAL prepared voice track up front. The
+        # Arrange-timeline slot (_pj[5]) is a script-writer / editor estimate
+        # and drifts from the voice that TTS actually produced — a talking-head
+        # beat whose slot froze at ~3s while its line is ~8s is the failure
+        # this catches. Probing here, once, means the single reflow below lays
+        # the WHOLE timeline out against true durations, so V1, A1, captions,
+        # product cards and b-roll all stay aligned — instead of every
+        # consumer downstream re-discovering the mismatch and patching one
+        # element at a time.
+        _pj_audio_urls = [
+            (pj[1], pj[7]) for pj in pending_jobs
+            if pj[1] and pj[7]
+        ]
+        _audio_probe_results: dict[str, float] = {}
+        if _pj_audio_urls:
+            _probed = await asyncio.gather(
+                *[_probe_audio_duration_s(u) for _, u in _pj_audio_urls],
+                return_exceptions=True,
+            )
+            for (_bid, _), _res in zip(_pj_audio_urls, _probed):
+                if isinstance(_res, (int, float)) and _res > 0:
+                    _audio_probe_results[_bid] = float(_res)
+
         block_durations: dict[str, float] = {}
         for _pj in pending_jobs:
             # Tuple shape: (idx, block_id, v1_el, a1_el, baked_key,
@@ -4793,10 +4931,28 @@ async def _render_async(task, render_id: str):
             #               motion_prompt). duration_s == `using=`.
             try:
                 _bid = _pj[1]
-                _dur = float(_pj[5] or 0)
+                _slot_dur = float(_pj[5] or 0)
             except (IndexError, TypeError, ValueError) as _bd_exc:
                 sentry_sdk.capture_exception(_bd_exc)
                 continue
+            _v1_meta = (_pj[2] or {}).get("metadata") or {}
+            _is_fixed = bool(
+                _v1_meta.get("fixed_length") or _v1_meta.get("fixed_duration")
+            )
+            _real_audio = _audio_probe_results.get(_bid, 0.0)
+            # The bonded pair's length is driven by its voice. When the real
+            # audio meaningfully overruns the slot (stale/short slot), use the
+            # audio — the user rule allows extensions, never a silent cut.
+            # Fixed-length beats keep their slot (the video fills it instead).
+            if _real_audio > _slot_dur + 0.15 and not _is_fixed:
+                logger.info(
+                    "Block %s: reflowing slot %.2fs -> real voice %.2fs "
+                    "(stale/short Arrange slot)",
+                    _bid, _slot_dur, _real_audio,
+                )
+                _dur = _real_audio
+            else:
+                _dur = _slot_dur
             if _bid and _dur > 0:
                 block_durations[_bid] = _dur
         new_timeline, _rewritten, _dropped = _apply_real_block_durations(
@@ -4807,6 +4963,17 @@ async def _render_async(task, render_id: str):
         )
         if _rewritten:
             timeline = new_timeline
+            # pending_jobs still carries the pre-reflow slot; refresh each
+            # job's duration_s from the reflowed timeline so the bake
+            # dispatch, audio prep and slot trims all target the real length.
+            pending_jobs = [
+                (
+                    pj[0], pj[1], pj[2], pj[3], pj[4],
+                    _slot_duration_for_block(timeline, pj[1], pj[5]) or pj[5],
+                    pj[6], pj[7], pj[8],
+                )
+                for pj in pending_jobs
+            ]
             try:
                 from models.cast_render import CastRender as _CR
                 async with factory() as _persist_session:
@@ -5474,8 +5641,8 @@ async def _render_async(task, render_id: str):
                     # blocks regardless of voicing_mode — TTS becomes a
                     # paired voiceover audio track muxed onto the motion
                     # clip. The voicing_mode still distinguishes silent
-                    # beats (motion_sfx_only / prosody_only with empty
-                    # audio) from dialogue blocks.
+                    # beats (motion_sfx_only, or an empty-script action
+                    # block) from dialogue blocks.
                     block_voicing_mode = _normalize_voicing_mode(
                         getattr(blk, "voicing_mode", None) if blk else None
                     )
@@ -5898,7 +6065,6 @@ async def _render_async(task, render_id: str):
                 # voicing_mode behavior matrix (no lipsync anywhere):
                 #   tts_dialogue   -> mux TTS audio over the motion clip
                 #                     (subject to voiceover_enabled toggle).
-                #   prosody_only   -> mux the single prosody beat audio.
                 #   motion_sfx_only -> silent; the audio plan covers SFX.
                 #
                 # Runtime guard: Opus is instructed to use first-person
@@ -5943,8 +6109,6 @@ async def _render_async(task, render_id: str):
                     or user_disabled_voiceover
                 ):
                     audio_url_for_mux = None
-                elif block_voicing_mode == "prosody_only":
-                    audio_url_for_mux = audio_url or None
                 else:
                     audio_url_for_mux = audio_url or None
 
@@ -6158,12 +6322,72 @@ async def _render_async(task, render_id: str):
         bake_start = datetime.now(timezone.utc)
         await _update_block_status(render_id, block_id, state="baking", started_at=bake_start)
 
+        # §2.1 planning-layer slot↔audio reconciliation — MUST run BEFORE the
+        # audio trim below. The trim clamps the voiceover to the timeline slot;
+        # if the slot is a stale short value (e.g. a talking-head beat whose
+        # slot froze at ~2s while its voice line is ~6s), trimming first
+        # silently drops ~4s of speech + the face, and every check downstream
+        # then compares the already-trimmed audio against the slot and sees no
+        # mismatch. Reconcile against the RAW (untrimmed) TTS length instead:
+        #   * slot ≈ tts                 → left alone; the small trim below is a
+        #                                  genuine user shortening.
+        #   * slot ≪ tts AND resizable   → _reconcile_slot_vs_audio extends the
+        #                                  V1 element's end to the voice, so the
+        #                                  whole talking head plays. PIP blocks
+        #                                  are resizable here too — their slot
+        #                                  is the beat, not a fixed host window.
+        #   * slot ≪ tts AND fixed       → raises SlotAudioMismatch (loud
+        #                                  planning defect, never a silent cut).
+        raw_audio_duration_s = (
+            await _probe_audio_duration_s(audio_url) if audio_url else 0.0
+        )
+        if raw_audio_duration_s <= 0:
+            raw_audio_duration_s = float(tts_duration_s or 0)
+        if raw_audio_duration_s > 0:
+            _slot_before = _slot_duration_for_block(
+                timeline, block_id, float(duration_s or 0)
+            )
+            _v1_meta = (v1_el or {}).get("metadata") or {}
+            _fixed_len = bool(
+                _v1_meta.get("fixed_length")
+                or _v1_meta.get("fixed_duration")
+            )
+            _reconciled_s, _mismatch = _reconcile_slot_vs_audio(
+                timeline,
+                block_id=block_id,
+                audio_duration_s=raw_audio_duration_s,
+                slot_duration_s=_slot_before,
+                fixed_length=_fixed_len,
+            )
+            if _mismatch:
+                raise SlotAudioMismatch(
+                    f"block {block_id} render {render_id}: slot={_slot_before:.3f}s "
+                    f"vs voice={raw_audio_duration_s:.3f}s exceeds "
+                    f"{_SLOT_AUDIO_MISMATCH_TOLERANCE:.0%} and slot is "
+                    f"fixed-length — stale timeline / planning defect, not "
+                    f"re-baking. Reopen the editor to rebuild the slot."
+                )
+            # Reconcile may have extended the V1 element's end in `timeline`.
+            # Pick up the corrected slot so the trim below, the bake dispatch,
+            # and every downstream consumer use the real length.
+            _slot_after = _slot_duration_for_block(
+                timeline, block_id, float(duration_s or 0)
+            )
+            if _slot_after > 0 and abs(_slot_after - float(duration_s or 0)) > 0.01:
+                logger.info(
+                    "Block %s render %s: slot reconciled %.3fs -> %.3fs "
+                    "against voice=%.3fs (render_mode=%s)",
+                    block_id, render_id, float(duration_s or 0), _slot_after,
+                    raw_audio_duration_s, block_render_mode,
+                )
+                duration_s = _slot_after
+
         # If the user shortened (or lengthened to a smaller clip than the
         # raw TTS) this block in the editor, trim the audio so HOSTKEY's
         # InfiniteTalk worker — which infers output length from the audio
-        # it gets — produces a clip that matches the timeline edit. We
-        # only trim when the target is meaningfully shorter (>0.05s) than
-        # the original to avoid pointless re-uploads.
+        # it gets — produces a clip that matches the timeline edit. After the
+        # reconciliation above, `tts_duration_s - duration_s > 0.05` only holds
+        # for a genuine user-shortened beat, not a stale short slot.
         effective_audio_url = audio_url
         if (
             audio_url
@@ -6207,9 +6431,9 @@ async def _render_async(task, render_id: str):
         # compose + remux lay down byte-identical audio. Assert the two
         # durations match within the drift tolerance before the block is
         # allowed to proceed.
-        if effective_audio_url and a1_element is not None:
+        if effective_audio_url and a1_el is not None:
             lipsync_audio_by_block[block_id] = effective_audio_url
-            mux_src = (a1_element.get("props") or {}).get("src") or ""
+            mux_src = (a1_el.get("props") or {}).get("src") or ""
             if mux_src and mux_src != effective_audio_url:
                 mux_dur = await _probe_audio_duration_s(mux_src)
                 drift_s = abs(float(effective_audio_duration_s) - float(mux_dur))
@@ -6230,38 +6454,8 @@ async def _render_async(task, render_id: str):
                         effective_audio_duration_s, mux_dur,
                     )
 
-        # §2.1 planning-layer slot↔audio reconciliation. When the timeline
-        # slot disagrees with the audio beyond SLOT_AUDIO_MISMATCH_TOLERANCE
-        # we resize the slot to the audio (preferred) so every downstream
-        # consumer trims to the right length; a fixed-length slot instead
-        # fails the block as slot_audio_mismatch (never re-baked). PIP small
-        # bakes are excluded — their slot is the host window, not the audio.
-        if not (block_render_mode == "pip") and effective_audio_duration_s > 0:
-            _slot_now = _slot_duration_for_block(
-                timeline, block_id, float(duration_s or 0)
-            )
-            # A slot is fixed-length only if the timeline element flags it so
-            # (e.g. a showcase beat the planner must not stretch). Default
-            # False: the common speaking slot is resizable to the audio.
-            _v1_meta = (v1_element or {}).get("metadata") or {}
-            _fixed_len = bool(
-                _v1_meta.get("fixed_length")
-                or _v1_meta.get("fixed_duration")
-            )
-            _reconciled_s, _mismatch = _reconcile_slot_vs_audio(
-                timeline,
-                block_id=block_id,
-                audio_duration_s=effective_audio_duration_s,
-                slot_duration_s=_slot_now,
-                fixed_length=_fixed_len,
-            )
-            if _mismatch:
-                raise SlotAudioMismatch(
-                    f"block {block_id} render {render_id}: slot={_slot_now:.3f}s "
-                    f"vs audio={effective_audio_duration_s:.3f}s exceeds "
-                    f"{_SLOT_AUDIO_MISMATCH_TOLERANCE:.0%} and slot is "
-                    f"fixed-length — planning defect, not re-baking."
-                )
+        # (slot↔audio reconciliation now runs BEFORE the audio trim above,
+        # against the raw un-trimmed voice — see there.)
 
         # PIP (social-proof talking-head) blocks route through the SAME
         # audio-driven speaking cascade as full-frame speaking blocks:
@@ -6330,7 +6524,7 @@ async def _render_async(task, render_id: str):
             # via is_pip / HOSTKEY_ONLY routing, but the fallback keeps
             # the helper robust).
             try:
-                _slot_el = v1_element if v1_element is not None else a1_element
+                _slot_el = v1_el if v1_el is not None else a1_el
                 _slot_start = float((_slot_el or {}).get("s") or 0)
                 _slot_end = float((_slot_el or {}).get("e") or 0)
             except (TypeError, ValueError) as _slot_exc:
@@ -6880,6 +7074,18 @@ async def _render_async(task, render_id: str):
             block_id=block_id,
             render_id=render_id,
         )
+        # Guardrail (PIP only): the conform above must land the clip on its
+        # bonded slot. PIP skips the speaking tolerance gate and the Phase 3
+        # duration gate, so without this a silently-failed extend-to-slot
+        # ships a short clip that desyncs the bonded concat.
+        if is_pip_block:
+            await _enforce_pip_slot_duration(
+                video_bytes,
+                timeline=timeline,
+                block_id=block_id,
+                render_id=render_id,
+                fallback_duration_s=duration_s,
+            )
         # Phase 3: reject black / frozen / truncated bakes before upload.
         await _validate_baked_clip_bytes(
             video_bytes, block_id=block_id, render_id=render_id,
@@ -7334,6 +7540,10 @@ async def _render_async(task, render_id: str):
                     "url": _vurl,
                     "s": _s, "e": _e,
                     "block_id": _block_id,
+                    # Carry the block's PIP layout so the compose worker knows
+                    # to shrink this clip into a corner window (it otherwise
+                    # renders every baked clip full-frame).
+                    "pip_layout": _meta.get("pip_layout") or "fullscreen",
                 })
             elif _meta.get("paired_video_element_id"):
                 _src = (_el.get("props") or {}).get("src") or ""
@@ -7343,6 +7553,64 @@ async def _render_async(task, render_id: str):
                         "s": _s, "e": _e,
                         "block_id": _block_id,
                     })
+
+    # ── PIP / talking-head geometry for the compose worker ──────────────────
+    # worker_ffmpeg_compose has no PIP support — it lays every baked clip
+    # full-frame and then paints b-roll on top, which hides the talking head.
+    # Resolve each PIP block's corner-window rect here (canvas pixels, the
+    # same space the worker composes in) and pair it with its full-frame
+    # b-roll so the worker builds face-OVER-background instead.
+    try:
+        from services.timeline_builder import pip_geometry, is_pip_layout
+
+        _bg_by_block: dict[str, dict] = {}
+        for _ov in overlay_elements:
+            if _ov.get("type") != "video":
+                continue
+            _bid = _ov.get("block_id")
+            if not _bid or _bid in _bg_by_block:
+                continue
+            _ow = _ov.get("width") or cw_for_overlays
+            _oh = _ov.get("height") or ch_for_overlays
+            _ox = _ov.get("x") or 0
+            _oy = _ov.get("y") or 0
+            if (
+                _ow >= cw_for_overlays * 0.95
+                and _oh >= ch_for_overlays * 0.95
+                and _ox <= cw_for_overlays * 0.05
+                and _oy <= ch_for_overlays * 0.05
+            ):
+                _bg_by_block[_bid] = _ov
+
+        for _vt in compose_video_tracks:
+            _pl = _vt.get("pip_layout") or "fullscreen"
+            if not is_pip_layout(_pl):
+                continue
+            _g = pip_geometry(_pl, cw_for_overlays, ch_for_overlays)
+            if not _g.get("visible") or _g.get("w", 0) <= 0 or _g.get("h", 0) <= 0:
+                continue
+            _vt["pip"] = {
+                "x": int(_g["x"]), "y": int(_g["y"]),
+                "w": int(_g["w"]), "h": int(_g["h"]),
+                "layout": _g["pip_layout"],
+            }
+            _bg = _bg_by_block.get(_vt.get("block_id") or "")
+            if _bg and _bg.get("src"):
+                _vt["pip"]["bg_src"] = _bg["src"]
+                # Worker drops this from the top overlay pass — it's now the
+                # PIP background, baked in behind the face.
+                _bg["_pip_bg"] = True
+        _n_pip = sum(1 for _vt in compose_video_tracks if _vt.get("pip"))
+        if _n_pip:
+            logger.info(
+                "Render %s: %d PIP block(s) resolved for compose "
+                "(%d with a b-roll background)",
+                render_id, _n_pip,
+                sum(1 for _vt in compose_video_tracks if (_vt.get("pip") or {}).get("bg_src")),
+            )
+    except Exception as _pip_exc:
+        sentry_sdk.capture_exception(_pip_exc)
+        logger.warning("Render %s: PIP geometry resolve failed (%s)", render_id, _pip_exc)
 
     composition_payload = {
         "render_id": render_id,

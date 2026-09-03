@@ -7,7 +7,11 @@ const canFadeVisualMap = {
 	solid: true,
 	gif: true,
 	audio: false,
-	captions: true,
+	// Captions are a composite karaoke layer, not a plain visual overlay: a
+	// slow whole-strip opacity fade fights the punchy per-word/page animation
+	// of the caption presets and hurts sound-off readability. The presets
+	// already carry a tiny per-page micro-fade. No user-facing fade handle.
+	captions: false,
 } satisfies Record<EditorStarterItem['type'], boolean>;
 
 export type VisuallyFadableItem = {

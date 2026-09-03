@@ -1295,12 +1295,21 @@ def extend_video_bytes_to_duration(
             render_id=render_id,
         )
         final_s = probe_frame_counted_duration_s(out_path, target_fps=target_fps)
-        floor_s = target_s - (1.0 / float(target_fps if target_fps > 0 else 30))
+        _fp = float(target_fps if target_fps > 0 else 30)
+        # Accept a landing within 3 frames of target. The ladder's setpts
+        # micro-slowdown stretches PTS but doesn't always add frames, so a
+        # frame-counted probe can read ~1-2 frames short even on a "successful"
+        # retime. A sub-0.1s tail difference is imperceptible, well inside the
+        # validator's tail-freeze tolerance, and the bonded concat lays
+        # segments end-to-end so it doesn't accumulate into visible drift —
+        # keeping the ladder output beats discarding it back to the (shorter)
+        # original.
+        floor_s = target_s - (3.0 / _fp)
         if final_s < floor_s or not os.path.exists(out_path):
             logger.warning(
                 "[extend] block %s render %s: video extension landed at %.3fs "
-                "(target=%.3fs) — returning original bytes",
-                block_id, render_id, final_s, target_s,
+                "(target=%.3fs, floor=%.3fs) — returning original bytes",
+                block_id, render_id, final_s, target_s, floor_s,
             )
             return video_bytes
         with open(out_path, "rb") as f:

@@ -34,7 +34,7 @@ import type { CaptionsItem } from "@/components/cast-builder/editor-starter/item
 import type { Caption } from "@remotion/captions";
 import { CAPTION_PRESETS, presetPositionFraction } from "./captionPresets";
 import { cdnUrl } from "./cdn";
-import { getCategoryInfo } from "@/lib/blockCategories";
+import { getCategoryInfo, blockOwnsItsVisual } from "@/lib/blockCategories";
 
 // Re-export BlockRegion for backward compat with existing callers
 export interface BlockRegion {
@@ -172,8 +172,15 @@ export function castToEditorStarterTimeline(
   const musicTrackId = "track-music";
   const sfxTrackId = "track-sfx";
   const brollTrackId = "track-broll";
+  // Talking-head / PIP avatar sits in a corner window ON TOP of that block's
+  // background b-roll — the opposite of a full-frame avatar_speaking block
+  // where b-roll covers the (voice-only) avatar. It therefore needs its own
+  // track placed ABOVE track-broll in the stacking order below; on track-video
+  // the b-roll background painted over it and the head vanished.
+  const pipAvatarTrackId = "track-pip-avatar";
 
   const videoTrackItemIds: string[] = [];
+  const pipAvatarTrackItemIds: string[] = [];
   const audioTrackItemIds: string[] = [];
   const musicTrackItemIds: string[] = [];
   const sfxTrackItemIds: string[] = [];
@@ -640,7 +647,10 @@ export function castToEditorStarterTimeline(
         };
         items[snapshotItemId] = imageItem;
       }
-      videoTrackItemIds.push(snapshotItemId);
+      // PIP / talking-head avatars go on their own track that stacks above the
+      // b-roll background (see pipAvatarTrackId); a full-frame avatar stays on
+      // track-video, under the b-roll that's meant to cover it.
+      (isAnyPip ? pipAvatarTrackItemIds : videoTrackItemIds).push(snapshotItemId);
     } else if (isVoiceover && voiceoverPlaceholderSrc) {
       // Voiceover placeholder V1 — invisible (opacity 0), full-canvas,
       // pinned to the same time range as A1 so the bonded pair lines up.
@@ -758,7 +768,19 @@ export function castToEditorStarterTimeline(
           duration_s?: number | null;
         }>
       | undefined;
-    if (Array.isArray(parallelMedia) && parallelMedia.length > 0) {
+    // An action / motion block's own generated clip IS its visual — never
+    // overlay b-roll on it (it would just cover the action). Defensive: the
+    // backend also strips parallel_media from these on save/create, this
+    // catches any legacy block that still carries it.
+    const blockOwnsVisual = blockOwnsItsVisual(
+      block.category,
+      (block as any).render_mode,
+    );
+    if (
+      Array.isArray(parallelMedia) &&
+      parallelMedia.length > 0 &&
+      !blockOwnsVisual
+    ) {
       // Compute default per-item slot when offsets are missing.
       const slot = dur / parallelMedia.length;
       // Safety net for casts generated BEFORE the outline b-roll normaliser:
@@ -773,22 +795,44 @@ export function castToEditorStarterTimeline(
       // the b-roll IS meant to fill the frame — don't clamp it. (isPipHidden
       // is derived from metadata.pip_layout above.)
       const avatarDeliberatelyHidden = isPipHidden;
-      const unboundedSingleClip =
-        parallelMedia.length === 1 &&
-        typeof parallelMedia[0]?.start_offset_s !== "number" &&
-        (parallelMedia[0]?.duration_s === null ||
-          parallelMedia[0]?.duration_s === undefined);
+      // B-roll "dominates" a speaking beat when, left as authored, it would
+      // cover most/all of the beat and hide the avatar — either because a clip
+      // has no explicit duration (this mapping then tiles it to fill) or
+      // because the explicit durations together span ≥60% of the beat. When it
+      // does, we re-place EVERY clip into one bounded mid-beat cutaway window
+      // so the avatar bookends it. This generalises the old single-unbounded-
+      // clip guard to any clip count. Mirrors _normalize_full_cover_broll on
+      // the backend; the real fix is upstream (the script/outline shouldn't
+      // put full-cover b-roll on a speaking beat) and this is the safety net.
+      const brollTotalExplicitS = parallelMedia.reduce(
+        (sum, p) =>
+          sum +
+          (typeof p?.duration_s === "number" && p.duration_s != null
+            ? p.duration_s
+            : 0),
+        0,
+      );
+      const anyUnboundedClip = parallelMedia.some(
+        (p) => p && p.url && (p.duration_s === null || p.duration_s === undefined),
+      );
       const clampSpeakingCutaway =
-        isSpeakingBlock && !avatarDeliberatelyHidden && unboundedSingleClip && dur > 0;
+        isSpeakingBlock &&
+        !avatarDeliberatelyHidden &&
+        dur > 0 &&
+        (anyUnboundedClip || brollTotalExplicitS >= dur * 0.6);
+      // One cutaway budget + start shared across every clip on the beat.
+      const cutawayBudgetS = Math.min(4, Math.max(2, dur * 0.4));
+      const cutawayStartS = Math.min(1.5, dur * 0.2);
+      const cutawayPerClipS = cutawayBudgetS / parallelMedia.length;
       parallelMedia.forEach((pm, pmIdx) => {
         if (!pm || !pm.url || !pm.kind) return;
         const offset = clampSpeakingCutaway
-          ? Math.min(1.5, dur * 0.2)
+          ? Math.min(cutawayStartS + pmIdx * cutawayPerClipS, dur - 0.1)
           : typeof pm.start_offset_s === "number"
           ? Math.max(0, Math.min(pm.start_offset_s, dur - 0.1))
           : pmIdx * slot;
         const itemDur = clampSpeakingCutaway
-          ? Math.max(0.1, Math.min(4, Math.max(2, dur * 0.4), dur - offset))
+          ? Math.max(0.3, Math.min(cutawayPerClipS, dur - offset))
           : typeof pm.duration_s === "number" && pm.duration_s !== null
           ? Math.max(0.1, Math.min(pm.duration_s, dur - offset))
           : slot;
@@ -1138,6 +1182,10 @@ export function castToEditorStarterTimeline(
               carousel_total: itemCount,
               carousel_transition: transition,
               carousel_speed_seconds: speed,
+              // Product media: fit the whole asset, never crop or stretch it.
+              // ArrangePhase's applyAspectFit() tightens the box to the
+              // asset's real aspect ratio once probed.
+              fit: "contain" as const,
             },
           };
           items[carouselItemId] = cItem;
@@ -1184,6 +1232,8 @@ export function castToEditorStarterTimeline(
               carousel_total: itemCount,
               carousel_transition: transition,
               carousel_speed_seconds: speed,
+              // See the video branch above — product media is fit, not cropped.
+              fit: "contain" as const,
             },
           };
           items[carouselItemId] = cItem;
@@ -1239,6 +1289,10 @@ export function castToEditorStarterTimeline(
           // Products always carry the parent block's category color so the
           // chip on the timeline visually groups with its block.
           category_color: categoryHex,
+          // The chip box is canvas-aspect (0.3w x 0.3h); a product photo of
+          // any other shape must fit inside it, not stretch. applyAspectFit()
+          // then shrinks the chip to the photo's real aspect ratio.
+          fit: "contain" as const,
         },
       };
       items[prodItemId] = prodItem;
@@ -1276,7 +1330,22 @@ export function castToEditorStarterTimeline(
       // (e.g. "Alright guys listen up I have ..."), not 30 separate word
       // fragments. Word-level data is preserved — just grouped at render
       // time by Remotion's captions API.
-      const captionTokens: Caption[] = workingCaptions.map((w) => {
+      //
+      // WhisperX occasionally emits a trailing (or, rarely, leading) word with
+      // a wildly out-of-range timestamp — a hallucination on trailing silence,
+      // music bleed, or a very short clip. Left alone it stretches this
+      // block's caption strip far past its own voice/video block on the
+      // timeline (and mis-times the burned-in captions). Clamp every token to
+      // the block's own slot [0, blockDur]; a small epsilon past the end keeps
+      // a legitimate last word that lands exactly on the boundary.
+      const blockDurS = Math.max(end - start, 0);
+      const clampMaxS = blockDurS > 0 ? blockDurS + 0.05 : Infinity;
+      const clampedCaptions = workingCaptions.map((w) => {
+        const cs = Math.min(Math.max(Number(w.start) || 0, 0), clampMaxS);
+        const ce = Math.min(Math.max(Number(w.end) || cs, cs), clampMaxS);
+        return { ...w, start: cs, end: ce };
+      });
+      const captionTokens: Caption[] = clampedCaptions.map((w) => {
         const startMs = Math.round((w.start + start) * 1000);
         const endMs = Math.max(Math.round((w.end + start) * 1000), startMs + 1);
         return {
@@ -1525,9 +1594,10 @@ export function castToEditorStarterTimeline(
   // want, top to bottom:
   //    1. Captions (always readable over everything)
   //    2. Product images / chips
-  //    3. B-roll (plays over the avatar for the same block)
-  //    4. Avatar (V1 video face)
-  //    5. Audio (no visual, irrelevant for stacking)
+  //    3. PIP / talking-head avatar (corner window over its own b-roll bg)
+  //    4. B-roll (plays over a FULL-FRAME avatar for the same block)
+  //    5. Avatar (V1 video face — full-frame)
+  //    6. Audio (no visual, irrelevant for stacking)
   // Any other overlays the user adds default to the video track — placing
   // the avatar track below products keeps avatar from covering them and
   // matches the 'avatar in the back, product chip on top of avatar' layout
@@ -1536,13 +1606,18 @@ export function castToEditorStarterTimeline(
   // avatar item's exact from/duration range for that block, and every item
   // in one TimelineTrack renders at the same top/height — sharing a track
   // would make the avatar clip an invisible drag-collision blocker sitting
-  // directly under the B-roll clip.
+  // directly under the B-roll clip. The PIP avatar is split off ABOVE b-roll
+  // for the inverse reason: on a talking-head block the b-roll is the
+  // background and the head must stay visible over it.
   const tracks: TrackType[] = [
     ...(captionTrackItemIds.length > 0
       ? [{ id: captionTrackId, items: captionTrackItemIds, hidden: false, muted: false }]
       : []),
     ...(productTrackItemIds.length > 0
       ? [{ id: productTrackId, items: productTrackItemIds, hidden: false, muted: false }]
+      : []),
+    ...(pipAvatarTrackItemIds.length > 0
+      ? [{ id: pipAvatarTrackId, items: pipAvatarTrackItemIds, hidden: false, muted: false }]
       : []),
     ...(brollTrackItemIds.length > 0
       ? [{ id: brollTrackId, items: brollTrackItemIds, hidden: false, muted: false }]
@@ -1735,6 +1810,10 @@ export function editorStarterToLuminacastSnapshot(undoableState: UndoableState):
         props.fadeOutDurationInSeconds = ii.fadeOutDurationInSeconds ?? 0;
         props.borderRadius = ii.borderRadius ?? 0;
         props.rotation = ii.rotation ?? 0;
+        // How the renderer should fit a mismatched-aspect asset into its
+        // box: "contain" (fit + pad — product shots) vs "cover" (fill +
+        // crop — the default for b-roll / backgrounds).
+        props.fit = item.metadata?.fit ?? "cover";
       }
 
       if (item.type === "video") {
@@ -1751,6 +1830,7 @@ export function editorStarterToLuminacastSnapshot(undoableState: UndoableState):
         props.cropTop = vi.cropTop ?? 0;
         props.cropRight = vi.cropRight ?? 0;
         props.cropBottom = vi.cropBottom ?? 0;
+        props.fit = item.metadata?.fit ?? "cover";
       }
 
       if (item.type === "audio") {

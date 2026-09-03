@@ -93,6 +93,42 @@ def test_rewrite_points_mux_src_at_lipsync_driver():
     assert music["props"]["src"] == music_url, "music element must be untouched"
 
 
+def test_rewrite_leaves_sfx_and_music_elements_alone_even_with_block_id():
+    """An SFX (or per-block music) element carries the same block_id as the
+    voice, but must NOT be repointed at the lipsync driver — doing so lost
+    the SFX and played the block's narration twice ('two voices at once')."""
+    driver_url = "https://cdn/lipsync_prep/rnd_1/blk_0-abc.wav"
+    sfx_url = "https://media.luminacast.com/sfx/record_scratch.wav"
+    blk_music_url = "https://media.luminacast.com/music/rehosted/u1/deadbeef.mp3"
+    timeline = {
+        "tracks": [
+            {"type": "audio", "elements": [
+                {"id": "a0", "s": 0, "e": 4,
+                 "metadata": {"block_id": "blk_0", "bonded": True,
+                              "paired_video_element_id": "v0"},
+                 "props": {"src": "https://cdn/tts/voice/123.mp3"}},
+                {"id": "sfx0", "s": 0.03, "e": 0.63,
+                 "metadata": {"block_id": "blk_0", "kind": "sfx",
+                              "track_type": "audio_sfx", "name": "record_scratch"},
+                 "props": {"src": sfx_url}},
+                {"id": "mus0", "s": 0, "e": 4,
+                 "metadata": {"block_id": "blk_0", "kind": "music",
+                              "track_type": "audio_music"},
+                 "props": {"src": blk_music_url}},
+            ]},
+        ],
+    }
+
+    n = _rewrite_mux_audio_to_lipsync(
+        timeline, lipsync_audio_by_block={"blk_0": driver_url}, render_id="rnd_1",
+    )
+    els = {e["id"]: e for e in timeline["tracks"][0]["elements"]}
+    assert n == 1, "only the voice element should be rewritten"
+    assert els["a0"]["props"]["src"] == driver_url
+    assert els["sfx0"]["props"]["src"] == sfx_url, "SFX src must be untouched"
+    assert els["mus0"]["props"]["src"] == blk_music_url, "music src must be untouched"
+
+
 def test_rewrite_is_noop_without_recorded_drivers():
     """No recorded driver URLs → nothing is rewritten."""
     timeline = _timeline_with_audio(

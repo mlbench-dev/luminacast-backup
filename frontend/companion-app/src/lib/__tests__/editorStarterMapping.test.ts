@@ -151,6 +151,121 @@ describe("castToEditorStarterTimeline", () => {
     expect(state.tracks[1].items).toHaveLength(3);
   });
 
+  it("stacks a talking-head PIP avatar ABOVE its own b-roll background", () => {
+    // Regression: a pip_talking_head block with b-roll behind it put the
+    // avatar on track-video (under track-broll), so the b-roll background
+    // painted over the PIP and the head disappeared.
+    const castWithPip: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          // b-roll behind a corner talking-head window
+          category: "pip_talking_head",
+          parallel_media: [
+            { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 3 },
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+
+    const { state } = castToEditorStarterTimeline(castWithPip, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+
+    const ids = state.tracks.map((t) => t.id);
+    const pipIdx = ids.indexOf("track-pip-avatar");
+    const brollIdx = ids.indexOf("track-broll");
+    const videoIdx = ids.indexOf("track-video");
+
+    expect(pipIdx).toBeGreaterThanOrEqual(0);
+    expect(brollIdx).toBeGreaterThanOrEqual(0);
+    // Layers paints tracks in REVERSED array order, so a lower index paints
+    // last = on top. The PIP avatar must come before the b-roll.
+    expect(pipIdx).toBeLessThan(brollIdx);
+
+    // The PIP block's avatar item lives on the pip track, not track-video.
+    const pipTrack = state.tracks[pipIdx];
+    const videoTrack = state.tracks[videoIdx];
+    expect(pipTrack.items).toContain("v1_b_001");
+    expect(videoTrack.items).not.toContain("v1_b_001");
+    // A non-PIP block's avatar stays on track-video.
+    expect(videoTrack.items).toContain("v1_b_002");
+    expect(pipTrack.items).not.toContain("v1_b_002");
+  });
+
+  it("never lays b-roll over an action block (its own clip is the visual)", () => {
+    const castWithAction: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          category: "avatar_action",
+          // a legacy action block still carrying b-roll must not overlay it
+          parallel_media: [
+            { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 3 },
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+    const { state } = castToEditorStarterTimeline(castWithAction, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    expect(state.tracks.map((t) => t.id)).not.toContain("track-broll");
+    for (const item of Object.values(state.items)) {
+      expect(item.metadata?.track_type).not.toBe("parallel_media");
+    }
+  });
+
+  it("keeps a full-frame cast on just video + audio tracks (no pip track)", () => {
+    const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    expect(state.tracks.map((t) => t.id)).not.toContain("track-pip-avatar");
+  });
+
+  it("clamps a caption strip to its block when WhisperX hallucinates a timestamp", () => {
+    // b_001 is a 4.5s block. WhisperX gave the last word end=30 (a common
+    // trailing-silence hallucination) — the caption item must NOT stretch to
+    // 30s past its block.
+    const castWithBadCaption: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          variants: [
+            {
+              ...FIXTURE_CAST.blocks![0].variants![0],
+              caption_words: [
+                { word: "Alright", start: 0.1, end: 0.5, probability: 0.9 },
+                { word: "listen", start: 0.5, end: 0.9, probability: 0.9 },
+                { word: "up", start: 0.9, end: 30.0, probability: 0.2 },
+              ],
+            } as any,
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+
+    const { state } = castToEditorStarterTimeline(castWithBadCaption, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+      fps: 30,
+    });
+
+    const cap = state.items["cap_b_001"];
+    expect(cap).toBeDefined();
+    // block is 4.5s (135 frames) — allow the +0.05s epsilon → ~136 frames max
+    expect(cap.durationInFrames).toBeLessThanOrEqual(137);
+    // and it should still start near the first word (~0.1s → 3 frames)
+    expect(cap.from).toBeLessThanOrEqual(6);
+  });
+
   it("sets correct timing in frames (fps=30)", () => {
     const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
       avatarFaceKey: AVATAR_FACE_KEY,

@@ -611,6 +611,18 @@ async def update_block(
     if parallel_media is not None:
         # Light validation — each item needs at least kind + url.
         valid: list = []
+        # An action / motion block's own generated clip IS its visual — a
+        # b-roll overlay would just cover the action. Never persist it there.
+        from utils.block_visual import block_owns_its_visual
+        if block_owns_its_visual(
+            getattr(block, "category", None), getattr(block, "render_mode", None)
+        ):
+            parallel_media = []
+            logger.info(
+                "Dropped parallel_media on motion/action block %s "
+                "(category=%s) — its own clip is the visual",
+                getattr(block, "id", "?"), getattr(block, "category", None),
+            )
         for item in (parallel_media or []):
             if not isinstance(item, dict):
                 continue

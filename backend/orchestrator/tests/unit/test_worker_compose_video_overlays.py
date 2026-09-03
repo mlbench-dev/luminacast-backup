@@ -97,6 +97,23 @@ def test_video_overlay_split_geometry():
     assert "overlay=0:424:enable='between(t,37.63,43.53)':eof_action=pass" in fc
 
 
+def test_pip_background_overlay_is_not_re_composited_on_top():
+    """A b-roll tagged _pip_bg is a PIP block's background — it's baked in
+    behind the face during clip normalization, so the top overlay pass must
+    skip it (otherwise it covers the talking head again)."""
+    bg = _video_overlay(idx=1, x=0, y=0, w=480, h=848, start=0.0, end=6.0)
+    bg["_pip_bg"] = True
+    normal = _video_overlay(idx=2, x=0, y=424, w=480, h=424, start=8.0, end=12.0)
+
+    parts, current_label = wfc._build_overlay_filter_parts([bg, normal], "[0:v]")
+    fc = ";".join(parts)
+
+    # Only the normal overlay is composited.
+    assert "scaled2" in fc
+    assert "scaled1" not in fc
+    assert current_label == "[img2]"
+
+
 def test_image_overlay_keeps_tpad_path():
     """Image overlays must retain the alpha-aware tpad path (unchanged)."""
     ov = {

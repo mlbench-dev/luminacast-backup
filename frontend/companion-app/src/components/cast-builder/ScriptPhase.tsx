@@ -1461,7 +1461,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                                 )}
                               >
                                 {BLOCK_CATEGORIES.map(c => (
-                                  <option key={c.value} value={c.value} title={c.blurb}>{c.label}</option>
+                                  <option key={c.value} value={c.value} title={c.blurb} className="bg-neutral-900 text-white">{c.label}</option>
                                 ))}
                               </select>
                               <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none opacity-60" />
@@ -1488,10 +1488,10 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                                   className="appearance-none text-[10px] pl-2 pr-5 py-0.5 rounded-full cursor-pointer border border-white/15 bg-white/5 text-white/70 hover:text-white focus:outline-none focus:ring-1 focus:ring-accent/40"
                                   title="Avatar size on screen"
                                 >
-                                  <option value="fullscreen">Fullscreen</option>
-                                  <option value="pip_small">Small (default)</option>
-                                  <option value="pip_medium">Medium</option>
-                                  <option value="hidden">Hidden (audio only)</option>
+                                  <option value="fullscreen" className="bg-neutral-900 text-white">Fullscreen</option>
+                                  <option value="pip_small" className="bg-neutral-900 text-white">Small (default)</option>
+                                  <option value="pip_medium" className="bg-neutral-900 text-white">Medium</option>
+                                  <option value="hidden" className="bg-neutral-900 text-white">Hidden (audio only)</option>
                                 </select>
                                 <ChevronDown className="absolute right-1 top-1/2 -translate-y-1/2 w-2.5 h-2.5 pointer-events-none opacity-60" />
                               </div>

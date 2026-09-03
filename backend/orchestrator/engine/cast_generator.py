@@ -3207,6 +3207,7 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
     reliable beat length and its blocks already have written scripts, so it is
     intentionally left untouched.
     """
+    last_idx = len(outline) - 1
     for i, block in enumerate(outline):
         if (block.get("category") or "avatar_speaking") != "avatar_speaking":
             continue
@@ -3215,20 +3216,59 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
         if "estimated_duration_seconds" not in block:
             continue
         pm = block.get("parallel_media")
-        if not isinstance(pm, list) or len(pm) != 1:
+        if not isinstance(pm, list) or not pm:
             continue
-        entry = pm[0]
-        if not isinstance(entry, dict) or not entry.get("url"):
+        clips = [e for e in pm if isinstance(e, dict) and e.get("url")]
+        if not clips:
             continue
         try:
             beat_s = float(block.get("estimated_duration_seconds") or 0)
         except (TypeError, ValueError):
             beat_s = 0.0
-        dur = entry.get("duration_s")
-        covers_whole_beat = dur is None or (
-            beat_s > 0 and float(dur) >= beat_s - 0.25
+
+        # Does the b-roll, as authored, cover essentially the WHOLE beat?
+        #   * any clip with no explicit duration_s → the editor mapping tiles
+        #     it to fill the beat, so it covers on its own.
+        #   * otherwise the explicit durations together span the beat.
+        # A single sub-beat cutaway (b-roll < beat) is left alone — this pass
+        # only defuses full-cover b-roll on a speaking beat.
+        any_unbounded = any(e.get("duration_s") is None for e in clips)
+        explicit_total = 0.0
+        for e in clips:
+            d = e.get("duration_s")
+            if d is None:
+                continue
+            try:
+                explicit_total += float(d)
+            except (TypeError, ValueError):
+                pass
+        covers_whole_beat = any_unbounded or (
+            beat_s > 0 and explicit_total >= beat_s - 0.25
         )
         if not covers_whole_beat:
+            continue
+
+        # The hook (first) and CTA (last) beats of a real multi-beat cast are
+        # direct-to-camera bookends — the payoff is the avatar making the ask,
+        # not stock footage over it. If a full-cover clip landed on one of
+        # these, drop it rather than retyping to voiceover or cutting the
+        # middle (both hide the face). Other guards (_apply_preferred_broll
+        # etc.) already protect the bookends; this pass was the gap. A
+        # single-beat outline has no bookends, so it still takes the normal
+        # retype/cutaway path below.
+        if last_idx > 0 and (i == 0 or i == last_idx):
+            block["parallel_media"] = []
+            if block.get("stock_media_url"):
+                block["stock_media_url"] = None
+            _log(
+                "info",
+                "Dropped full-cover b-roll from a bookend beat (hook/CTA "
+                "stays avatar-on-camera)",
+                cast_id=cast_id,
+                block_index=i,
+                is_cta=(i == last_idx),
+                broll_clips=len(clips),
+            )
             continue
 
         if beat_s <= 0 or beat_s < _CUTAWAY_MIN_BEAT_SEC:
@@ -3245,18 +3285,49 @@ def _normalize_full_cover_broll(outline: list[dict], cast_id: str) -> None:
                 cast_id=cast_id,
                 block_index=i,
                 beat_seconds=beat_s,
+                broll_clips=len(clips),
             )
-        else:
-            entry["start_offset_s"] = _CUTAWAY_START_OFFSET_SEC
-            entry["duration_s"] = min(_CUTAWAY_MAX_SEC, max(2.0, beat_s * 0.4))
+            continue
+
+        # Long enough for a cutaway: keep avatar_speaking but bound EVERY clip
+        # into one combined mid-beat window so the avatar bookends it. The
+        # budget matches the single-clip formula; N clips split it evenly and
+        # play back-to-back from the same start offset.
+        budget_s = min(_CUTAWAY_MAX_SEC, max(2.0, beat_s * 0.4))
+        per_clip_s = budget_s / len(clips)
+        if per_clip_s < 1.0:
+            # Too many clips to read as cutaways — keep the first as the whole
+            # cutaway and drop the rest.
+            first = clips[0]
+            first["start_offset_s"] = _CUTAWAY_START_OFFSET_SEC
+            first["duration_s"] = round(budget_s, 3)
+            block["parallel_media"] = [first]
             _log(
                 "info",
-                "Bounded full-cover b-roll to a mid-beat cutaway",
+                "Collapsed multi-clip full-cover b-roll to a single mid-beat "
+                "cutaway",
                 cast_id=cast_id,
                 block_index=i,
                 beat_seconds=beat_s,
-                cutaway_seconds=entry["duration_s"],
+                dropped_clips=len(clips) - 1,
+                cutaway_seconds=round(budget_s, 3),
             )
+            continue
+        cursor = float(_CUTAWAY_START_OFFSET_SEC)
+        for e in clips:
+            e["start_offset_s"] = round(cursor, 3)
+            e["duration_s"] = round(per_clip_s, 3)
+            cursor += per_clip_s
+        block["parallel_media"] = clips
+        _log(
+            "info",
+            "Bounded full-cover b-roll to a mid-beat cutaway",
+            cast_id=cast_id,
+            block_index=i,
+            beat_seconds=beat_s,
+            broll_clips=len(clips),
+            cutaway_seconds=round(budget_s, 3),
+        )
 
 
 def _apply_preferred_broll(
@@ -3639,10 +3710,9 @@ CATEGORY_SCRIPT_RULES: dict[str, str] = {
         "the same vocabulary, showing where the motion lands. "
         "The user can later edit either frame prompt in the editor's frame "
         "carousel and click Regenerate. "
-        "VOICING MODE (required field `voicing_mode`): pick one of three modes: "
+        "VOICING MODE (required field `voicing_mode`): pick one of two modes: "
         "(1) tts_dialogue — voiceover narrates the action; script is non-empty, ≤18s; "
-        "(2) prosody_only — a single prosody beat like '[laugh]', '[gasp]', '[sigh]' and nothing else; "
-        "(3) motion_sfx_only — script MUST be \"\" (empty) and the block carries a `motion_sfx[]` array "
+        "(2) motion_sfx_only — script MUST be \"\" (empty) and the block carries a `motion_sfx[]` array "
         "(cues like footstep_soft, fabric_rustle, object_pickup, breath_out, hand_clap…) — "
         "the *movement* makes the sound, no TTS is rendered. Use motion_sfx_only for "
         "fashion walks, transitions, product handling, or any visual-first beat. "
@@ -3650,7 +3720,7 @@ CATEGORY_SCRIPT_RULES: dict[str, str] = {
         "NEVER lip-synced — the lipsync engines distort moving subjects. If the block "
         "has dialogue, the renderer plays it as a paired voiceover audio track over the "
         "motion clip. Emit `voiceover_enabled`: true when the dialogue should play over "
-        "the action (DEFAULT for any tts_dialogue/prosody_only block), false for pure "
+        "the action (DEFAULT for any tts_dialogue block), false for pure "
         "silent visual beats where the line should be dropped. The user can override "
         "this in the Script step."
     ),
@@ -3676,8 +3746,7 @@ CATEGORY_SCRIPT_RULES: dict[str, str] = {
         "overlay (max 10 words) OR a short voiceover line if the scene "
         "benefits from narration. "
         "VOICING MODE (required field `voicing_mode`): pick "
-        "tts_dialogue (script non-empty, ≤18s narration over the generated visual), "
-        "prosody_only (a single prosody marker like '[gasp]'), or "
+        "tts_dialogue (script non-empty, ≤18s narration over the generated visual) or "
         "motion_sfx_only (script MUST be \"\" and `motion_sfx[]` carries ≥1 cue — "
         "use this when the generated scene depicts a discrete physical action whose "
         "foley should drive the audio rather than dialogue)."
@@ -4064,6 +4133,14 @@ async def generate_scripts(
         script_text = script_text.replace("[product_name]", product_name)
         script_text = script_text.replace("[Product Name]", product_name)
 
+        # Belt-and-suspenders: the prompt no longer asks for (excited)-style
+        # prosody tags or [pause] (delivery support is a later phase, and the
+        # voice engine strips them anyway), but the model still emits one now
+        # and then from training priors. Drop them from the stored script so
+        # they don't reappear in the editor. [sfx:NAME] markers are kept.
+        from utils.script_cleaning import strip_prosody_pause_markers
+        script_text = strip_prosody_pause_markers(script_text)
+
         # Post-generation HARD enforcement: if this block's script exceeds
         # the per-block word budget at SPEAKING_WPM by >SCRIPT_OVERSHOOT_SLACK,
         # trim from the END (sentence-by-sentence) until it fits. This is the
@@ -4127,7 +4204,8 @@ async def generate_scripts(
 def _trim_to_word_cap(text: str, max_words: int) -> str:
     """Trim text to ≤max_words by dropping trailing sentences. Falls back to a
     hard word-slice if even one sentence exceeds the cap (rare). Preserves
-    prosody markers — they don't count toward the budget."""
+    bracket/paren direction markers (e.g. [sfx:NAME]) — they don't count
+    toward the budget."""
     import re as _re
     if max_words <= 0 or _count_words(text) <= max_words:
         return text
@@ -4141,8 +4219,8 @@ def _trim_to_word_cap(text: str, max_words: int) -> str:
         out.append(s)
         used += w
     if not out:
-        # Single overly-long sentence — emergency word-slice. Strip prosody
-        # before counting so we don't waste budget on markers.
+        # Single overly-long sentence — emergency word-slice. Strip direction
+        # markers before counting so we don't waste budget on them.
         words = text.split()
         clean_words = [
             w for w in words
@@ -4150,8 +4228,8 @@ def _trim_to_word_cap(text: str, max_words: int) -> str:
         ]
         if len(clean_words) <= max_words:
             return text
-        # Take the first max_words actual words, preserving prosody markers
-        # that fall before them.
+        # Take the first max_words actual words, preserving any direction
+        # markers that fall before them.
         kept = []
         kept_count = 0
         for w in words:

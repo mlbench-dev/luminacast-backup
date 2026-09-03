@@ -596,20 +596,22 @@ export function CastBuilderPage() {
     <div className="flex flex-col h-full">
       {/* Phase header */}
       {!(isNew && phase === "setup") && phase !== "generating_script" && (
-        <div className="flex items-center">
-          {/* Back button — shown on all phases except setup */}
+        <div className="flex items-start min-w-0">
+          {/* Back button — shown on all phases except setup. items-start keeps
+              it aligned with the phase-pill row now that the header can grow
+              to a second row for the actions. */}
           {phase !== "setup" && (
             <Button
               variant="ghost"
               size="sm"
               onClick={handleBack}
-              className="ml-2 text-white/50 hover:text-white px-2"
+              className="ml-2 mt-2.5 shrink-0 text-white/50 hover:text-white px-2"
               data-testid="cast-back-btn"
             >
               <ChevronLeft className="w-4 h-4" />
             </Button>
           )}
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <PhaseHeader
               currentPhase={phase}
               castName={cast?.name}
@@ -627,7 +629,7 @@ export function CastBuilderPage() {
                     : "none"
               }
               actions={phase === "editor" && cast ? (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   {/* Left: Version picker */}
                   <VersionPicker
                     cast={cast}
@@ -768,8 +770,15 @@ export function CastBuilderPage() {
 
       {/* Phase content */}
       <div className={phase === "editor" ? "flex-1 overflow-hidden min-h-0" : "flex-1 overflow-auto"}>
+        {/* key on cast.id: navigating straight from one cast to a sibling
+            (e.g. the "vertical version → Open" banner) is a param-only route
+            change — React keeps the same phase component mounted, and its
+            internal load effects don't fully re-seed (the editor kept showing
+            the previous cast's timeline while the URL had already changed).
+            Keying forces a clean remount per cast. */}
         {phase === "setup" && (
           <SetupPhase
+            key={cast?.id ?? "new"}
             cast={cast}
             onCreated={handleCastCreated}
             renderInProgress={renderStatus.status === "rendering"}
@@ -781,6 +790,7 @@ export function CastBuilderPage() {
 
         {phase === "script" && cast && (
           <ScriptPhase
+            key={cast.id}
             cast={cast}
             onDone={handleScriptDone}
             renderInProgress={renderStatus.status === "rendering"}
@@ -806,7 +816,7 @@ export function CastBuilderPage() {
               </div>
             }
           >
-            <ArrangePhase ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} onEdited={() => {
+            <ArrangePhase key={cast.id} ref={arrangePhaseRef} cast={cast} onEditScript={handleEditScript} renderInProgress={renderStatus.status === "rendering"} onCancelRender={handleCancelRender} onEdited={() => {
               editsSinceRenderRef.current += 1;
               // Instant UI flip: if showing "Render Ready" and user edits, switch to idle immediately
               setRenderStatus((prev) => {
@@ -820,7 +830,7 @@ export function CastBuilderPage() {
         )}
 
         {phase === "ready" && cast && (
-          <ReadyPhase cast={cast} onEdit={handleEditFromReady} onEditScript={handleEditScript} />
+          <ReadyPhase key={cast.id} cast={cast} onEdit={handleEditFromReady} onEditScript={handleEditScript} />
         )}
       </div>
     </div>

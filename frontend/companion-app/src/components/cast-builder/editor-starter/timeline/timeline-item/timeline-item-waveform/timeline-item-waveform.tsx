@@ -66,6 +66,20 @@ const WaveformCanvas = ({
 		const {current: canvasElement} = canvasRef;
 		if (!canvasElement) return;
 
+		// A collapsed timeline pane can report a container width of 0, which
+		// propagates to a 0 (or NaN, via a 0 playbackRate/duration) canvas
+		// width here. createImageData() throws on that, and the editor's
+		// error boundary then tears down the whole editor. A zero-width
+		// waveform is invisible anyway, so just skip the draw.
+		if (
+			!Number.isFinite(width) ||
+			!Number.isFinite(height) ||
+			width < 1 ||
+			height < 1
+		) {
+			return;
+		}
+
 		canvasElement.width = width;
 		canvasElement.height = height;
 

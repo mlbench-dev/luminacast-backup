@@ -71,10 +71,19 @@ celery_app.conf.update(
             "task": "cleanup_stale_cast_renders",
             "schedule": crontab(minute="*/5"),
         },
-        "refresh-trending-products": {
-            "task": "refresh_trending_products",
-            "schedule": crontab(hour=6, minute=0),  # 6 AM UTC daily
-        },
+        # DISABLED: this ran a full `maxItems: 200` parseforge trending scrape
+        # per section x 5 sections, plus up to 15 pro100chok enrichment scrapes
+        # per section, every day — with force_refresh=True bypassing the 24h
+        # cache entirely (services/product_discovery.fetch_trending). It re-
+        # scraped roughly the same products daily and was the main driver of
+        # the client's ~$250/mo Apify bill. Nothing consumes trending_products
+        # anymore: the Discover tab is disabled (routers/product_discovery.py
+        # _DISCOVER_DISABLED) and product import is URL-only. Re-enable only if
+        # the Discover tab is restored AND the cache is respected.
+        # "refresh-trending-products": {
+        #     "task": "refresh_trending_products",
+        #     "schedule": crontab(hour=6, minute=0),  # 6 AM UTC daily
+        # },
         # Zernio: pull new comments and generate AI replies for recent posts.
         # Every 5 minutes is the cadence the Zernio integration doc requested.
         "poll-social-comments": {

@@ -238,9 +238,10 @@ hormozi_bold (default, high-energy) · pill_highlight · karaoke_pop · minimal_
 whoosh · pop · ding · cash_register · sparkle · record_scratch · swoosh_up · swoosh_down · notification · timer_tick · click · drumroll · applause · camera_shutter · bass_drop · coin · success
 Rules: max 2-3 per 15s block, place BEFORE the word, never stack two SFX back-to-back.
 
-### 8. Prosody tags (7) — Fish Speech S2 understands these
-(excited) · (casual) · (whispering) · (laughing) · (sighing) · (super happy) · [pause]
-Rules: max 3-4 per 15s block; never start a block with a tag; [pause] is the strongest tool — use it after the hook line.
+### 8. Prosody / pause tags — REMOVED. Do not emit `(excited)`, `(casual)`,
+`(whispering)`, `(laughing)`, `(sighing)`, `(super happy)`, or `[pause]`. The
+voice engine ignores them; delivery control returns in a later phase. `[sfx:…]`
+markers from §7 are unaffected.
 
 ### 9. Music — Mubert presets (10) + mood→tag map
 Catalog presets: Energetic Pop · Chill Lo-fi · Corporate Motivational · Dramatic Cinematic · Upbeat Electronic · Warm Acoustic · Intense Driving · Ambient Minimal · Fun Quirky · Dreamy Ethereal.
@@ -266,12 +267,11 @@ Music auto-ducks to ~15% under voice. The writer can pick a mood per cast.
 - Min block ~3s after scaling.
 
 ### 18. Motion voicing modes (CRITICAL — applies to every avatar_action / generated_video block)
-A motion block does NOT have to carry the avatar's TTS voice. The writer MUST emit a `voicing_mode` field on every block whose category is in (avatar_action, generated_video). Three modes:
+A motion block does NOT have to carry the avatar's TTS voice. The writer MUST emit a `voicing_mode` field on every block whose category is in (avatar_action, generated_video). Two modes:
 
 | voicing_mode | when to use | audio composition | required block fields |
 |---|---|---|---|
 | tts_dialogue | avatar delivers a line of copy while moving (default) | TTS narration on A1 + ambient bed + optional SFX | `script` (non-empty, FIRST-PERSON only — third-person narrator pronouns referring to the on-screen avatar are forbidden), `voice_persona`, ≤18s |
-| prosody_only | avatar makes a non-verbal vocal beat (laugh, gasp, hum) — no words | prosody-only TTS render on A1 + ambient bed | `script` is a SINGLE prosody tag like `"[laugh]"`, `"[gasp]"`, `"[sigh]"` (nothing else) |
 | motion_sfx_only | pure visual action — the *movement* makes the sound | NO TTS. A1 = silence/omitted; A2 = layered foley cues that match action; music continues | `script` MUST be `""` (empty); `motion_sfx[]` array with at least one cue; optional `ambient_bed` tag |
 
 When to switch to `motion_sfx_only`:
@@ -302,10 +302,6 @@ Renderer contract for motion_sfx_only:
 - TTS service is NOT called for the block.
 - A1 audio = motion_sfx[] cues + global ambient_bed.
 - Captions for the block default to OFF (silent-action blocks usually have no caption text). Writer signals with `"captions": false`.
-
-Renderer contract for prosody_only:
-- TTS is called with the prosody tag only (e.g. `"[gasp]"`).
-- Captions usually display the emoji equivalent or are hidden — writer choice.
 
 The 18s hard cap still applies to total block duration regardless of voicing mode.
 
@@ -382,7 +378,7 @@ Return ONLY a valid JSON array — no markdown, no preamble. Each block:
   "transition_in": "cut" | "fade" | "zoom" | "slide",
   "energy_level": "low" | "medium" | "high",
   "product_name": <string or null>,
-  "voicing_mode": "tts_dialogue" | "prosody_only" | "motion_sfx_only"  // REQUIRED when category ∈ {avatar_action, generated_video}
+  "voicing_mode": "tts_dialogue" | "motion_sfx_only"  // REQUIRED when category ∈ {avatar_action, generated_video}
   "motion_sfx": [{"cue": "footstep_soft|footstep_hard|fabric_rustle|breath_in|breath_out|hand_clap|finger_snap|object_pickup|object_setdown|object_swoosh|box_open|box_close|paper_crinkle|chair_creak|whoosh|pop|ding|sparkle", "t_start_ms": <int>, "t_end_ms": <int>, "intensity": "low"|"medium"|"high"}]  // REQUIRED & non-empty when voicing_mode = motion_sfx_only
   "ambient_bed": <string or null>,  // optional ambient music/atmosphere tag
   "captions": <bool or null>,  // default null (preset rules); set false on motion_sfx_only blocks unless caption text is intentional
@@ -394,10 +390,10 @@ Return ONLY a valid JSON array — no markdown, no preamble. Each block:
 }
 
 When category ∈ {avatar_action, generated_video}:
-- ALWAYS emit voicing_mode.
+- ALWAYS emit voicing_mode (one of "tts_dialogue" or "motion_sfx_only").
 - If voicing_mode == "motion_sfx_only": script (or script_text) MUST be "" (empty) AND motion_sfx[] MUST contain ≥1 cue.
-- If voicing_mode == "prosody_only": script MUST be exactly one prosody marker (e.g. "[laugh]", "[gasp]", "[sigh]") and nothing else.
 - If voicing_mode == "tts_dialogue": script must be non-empty and ≤18s of speech (≤ ~42 words at 140 WPM). For avatar_action blocks the script MUST be FIRST-PERSON dialogue spoken by the avatar — third-person narrator prose about the avatar (he/she/they/his/her/their/the avatar/the model/the person) is FORBIDDEN.
+- There is no "prosody beat" mode. A block that would just be a laugh/gasp is either real first-person dialogue (tts_dialogue) or a silent motion_sfx_only beat.
 
 AVATAR_ACTION VOICEOVER FLAG (CRITICAL — PR #76):
 Avatar-action blocks are NEVER lip-synced. The motion clip plays as-is, and if the block has dialogue the renderer plays that dialogue as a paired VOICEOVER audio track on top of the action. You MUST emit `voiceover_enabled` on every avatar_action block:
@@ -411,45 +407,25 @@ The user can still override this in the Script step. Default to true when in dou
         "description": "Generates video scripts for Cast blocks using product data and voice profile (any content type)",
         "category": "cast_generation",
         "used_in": "engine/cast_generator.py (generate_scripts)",
-        # Prosody control: Fish Speech S2 (our TTS) understands inline mood
-        # tags and pause markers. Tagging the script makes the avatar's
-        # delivery sound like a real short-form creator instead of a voice
-        # actor reading copy. InfiniteTalk handles gestures automatically
-        # from audio + motion_prompt — we explicitly forbid [gesture:]
-        # tags here so the model doesn't waste tokens on them.
+        # Delivery control: inline prosody tags ((excited) etc.) and [pause]
+        # markers are NOT emitted — the voice engine strips them before
+        # synthesis, so they only ever showed up (uselessly) in the editor.
+        # Real prosody/pause support is deferred to a later phase. [sfx:NAME]
+        # markers still work (mixed in at render). InfiniteTalk handles
+        # gestures automatically from audio + motion_prompt — we explicitly
+        # forbid [gesture:] tags here so the model doesn't waste tokens.
         # {content_role} / {content_style} are filled at runtime by the
         # content-type detector so the script writer adapts to tutorials,
         # cartoons, fashion, lectures, etc. — not just live selling.
         "system": """You are a professional {content_role}. Your style: {content_style}. Write natural, engaging scripts.
 
-PROSODY CONTROL (Fish Speech S2):
-Insert prosody tags inline so delivery feels like a real TikTok creator,
-not a voice actor. Tags go BETWEEN words — not at the very start of a block.
-
-Available tags:
-  (excited)     — high energy enthusiasm     → product reveals, CTAs
-  (casual)      — relaxed conversational     → default TikTok energy
-  (whispering)  — soft intimate              → secrets, insider tips, ASMR
-  (laughing)    — natural laugh mid-speech   → reactions, relatable moments
-  (sighing)     — exhale                     → frustration, before/after "before"
-  (super happy) — over-the-top joy           → purchase celebrations
-  [pause]       — dramatic pause 0.5-1s      → after hooks, before reveals
-
-RULES:
-- Max 3-4 prosody tags per 15-second block.
-- NEVER start a block with a tag — begin with words, let the tag land mid-flow.
-- [pause] is your most powerful tool — use it after the hook line.
-- (casual) is the default TikTok energy — use it to reset after high-energy moments.
-- Do NOT insert [gesture:...] markers — InfiniteTalk handles gestures
-  automatically from the audio + motion_prompt.
-
-GOOD EXAMPLE:
-  "Oh my god you guys, (excited) this neck cream? [pause] It's been tested on
-  over ten THOUSAND women. (whispering) And honestly? The results are insane."
-
-BAD EXAMPLE (over-tagged, sounds robotic):
-  "(excited) OH WOW! (super happy) This is AMAZING! (laughing) Ha ha!
-  (whispering) You need this! (excited) BUY NOW!"
+DELIVERY / PROSODY:
+Do NOT write prosody or pause tags — no (excited), (casual), (whispering),
+(laughing), (sighing), (super happy), and no [pause]. The voice engine strips
+them, so they change nothing. Control delivery through word choice and
+punctuation instead (question marks, ellipses "…", em dashes, sentence breaks,
+selective ALL-CAPS on one emphasis word). Do NOT insert [gesture:...] markers —
+InfiniteTalk handles gestures automatically from the audio + motion_prompt.
 
 SOUND EFFECTS (SFX):
 Insert [sfx:NAME] markers at moments that benefit from audio punctuation.
@@ -487,9 +463,9 @@ RULES (SFX):
     CTA             "Tap the link [sfx:click] right now"
     Transition      "[sfx:whoosh]" alone, at block boundary
 
-GOOD EXAMPLE (combined prosody + SFX):
-  "[sfx:record_scratch] Okay wait. (excited) This $7 cream [sfx:sparkle] just
-  beat a $200 brand in every single test. [pause] I'm not even kidding.
+GOOD EXAMPLE (SFX placement):
+  "[sfx:record_scratch] Okay wait. This $7 cream [sfx:sparkle] just beat a
+  $200 brand in every single test — I'm not even kidding.
   [sfx:cash_register] And right now it's 40% off."
 
 Do NOT insert [gesture:...] markers — InfiniteTalk handles gestures
@@ -499,16 +475,15 @@ PER-CATEGORY WRITING RULES (the block's `category` decides the voice you write i
 - avatar_speaking: TALKING DIRECTLY TO CAMERA. Natural conversational speech, contractions, fillers. Face fills the frame.
 - avatar_voiceover: VOICEOVER over background b-roll. Avatar is NOT visible. CLEAN NARRATION — no "hey guys", no direct camera address. Describe what the viewer sees. No gesture markers.
 - pip_talking_head: SMALL PIP (~30%) over background. CONVERSATIONAL COMMENTARY referencing what's on screen ("look at this texture…", "see how it absorbs?"). Light gestures only.
-- avatar_action: AVATAR PERFORMING AN ACTION in a scene — not talking to camera. The system auto-generates scene-specific first/last frames of the avatar (face preserved) and animates between them. The avatar's lips will be lip-synced to the script if any, so the script is what the AVATAR ITSELF says. NEVER write narrator-voice prose describing the avatar in third person ("he reaches for...", "she walks toward..."). Allowed scripts: (1) FIRST-PERSON dialogue the avatar speaks while moving — "I've been searching everywhere for this", "Finally, the one I've been looking for" — max 18s; (2) a SINGLE prosody beat ("[laugh]", "[gasp]", "[sigh]"); (3) EMPTY string for pure silent action with motion SFX only. Third-person narrator pronouns (he/she/they/his/her/their/the avatar/the model/the person) referring to the on-screen avatar are FORBIDDEN — the variant will be rejected if present. Emit THREE fields: motion_prompt (vivid 15-30 words: action + setting + lighting + camera), action_start_prompt (1-2 sentences for the first frame), action_end_prompt (1-2 sentences for the last frame). DO NOT repeat the avatar's appearance — it is auto-prepended.
+- avatar_action: AVATAR PERFORMING AN ACTION in a scene — not talking to camera. The system auto-generates scene-specific first/last frames of the avatar (face preserved) and animates between them. The avatar's lips will be lip-synced to the script if any, so the script is what the AVATAR ITSELF says. NEVER write narrator-voice prose describing the avatar in third person ("he reaches for...", "she walks toward..."). Allowed scripts: (1) FIRST-PERSON dialogue the avatar speaks while moving — "I've been searching everywhere for this", "Finally, the one I've been looking for" — max 18s; (2) EMPTY string for pure silent action with motion SFX only. Third-person narrator pronouns (he/she/they/his/her/their/the avatar/the model/the person) referring to the on-screen avatar are FORBIDDEN — the variant will be rejected if present. Emit THREE fields: motion_prompt (vivid 15-30 words: action + setting + lighting + camera), action_start_prompt (1-2 sentences for the first frame), action_end_prompt (1-2 sentences for the last frame). DO NOT repeat the avatar's appearance — it is auto-prepended.
 - stock_video / stock_photo: NO avatar, NO narration. Write a BRIEF TEXT OVERLAY (max 8 words) as `script_text`. motion_prompt empty.
 - generated_photo / generated_video: brief text overlay (max 10 words) OR optional voiceover for generated_video.
 
 PRODUCT NAME FIDELITY (applies to `script_text` on every block, all categories): when the cast has a product attached, refer to it using its REAL name from the PRODUCT section above — NEVER invent a fictional brand or product name (e.g. do not write "the SmoothGlide Pro" for a product actually named "S1151/00 Shaver 1000 Series"). Real scraped product titles are often long/messy (marketplace SEO text, "Buy X Online in Y", trailing category spam) — don't recite them verbatim either. Instead DISTILL a natural, spoken-friendly short name from the real one: keep the actual brand + product line/model (e.g. "the Philips Series 1000", "the S1151", "this Philips shaver"), dropping only the marketplace/SEO filler. If a cast has multiple products, keep each block's script_text consistent with the SAME product that block's `product_name` / product-handling fields reference — do not let one block's dialogue imply a different product than the one actually shown on screen in that block. This rule is as strict as the existing "do not invent a different product" rule for motion_prompt — a script that names a product other than the cast's real one is a rejected variant.
 
 MOTION VOICING MODES (REQUIRED for every block whose category is avatar_action or generated_video):
-The block JSON MUST carry a `voicing_mode` field with one of three values:
+The block JSON MUST carry a `voicing_mode` field with one of two values:
   - tts_dialogue (default)  — avatar speaks while moving. `script` is non-empty, ≤18s, and is FIRST-PERSON dialogue the avatar speaks (e.g. "I finally found it"). Third-person narrator pronouns referring to the on-screen avatar (he/she/they/his/her/their/the avatar/the model/the person) are FORBIDDEN.
-  - prosody_only            — non-verbal vocal beat only. `script` is a SINGLE prosody marker (e.g. "[laugh]", "[gasp]", "[sigh]"), nothing else.
   - motion_sfx_only         — pure visual action; the *movement* makes the sound. `script` MUST be "" (empty). The block carries `motion_sfx[]` with ≥1 cue from: footstep_soft, footstep_hard, fabric_rustle, breath_in, breath_out, hand_clap, finger_snap, object_pickup, object_setdown, object_swoosh, box_open, box_close, paper_crinkle, chair_creak (plus the 17 SFX markers above). Captions default OFF on these blocks.
 Switch to `motion_sfx_only` when block_type ∈ {transition, hook (visual-first), product_demo (handling), filler, flash_sale (urgent stinger)}, or when adjacent blocks already carry dialogue and a silent-action breather helps the rhythm.
 
@@ -516,7 +491,7 @@ HARD LIMITS (every block, regardless of category or voicing_mode):
 - 18-SECOND TTS HARD CAP per block — if your script exceeds 18s the variant FAILS. Compute: words / (140/60) ≤ 18.
 - Target 140 WPM (~2.33 words/sec); per-block word budget = `seconds × 2.33` with +5% slack.
 - Cast-level duration tolerance: ±10%.
-- Max 3-4 prosody tags AND max 2-3 SFX per 15s block — never both at the maximum simultaneously.
+- Max 2-3 SFX per 15s block.
 """,
     },
 

@@ -400,6 +400,8 @@ def _build_overlay_filter_parts(overlay_elements, current_label):
     """
     filter_parts = []
     for ov in overlay_elements:
+        if ov.get("_pip_bg"):
+            continue  # composited behind a PIP face during normalization
         if "_input_index" not in ov:
             continue
         idx = ov["_input_index"]
@@ -876,6 +878,10 @@ def _run_ffmpeg_compose(req):
     baked_urls = getattr(req, "baked_urls", None) or {}
     timeline = req.timeline
     overlay_elements = getattr(req, "overlay_elements", None) or []
+    # A b-roll tagged _pip_bg is a PIP/talking-head block's background — it is
+    # composited BEHIND the face during clip normalization below, so it must
+    # not also be laid over the whole frame in the top overlay pass.
+    overlay_elements = [ov for ov in overlay_elements if not ov.get("_pip_bg")]
 
     video_tracks = list(getattr(req, "compose_video_tracks", None) or [])
     audio_tracks = list(getattr(req, "compose_audio_tracks", None) or [])
@@ -992,6 +998,88 @@ def _run_ffmpeg_compose(req):
                     render_id, block_id, ex,
                 )
                 continue
+
+            # ── PIP / talking-head: shrink this clip into a corner window on
+            #    top of its background (the block's full-frame b-roll when it
+            #    has one, else black) so the face is visible instead of the
+            #    b-roll covering it. Non-fatal — on failure keep the
+            #    full-frame clip.
+            pip = vt.get("pip") if isinstance(vt.get("pip"), dict) else None
+            if pip and int(pip.get("w") or 0) > 0 and int(pip.get("h") or 0) > 0:
+                pw, ph = int(pip["w"]), int(pip["h"])
+                px, py = int(pip.get("x") or 0), int(pip.get("y") or 0)
+                bg_local = None
+                bg_src = pip.get("bg_src")
+                if bg_src:
+                    bg_local = os.path.join(
+                        tmpdir, f"pipbg_{block_id or len(normalized_videos)}.mp4"
+                    )
+                    try:
+                        _download(bg_src, bg_local, timeout=block_timeout(slot_dur))
+                    except Exception as ex:
+                        sentry_sdk.capture_exception(ex)
+                        logger.warning(
+                            "compose %s: PIP bg download failed block=%s (%s); "
+                            "using black background",
+                            render_id, block_id, ex,
+                        )
+                        bg_local = None
+
+                pip_out = os.path.join(
+                    tmpdir, f"pip_v_{block_id or len(normalized_videos)}.mp4"
+                )
+                # Input 0 is a slot-length black canvas — it anchors the output
+                # duration so a short b-roll can't truncate the slot.
+                pip_inputs = [
+                    "-f", "lavfi", "-t", f"{slot_dur:.3f}",
+                    "-i", f"color=c=black:s={canvas_w}x{canvas_h}:r={canvas_fps}",
+                    "-i", norm,
+                ]
+                if bg_local:
+                    pip_inputs += ["-i", bg_local]
+                    fc = (
+                        f"[2:v]fps={canvas_fps},scale={canvas_w}:{canvas_h}:"
+                        f"force_original_aspect_ratio=increase,"
+                        f"crop={canvas_w}:{canvas_h},setsar=1[bg];"
+                        f"[0:v][bg]overlay=0:0:shortest=1[base];"
+                        f"[1:v]scale={pw}:{ph}:force_original_aspect_ratio=increase,"
+                        f"crop={pw}:{ph},setsar=1[fg];"
+                        f"[base][fg]overlay={px}:{py}:shortest=1[vout]"
+                    )
+                else:
+                    fc = (
+                        f"[1:v]scale={pw}:{ph}:force_original_aspect_ratio=increase,"
+                        f"crop={pw}:{ph},setsar=1[fg];"
+                        f"[0:v][fg]overlay={px}:{py}:shortest=1[vout]"
+                    )
+                pip_cmd = [
+                    "ffmpeg", "-y", "-loglevel", "warning",
+                    *pip_inputs,
+                    "-filter_complex", fc,
+                    "-map", "[vout]",
+                    "-r", str(canvas_fps),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
+                    "-pix_fmt", "yuv420p", "-an",
+                    pip_out,
+                ]
+                try:
+                    _run(
+                        pip_cmd, timeout=block_timeout(slot_dur),
+                        label=f"pip_composite_{block_id}",
+                    )
+                    norm = pip_out
+                    logger.info(
+                        "compose %s: PIP composite block=%s %dx%d @ (%d,%d) bg=%s",
+                        render_id, block_id, pw, ph, px, py, bool(bg_local),
+                    )
+                except Exception as ex:
+                    sentry_sdk.capture_exception(ex)
+                    logger.warning(
+                        "compose %s: PIP composite failed block=%s (%s); "
+                        "keeping full-frame clip",
+                        render_id, block_id, ex,
+                    )
+
             normalized_videos.append({
                 "path": norm, "s": s, "e": e,
                 "block_id": block_id, "dur": slot_dur,
