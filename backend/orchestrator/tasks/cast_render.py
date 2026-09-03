@@ -6250,12 +6250,72 @@ async def _render_async(task, render_id: str):
         bake_start = datetime.now(timezone.utc)
         await _update_block_status(render_id, block_id, state="baking", started_at=bake_start)
 
+        # §2.1 planning-layer slot↔audio reconciliation — MUST run BEFORE the
+        # audio trim below. The trim clamps the voiceover to the timeline slot;
+        # if the slot is a stale short value (e.g. a talking-head beat whose
+        # slot froze at ~2s while its voice line is ~6s), trimming first
+        # silently drops ~4s of speech + the face, and every check downstream
+        # then compares the already-trimmed audio against the slot and sees no
+        # mismatch. Reconcile against the RAW (untrimmed) TTS length instead:
+        #   * slot ≈ tts                 → left alone; the small trim below is a
+        #                                  genuine user shortening.
+        #   * slot ≪ tts AND resizable   → _reconcile_slot_vs_audio extends the
+        #                                  V1 element's end to the voice, so the
+        #                                  whole talking head plays. PIP blocks
+        #                                  are resizable here too — their slot
+        #                                  is the beat, not a fixed host window.
+        #   * slot ≪ tts AND fixed       → raises SlotAudioMismatch (loud
+        #                                  planning defect, never a silent cut).
+        raw_audio_duration_s = (
+            await _probe_audio_duration_s(audio_url) if audio_url else 0.0
+        )
+        if raw_audio_duration_s <= 0:
+            raw_audio_duration_s = float(tts_duration_s or 0)
+        if raw_audio_duration_s > 0:
+            _slot_before = _slot_duration_for_block(
+                timeline, block_id, float(duration_s or 0)
+            )
+            _v1_meta = (v1_el or {}).get("metadata") or {}
+            _fixed_len = bool(
+                _v1_meta.get("fixed_length")
+                or _v1_meta.get("fixed_duration")
+            )
+            _reconciled_s, _mismatch = _reconcile_slot_vs_audio(
+                timeline,
+                block_id=block_id,
+                audio_duration_s=raw_audio_duration_s,
+                slot_duration_s=_slot_before,
+                fixed_length=_fixed_len,
+            )
+            if _mismatch:
+                raise SlotAudioMismatch(
+                    f"block {block_id} render {render_id}: slot={_slot_before:.3f}s "
+                    f"vs voice={raw_audio_duration_s:.3f}s exceeds "
+                    f"{_SLOT_AUDIO_MISMATCH_TOLERANCE:.0%} and slot is "
+                    f"fixed-length — stale timeline / planning defect, not "
+                    f"re-baking. Reopen the editor to rebuild the slot."
+                )
+            # Reconcile may have extended the V1 element's end in `timeline`.
+            # Pick up the corrected slot so the trim below, the bake dispatch,
+            # and every downstream consumer use the real length.
+            _slot_after = _slot_duration_for_block(
+                timeline, block_id, float(duration_s or 0)
+            )
+            if _slot_after > 0 and abs(_slot_after - float(duration_s or 0)) > 0.01:
+                logger.info(
+                    "Block %s render %s: slot reconciled %.3fs -> %.3fs "
+                    "against voice=%.3fs (render_mode=%s)",
+                    block_id, render_id, float(duration_s or 0), _slot_after,
+                    raw_audio_duration_s, block_render_mode,
+                )
+                duration_s = _slot_after
+
         # If the user shortened (or lengthened to a smaller clip than the
         # raw TTS) this block in the editor, trim the audio so HOSTKEY's
         # InfiniteTalk worker — which infers output length from the audio
-        # it gets — produces a clip that matches the timeline edit. We
-        # only trim when the target is meaningfully shorter (>0.05s) than
-        # the original to avoid pointless re-uploads.
+        # it gets — produces a clip that matches the timeline edit. After the
+        # reconciliation above, `tts_duration_s - duration_s > 0.05` only holds
+        # for a genuine user-shortened beat, not a stale short slot.
         effective_audio_url = audio_url
         if (
             audio_url
@@ -6299,9 +6359,9 @@ async def _render_async(task, render_id: str):
         # compose + remux lay down byte-identical audio. Assert the two
         # durations match within the drift tolerance before the block is
         # allowed to proceed.
-        if effective_audio_url and a1_element is not None:
+        if effective_audio_url and a1_el is not None:
             lipsync_audio_by_block[block_id] = effective_audio_url
-            mux_src = (a1_element.get("props") or {}).get("src") or ""
+            mux_src = (a1_el.get("props") or {}).get("src") or ""
             if mux_src and mux_src != effective_audio_url:
                 mux_dur = await _probe_audio_duration_s(mux_src)
                 drift_s = abs(float(effective_audio_duration_s) - float(mux_dur))
@@ -6322,50 +6382,8 @@ async def _render_async(task, render_id: str):
                         effective_audio_duration_s, mux_dur,
                     )
 
-        # §2.1 planning-layer slot↔audio reconciliation. When the timeline
-        # slot disagrees with the audio beyond SLOT_AUDIO_MISMATCH_TOLERANCE
-        # we resize the slot to the audio (preferred) so every downstream
-        # consumer trims to the right length; a fixed-length slot instead
-        # fails the block as slot_audio_mismatch (never re-baked).
-        #
-        # PIP talking-head blocks used to be skipped here entirely — but their
-        # TEMPORAL slot [s,e] is still just the beat (the PIP "host window" is
-        # a SPATIAL inset applied later in compose, unrelated to duration), so
-        # skipping meant a PIP beat whose slot ran longer than its short voice
-        # line was never reconciled: the bake came out audio-length and the
-        # bonded concat lost the difference (the next block slid earlier). PIP
-        # is now reconciled like any speaking block, but treated as
-        # fixed-length so a slot<audio mismatch fails loudly (planning defect)
-        # rather than silently mutating the element end and risking overlap;
-        # the common slot>audio case is held and filled downstream by
-        # trim_block_to_slot exactly as for full-frame speaking.
-        if effective_audio_duration_s > 0:
-            _slot_now = _slot_duration_for_block(
-                timeline, block_id, float(duration_s or 0)
-            )
-            # A slot is fixed-length only if the timeline element flags it so
-            # (e.g. a showcase beat the planner must not stretch). Default
-            # False: the common speaking slot is resizable to the audio.
-            _v1_meta = (v1_element or {}).get("metadata") or {}
-            _fixed_len = bool(
-                _v1_meta.get("fixed_length")
-                or _v1_meta.get("fixed_duration")
-                or block_render_mode == "pip"
-            )
-            _reconciled_s, _mismatch = _reconcile_slot_vs_audio(
-                timeline,
-                block_id=block_id,
-                audio_duration_s=effective_audio_duration_s,
-                slot_duration_s=_slot_now,
-                fixed_length=_fixed_len,
-            )
-            if _mismatch:
-                raise SlotAudioMismatch(
-                    f"block {block_id} render {render_id}: slot={_slot_now:.3f}s "
-                    f"vs audio={effective_audio_duration_s:.3f}s exceeds "
-                    f"{_SLOT_AUDIO_MISMATCH_TOLERANCE:.0%} and slot is "
-                    f"fixed-length — planning defect, not re-baking."
-                )
+        # (slot↔audio reconciliation now runs BEFORE the audio trim above,
+        # against the raw un-trimmed voice — see there.)
 
         # PIP (social-proof talking-head) blocks route through the SAME
         # audio-driven speaking cascade as full-frame speaking blocks:
@@ -6434,7 +6452,7 @@ async def _render_async(task, render_id: str):
             # via is_pip / HOSTKEY_ONLY routing, but the fallback keeps
             # the helper robust).
             try:
-                _slot_el = v1_element if v1_element is not None else a1_element
+                _slot_el = v1_el if v1_el is not None else a1_el
                 _slot_start = float((_slot_el or {}).get("s") or 0)
                 _slot_end = float((_slot_el or {}).get("e") or 0)
             except (TypeError, ValueError) as _slot_exc:

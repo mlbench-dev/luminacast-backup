@@ -7,10 +7,13 @@ import path from "path";
  *
  * Bug: on the Arrange (editor) phase the "Finalize & Render" button and the
  * kebab menu overflowed the right edge at 100% zoom with no way to scroll to
- * them. The header's actions must never leave the viewport: they stay
- * `shrink-0`, and everything to their left (row, cast name, phase-pill strip)
- * must be allowed to shrink — which also needs `min-w-0` on the CastBuilder
- * wrappers between the header and <main> (which already has min-w-0).
+ * them, and the phase-pill strip got squeezed until pills were hidden.
+ *
+ * Fix: the header is now two rows. The phase-pill strip owns the full top row;
+ * the actions sit on their own row underneath, right-aligned, and wrap among
+ * themselves. The top row + cast name + strip still carry `min-w-0` so the
+ * name can truncate, which also needs `min-w-0` on the CastBuilder wrappers
+ * between the header and <main> (which already has min-w-0).
  */
 const SRC = path.resolve(__dirname, "../../src");
 const read = (rel: string) => readFileSync(path.join(SRC, rel), "utf8");
@@ -18,7 +21,11 @@ const read = (rel: string) => readFileSync(path.join(SRC, rel), "utf8");
 describe("PhaseHeader — responsive header", () => {
   const src = read("components/cast-builder/PhaseHeader.tsx");
 
-  it("root row fills width and can shrink", () => {
+  it("outer container is a column so the actions can drop to a second row", () => {
+    expect(src).toMatch(/className="flex flex-col[^"]*\bw-full\b[^"]*\bmin-w-0\b/);
+  });
+
+  it("top row fills width and can shrink", () => {
     expect(src).toMatch(/className="flex items-center[^"]*\bw-full\b[^"]*\bmin-w-0\b/);
   });
 
@@ -51,8 +58,11 @@ describe("PhaseHeader — responsive header", () => {
     expect(src).toMatch(/renderState === "none" \? currentIdx : PHASES\.length - 1/);
   });
 
-  it("actions stay pinned (shrink-0)", () => {
-    expect(src).toMatch(/actions &&[^\n]*\bshrink-0\b/);
+  it("actions render on their own right-aligned row that can wrap", () => {
+    const actionsBlock = src.match(/\{actions && \(([\s\S]*?)\)\}/);
+    expect(actionsBlock, "actions render block").toBeTruthy();
+    expect(actionsBlock![1]).toMatch(/flex flex-wrap items-center justify-end/);
+    expect(actionsBlock![1]).toContain("w-full");
   });
 });
 
@@ -60,7 +70,7 @@ describe("CastBuilder — header wrappers propagate shrink", () => {
   const cb = read("pages/cast-builder/CastBuilder.tsx");
 
   it("the header flex row has min-w-0", () => {
-    expect(cb).toMatch(/\{!\(isNew && phase === "setup"\)[\s\S]{0,120}?<div className="flex items-center min-w-0">/);
+    expect(cb).toMatch(/\{!\(isNew && phase === "setup"\)[\s\S]{0,120}?<div className="flex items-start min-w-0">/);
   });
 
   it("the PhaseHeader wrapper has min-w-0", () => {

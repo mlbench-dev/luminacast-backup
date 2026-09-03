@@ -596,14 +596,16 @@ export function CastBuilderPage() {
     <div className="flex flex-col h-full">
       {/* Phase header */}
       {!(isNew && phase === "setup") && phase !== "generating_script" && (
-        <div className="flex items-center min-w-0">
-          {/* Back button — shown on all phases except setup */}
+        <div className="flex items-start min-w-0">
+          {/* Back button — shown on all phases except setup. items-start keeps
+              it aligned with the phase-pill row now that the header can grow
+              to a second row for the actions. */}
           {phase !== "setup" && (
             <Button
               variant="ghost"
               size="sm"
               onClick={handleBack}
-              className="ml-2 shrink-0 text-white/50 hover:text-white px-2"
+              className="ml-2 mt-2.5 shrink-0 text-white/50 hover:text-white px-2"
               data-testid="cast-back-btn"
             >
               <ChevronLeft className="w-4 h-4" />
@@ -627,7 +629,7 @@ export function CastBuilderPage() {
                     : "none"
               }
               actions={phase === "editor" && cast ? (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   {/* Left: Version picker */}
                   <VersionPicker
                     cast={cast}
