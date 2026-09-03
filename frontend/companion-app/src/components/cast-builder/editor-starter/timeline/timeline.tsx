@@ -202,7 +202,7 @@ export const Timeline = ({
 						ref={timelineScrollContainerRef}
 						onPointerDown={onPointerDownEmptySpace}
 					>
-						{timelineWidth !== null ? (
+						{timelineWidth !== null && timelineWidth > 0 ? (
 							<>
 								<SidePanel
 									tracks={tracksAndLayout}

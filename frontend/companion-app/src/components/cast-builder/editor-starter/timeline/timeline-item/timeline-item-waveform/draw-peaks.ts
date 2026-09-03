@@ -23,6 +23,10 @@ export const drawPeaks = (
 	const height = canvas.height;
 	const w = canvas.width;
 
+	// Guard against a zero/invalid canvas size — createImageData() below
+	// throws "source width is zero or not a number" otherwise.
+	if (w < 1 || height < 1) return;
+
 	ctx.clearRect(0, 0, w, height);
 
 	const volume = decibelToGain(decibelAdjustment);
