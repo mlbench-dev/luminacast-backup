@@ -3,10 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   aceStepApi,
   musicApi,
-  castsApi,
   type MusicSoundCast,
   type MusicTrackItem,
-  type UploadedTrack,
   type SfxItem,
   type AIGeneratedTrack,
   type LibraryTrack,
@@ -21,7 +19,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/useToast";
 import { confirmAction } from "@/lib/swal";
 import { cn } from "@/lib/cn";
@@ -141,80 +138,6 @@ function getCastIdFromPath(): string | null {
   return m ? m[0] : null;
 }
 
-async function attachToCast(
-  castId: string,
-  url: string,
-  mood?: string | null,
-): Promise<void> {
-  await castsApi.attachMusic(castId, url, mood ?? null);
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Cast picker — shown when "+ Add" is clicked with no cast in context
-// (i.e. reached via the sidebar /music page, which never carries a cast
-// id in its URL). Lets the user pick which of their casts to attach the
-// track to, instead of the button being a permanent dead end.
-// ─────────────────────────────────────────────────────────────────────────
-
-function CastPickerDialog({
-  open,
-  onClose,
-  onSelect,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onSelect: (castId: string) => void;
-}) {
-  const [search, setSearch] = useState("");
-  const { data, isLoading } = useQuery({
-    queryKey: ["casts-for-music-picker"],
-    queryFn: () => castsApi.list(),
-    enabled: open,
-  });
-  const casts: { id: string; name?: string; status?: string }[] = (data as any)?.casts ?? [];
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return casts;
-    return casts.filter((c) => (c.name || "").toLowerCase().includes(q));
-  }, [casts, search]);
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Add to which cast?</DialogTitle>
-        </DialogHeader>
-        <SearchBox value={search} onChange={setSearch} placeholder="Search your casts…" />
-        <div className="max-h-80 overflow-y-auto space-y-1.5 -mx-1 px-1">
-          {isLoading && (
-            <div className="text-center py-8 text-white/30 text-sm">
-              <Loader2 className="w-5 h-5 mx-auto animate-spin mb-2" />
-              Loading…
-            </div>
-          )}
-          {!isLoading && filtered.length === 0 && (
-            <p className="text-center py-8 text-sm text-white/40">
-              {casts.length === 0 ? "You don't have any casts yet." : "No casts match your search."}
-            </p>
-          )}
-          {!isLoading && filtered.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => onSelect(c.id)}
-              className="w-full flex items-center justify-between gap-3 rounded-lg border border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.06] px-3 py-2.5 text-left transition-colors"
-            >
-              <span className="text-sm text-white truncate">{c.name || "Untitled cast"}</span>
-              {c.status && (
-                <Badge variant="secondary" className="shrink-0 text-[10px]">{c.status}</Badge>
-              )}
-            </button>
-          ))}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 // ─────────────────────────────────────────────────────────────────────────
 // Top-level Music page
 // ─────────────────────────────────────────────────────────────────────────
@@ -223,29 +146,10 @@ type MainTab = "browse" | "generate" | "sfx" | "uploaded" | "saved";
 
 export function MusicPage() {
   const [tab, setTab] = useState<MainTab>("browse");
-  const urlCastId = getCastIdFromPath();
-  // Reached via the sidebar, this page's URL never carries a cast id.
-  // Once the user picks one from the dialog below, remember it for the
-  // rest of the visit so every subsequent "+ Add" click goes straight to
-  // that cast instead of asking again.
-  const [pickedCastId, setPickedCastId] = useState<string | null>(null);
-  const castId = urlCastId || pickedCastId;
-
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const pendingAttachRef = useRef<((castId: string) => void) | null>(null);
-
-  const onNeedCast = useCallback((action: (castId: string) => void) => {
-    pendingAttachRef.current = action;
-    setPickerOpen(true);
-  }, []);
-
-  const handleCastPicked = useCallback((id: string) => {
-    setPickerOpen(false);
-    setPickedCastId(id);
-    const action = pendingAttachRef.current;
-    pendingAttachRef.current = null;
-    action?.(id);
-  }, []);
+  // Reached via the sidebar this page's URL never carries a cast id; when
+  // it's opened from within a cast it does, and AI Generate passes it to
+  // the backend so the generated track is tuned to that cast.
+  const castId = getCastIdFromPath();
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
@@ -293,11 +197,11 @@ export function MusicPage() {
       </div>
 
       <div className="border-t border-white/[0.06] pt-5">
-        {tab === "browse" && <BrowseTab castId={castId} onNeedCast={onNeedCast} />}
-        {tab === "generate" && <GenerateTab castId={castId} onNeedCast={onNeedCast} />}
+        {tab === "browse" && <BrowseTab />}
+        {tab === "generate" && <GenerateTab castId={castId} />}
         {tab === "sfx" && <SFXTab />}
-        {tab === "uploaded" && <UploadedTab castId={castId} onNeedCast={onNeedCast} />}
-        {tab === "saved" && <SavedTab castId={castId} onNeedCast={onNeedCast} />}
+        {tab === "uploaded" && <UploadedTab />}
+        {tab === "saved" && <SavedTab />}
       </div>
 
       {/* Parked AI Music Studio (ACE-Step) section */}
@@ -318,12 +222,6 @@ export function MusicPage() {
           </div>
         )}
       </div>
-
-      <CastPickerDialog
-        open={pickerOpen}
-        onClose={() => { setPickerOpen(false); pendingAttachRef.current = null; }}
-        onSelect={handleCastPicked}
-      />
     </div>
   );
 }
@@ -438,7 +336,6 @@ function TrackCard({
   duration,
   playingUrl,
   onTogglePlay,
-  onAdd,
   onDelete,
   onSave,
   saved,
@@ -450,7 +347,6 @@ function TrackCard({
   duration?: number | null;
   playingUrl: string | null;
   onTogglePlay: (url: string) => void;
-  onAdd?: () => void;
   onDelete?: () => void;
   onSave?: () => void;
   saved?: boolean;
@@ -499,12 +395,6 @@ function TrackCard({
               <Bookmark className={cn("w-3.5 h-3.5 mr-1", saved && "fill-current")} />
             )}
             {saved ? "Saved" : "Save"}
-          </Button>
-        )}
-
-        {onAdd && (
-          <Button size="sm" variant="outline" onClick={onAdd}>
-            <Plus className="w-3.5 h-3.5 mr-1" /> Add
           </Button>
         )}
 
@@ -588,8 +478,7 @@ function FilterSelect({
   );
 }
 
-function BrowseTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: (action: (castId: string) => void) => void }) {
-  const { toast } = useToast();
+function BrowseTab() {
   const [genre, setGenre] = useState<string>(ALL_VALUE);
   const [mood, setMood] = useState<string>(ALL_VALUE);
   const [bpm, setBpm] = useState<string>(ALL_VALUE);
@@ -679,23 +568,6 @@ function BrowseTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: 
     );
   }, [allTracks, search]);
 
-  const handleAdd = async (track: LibraryTrack) => {
-    const doAttach = async (id: string) => {
-      try {
-        await attachToCast(id, track.url, track.mood);
-        toast({ title: "Music added to cast", description: track.name });
-      } catch (e: any) {
-        toast({
-          title: "Couldn't add music",
-          description: e?.message || "",
-          variant: "destructive",
-        });
-      }
-    };
-    if (!castId) { onNeedCast(doAttach); return; }
-    await doAttach(castId);
-  };
-
   // When the user hits Enter on the search box, try to coerce their query
   // into the dropdown filters (best-effort substring match against the
   // params enums). This lets typing "cinematic" + Enter set mood=Cinematic.
@@ -720,8 +592,7 @@ function BrowseTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: 
     <div className="space-y-4">
       <p className="text-xs text-white/45 leading-relaxed">
         Search 12,000+ royalty-free tracks. Filter by genre, mood, BPM, or
-        duration. Click <span className="text-white/70">+ Add</span> to drop a
-        track into your cast.
+        duration. Click a track to preview it.
       </p>
 
       <div className="flex gap-3 items-end flex-wrap">
@@ -812,7 +683,6 @@ function BrowseTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: 
               duration={t.duration}
               playingUrl={playingUrl}
               onTogglePlay={toggle}
-              onAdd={() => handleAdd(t)}
             />
           ))}
         </div>
@@ -852,7 +722,7 @@ const GENERATE_MOOD_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "triumphant", label: "Triumphant" },
 ];
 
-function GenerateTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: (action: (castId: string) => void) => void }) {
+function GenerateTab({ castId }: { castId: string | null }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   // Mutually exclusive by design: the backend only ever uses the typed
@@ -903,23 +773,6 @@ function GenerateTab({ castId, onNeedCast }: { castId: string | null; onNeedCast
         variant: "destructive",
       }),
   });
-
-  const handleAdd = async (track: AIGeneratedTrack) => {
-    const doAttach = async (id: string) => {
-      try {
-        await attachToCast(id, track.url, track.mood ?? mood);
-        toast({ title: "Music added to cast" });
-      } catch (e: any) {
-        toast({
-          title: "Couldn't add music",
-          description: e?.message || "",
-          variant: "destructive",
-        });
-      }
-    };
-    if (!castId) { onNeedCast(doAttach); return; }
-    await doAttach(castId);
-  };
 
   return (
     <div className="space-y-4">
@@ -1059,7 +912,6 @@ function GenerateTab({ castId, onNeedCast }: { castId: string | null; onNeedCast
               onSave={() => saveMutation.mutate(t)}
               saved={savedIds.has(t.id)}
               saving={saveMutation.isPending && saveMutation.variables?.id === t.id}
-              onAdd={() => handleAdd(t)}
             />
           ))}
         </div>
@@ -1225,7 +1077,7 @@ function SFXTab() {
 // Uploaded tab
 // ─────────────────────────────────────────────────────────────────────────
 
-function UploadedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: (action: (castId: string) => void) => void }) {
+function UploadedTab() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1265,23 +1117,6 @@ function UploadedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast
       }),
   });
 
-  const handleAdd = async (t: UploadedTrack) => {
-    const doAttach = async (id: string) => {
-      try {
-        await attachToCast(id, t.url, null);
-        toast({ title: "Music added to cast", description: t.name });
-      } catch (e: any) {
-        toast({
-          title: "Couldn't add music",
-          description: e?.message || "",
-          variant: "destructive",
-        });
-      }
-    };
-    if (!castId) { onNeedCast(doAttach); return; }
-    await doAttach(castId);
-  };
-
   const tracksRaw = data?.tracks ?? [];
   const tracks = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1294,8 +1129,8 @@ function UploadedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast
   return (
     <div className="space-y-4">
       <p className="text-xs text-white/45 leading-relaxed">
-        Bring your own music. Drop in MP3 or WAV files (up to 25 MB) and add
-        them to any cast.
+        Bring your own music. Drop in MP3 or WAV files (up to 25 MB) to keep
+        them in your library.
       </p>
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -1363,7 +1198,6 @@ function UploadedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast
               duration={t.duration}
               playingUrl={playingUrl}
               onTogglePlay={toggle}
-              onAdd={() => handleAdd(t)}
               onDelete={() => deleteMutation.mutate(t.id)}
             />
           ))}
@@ -1377,7 +1211,7 @@ function UploadedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast
 // Saved tab — persisted history of AI Generate results
 // ─────────────────────────────────────────────────────────────────────────
 
-function SavedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: (action: (castId: string) => void) => void }) {
+function SavedTab() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
@@ -1401,23 +1235,6 @@ function SavedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: (
         variant: "destructive",
       }),
   });
-
-  const handleAdd = async (t: AIGeneratedTrack) => {
-    const doAttach = async (id: string) => {
-      try {
-        await attachToCast(id, t.url, t.mood ?? null);
-        toast({ title: "Music added to cast", description: t.name || t.prompt });
-      } catch (e: any) {
-        toast({
-          title: "Couldn't add music",
-          description: e?.message || "",
-          variant: "destructive",
-        });
-      }
-    };
-    if (!castId) { onNeedCast(doAttach); return; }
-    await doAttach(castId);
-  };
 
   const handleDelete = async (t: AIGeneratedTrack) => {
     const confirmed = await confirmAction({
@@ -1479,7 +1296,6 @@ function SavedTab({ castId, onNeedCast }: { castId: string | null; onNeedCast: (
               duration={t.duration}
               playingUrl={playingUrl}
               onTogglePlay={toggle}
-              onAdd={() => handleAdd(t)}
               onDelete={() => handleDelete(t)}
             />
           ))}
