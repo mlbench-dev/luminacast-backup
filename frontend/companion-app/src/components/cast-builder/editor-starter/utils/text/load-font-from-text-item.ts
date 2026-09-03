@@ -1,4 +1,4 @@
-import {FontInfo} from '@remotion/google-fonts';
+import {FontInfo, getAvailableFonts} from '@remotion/google-fonts';
 import {loadFontFromInfo} from '@remotion/google-fonts/from-info';
 import {getInfo as getRobotoFontInfo} from '@remotion/google-fonts/Roboto';
 import {useLayoutEffect, useMemo, useState} from 'react';
@@ -32,21 +32,32 @@ export const getFontVariants = (fontInfo: FontInfo) => {
 	return styles;
 };
 
+// Resolve font metadata straight from @remotion/google-fonts. Each family is
+// its own lazily-imported module, so we only pull the one that's needed. This
+// replaces the editor-starter's `/api/fonts/:family` backend route, which this
+// project never implemented.
 export const loadFontInfoFromApi = async (
 	fontFamily: string,
 ): Promise<FontInfo> => {
 	if (!fontInfoPromiseCache[fontFamily]) {
 		fontInfoPromiseCache[fontFamily] = (async () => {
+			const entry = getAvailableFonts().find(
+				(f) => f.fontFamily === fontFamily,
+			);
+			if (!entry) {
+				// eslint-disable-next-line no-console
+				console.warn(
+					`Unknown font ${fontFamily}, falling back to Roboto.`,
+				);
+				return getRobotoFontInfo();
+			}
 			try {
-				const response = await fetch(`/api/fonts/${fontFamily}`);
-				if (!response.ok) {
-					throw new Error(`Font ${fontFamily} not found`);
-				}
-				return (await response.json()) as FontInfo;
+				const mod = (await entry.load()) as {getInfo: () => FontInfo};
+				return mod.getInfo();
 			} catch (error) {
 				// eslint-disable-next-line no-console
 				console.warn(
-					`Failed to load font ${fontFamily}, falling back to Roboto. Did you set up the font endpoint? https://www.remotion.dev/docs/editor-starter/backend-routes`,
+					`Failed to load font ${fontFamily}, falling back to Roboto.`,
 					error,
 				);
 				return getRobotoFontInfo();
