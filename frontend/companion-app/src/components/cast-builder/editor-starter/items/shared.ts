@@ -33,6 +33,23 @@ export type ItemMetadata = {
   /** Phase 2.7 — visual element duration mode: how element responds to bonded audio changes */
   duration_mode?: "crop" | "stretch" | "keep";
   /**
+   * How a mismatched-aspect image/video fills its box.
+   *  - "cover"   (default when absent): fill the box, crop the overflow —
+   *              right for background / b-roll where letterbox bars are wrong.
+   *  - "contain": fit the whole asset inside the box, centred — right for
+   *              product shots where cropping the product is a quality bug.
+   * Read by croppable-layer.ts for the preview, carried through
+   * editorStarterToLuminacastSnapshot() as props.fit for the renderer.
+   */
+  fit?: "cover" | "contain";
+  /**
+   * Set by ArrangePhase's applyAspectFit() pass once this item's
+   * width/height/left/top have been re-fitted to the asset's real
+   * intrinsic aspect ratio (probed in the browser). Guards against
+   * re-probing an item that's already correct on subsequent editor opens.
+   */
+  aspect_fitted?: boolean;
+  /**
    * Caption Fix 2 — the active caption preset id applied to this item.
    * Accepts any id from the canonical 15-preset module (`@/lib/captionPresets`);
    * the legacy 5-literal union was stale and rejected valid canonical ids.

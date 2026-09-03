@@ -21,6 +21,7 @@ import {
   getCanvasSize,
 } from "@/lib/editorStarterMapping";
 import type { UndoableState } from "@/components/cast-builder/editor-starter/state/types";
+import { applyAspectFit } from "@/lib/aspectFit";
 import { LuminacastEditor } from "@/components/cast-builder/editor-starter";
 import { RenderLockBanner } from "@/components/cast-builder/RenderLockBanner";
 import type { Cast } from "@/lib/types";
@@ -391,6 +392,10 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
           avatarName,
           fps: 30,
         });
+        // Re-fit product media to its real aspect ratio (probes asset
+        // dimensions in the browser). Non-fatal and cached, so a slow/failed
+        // probe just leaves the mapping's box in place.
+        await applyAspectFit(state);
 
         if (!cancelled) {
           setInitialState(state);
@@ -409,6 +414,7 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
           } catch { /* ignore */ }
         }
         const { state } = castToEditorStarterTimeline(cast, { avatarFaceKey, avatarName, fps: 30 });
+        await applyAspectFit(state);
         if (!cancelled) {
           setInitialState(state);
           setLoading(false);
@@ -494,6 +500,7 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
         avatarName,
         fps: 30,
       });
+      await applyAspectFit(state);
       setInitialState(state);
       changeCountRef.current = 0; // Reset change counter to avoid immediate auto-save
       setStaleDismissed(true);

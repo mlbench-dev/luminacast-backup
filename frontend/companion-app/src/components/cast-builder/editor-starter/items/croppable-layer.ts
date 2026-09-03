@@ -39,6 +39,10 @@ export const useCroppableLayer = ({
 		throw new Error('Crop not implemented for this item type');
 	}
 
+	// "contain" items (product shots) fit the whole asset inside the box so
+	// nothing is cropped; everything else covers the box (b-roll, avatar).
+	const objectFit = item.metadata?.fit === 'contain' ? 'contain' : 'cover';
+
 	const innerStyle: React.CSSProperties = useMemo(() => {
 		return {
 			width: item.width,
@@ -46,10 +50,10 @@ export const useCroppableLayer = ({
 			top: cropBackground ? 0 : -(crop.cropTop * item.height),
 			height: item.height,
 			position: 'absolute',
-			objectFit: 'cover',
+			objectFit,
 			maxWidth: 'unset',
 		};
-	}, [crop.cropLeft, crop.cropTop, item.height, item.width, cropBackground]);
+	}, [crop.cropLeft, crop.cropTop, item.height, item.width, cropBackground, objectFit]);
 
 	const outerStyle: React.CSSProperties = useMemo(() => {
 		return {

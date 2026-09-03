@@ -3563,6 +3563,12 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
                 # Images/stickers can also fade in/out
                 overlay["fadeInDurationInSeconds"] = props.get("fadeInDurationInSeconds", 0) or 0
                 overlay["fadeOutDurationInSeconds"] = props.get("fadeOutDurationInSeconds", 0) or 0
+                # How to fit a mismatched-aspect asset into its box:
+                # "contain" (fit + pad, product shots) vs "cover" (fill + crop,
+                # the default for b-roll / backgrounds). Set by the editor
+                # mapping; a plain scale-to-box downstream stretches anything
+                # off-ratio.
+                overlay["fit"] = props.get("fit") or "cover"
 
             # Video fields
             if normalized_type == "video":
@@ -3579,6 +3585,8 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
                 overlay["borderRadius"] = props.get("borderRadius", 0) or 0
                 overlay["fadeInDurationInSeconds"] = props.get("fadeInDurationInSeconds", 0) or 0
                 overlay["fadeOutDurationInSeconds"] = props.get("fadeOutDurationInSeconds", 0) or 0
+                # See the image branch — "contain" vs "cover" fit, default cover.
+                overlay["fit"] = props.get("fit") or "cover"
 
             # Audio fields
             if normalized_type == "audio":

@@ -1375,6 +1375,32 @@ def translate_timeline_to_ffmpeg(
             if lbl not in _consumed_pip_bg_labels
         ]
 
+    def _aspect_scale_chain(in_label: str, box_w: object, box_h: object, fit: object, out: str) -> str:
+        """One filter string that scales [in_label] into box_w x box_h without
+        distorting the source.
+
+          fit == "contain": fit the whole frame inside the box, pad the rest
+                            (object-fit: contain) — product shots.
+          fit == "cover"   (default): fill the box, centre-crop the overflow
+                            (object-fit: cover) — b-roll / backgrounds.
+
+        A plain `scale=w:h` here stretched any source whose aspect didn't match
+        the box — e.g. a portrait Pexels clip or product photo on a 16:9 cast
+        came out horizontally squished.
+        """
+        if str(fit).lower() == "contain":
+            # format=rgba so the pad is genuinely transparent — the layer
+            # underneath shows through the letterbox/pillarbox, matching the
+            # browser's object-fit: contain (rather than baking black bars).
+            return (
+                f"[{in_label}]format=rgba,scale={box_w}:{box_h}:force_original_aspect_ratio=decrease,"
+                f"pad={box_w}:{box_h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1[{out}]"
+            )
+        return (
+            f"[{in_label}]scale={box_w}:{box_h}:force_original_aspect_ratio=increase,"
+            f"crop={box_w}:{box_h},setsar=1[{out}]"
+        )
+
     # Step 3b: Apply non-bonded video overlays (stock track).
     #
     # These inputs were declared above but, prior to this step, were never
@@ -1396,17 +1422,11 @@ def translate_timeline_to_ffmpeg(
         y = props.get("y", 0)
         w = props.get("width", canvas_width)
         h = props.get("height", canvas_height)
+        fit = props.get("fit", "cover")
         start = el.get("s", 0)
         end = el.get("e", 5)
         out_label = f"ov_vid_{idx}"
-        # Cover-fit (object-fit: cover): scale to fill the box, then centre-crop
-        # the overflow. A plain `scale=w:h` here stretched b-roll whose source
-        # aspect didn't match the box — e.g. a portrait Pexels clip on a 16:9
-        # cast came out horizontally squished.
-        filters.append(
-            f"[{real_idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},setsar=1[{label}_scaled]"
-        )
+        filters.append(_aspect_scale_chain(f"{real_idx}:v", w, h, fit, f"{label}_scaled"))
         filters.append(
             f"[{label}_scaled]setpts=PTS-STARTPTS+{start}/TB[{label}_shifted]"
         )
@@ -1418,23 +1438,22 @@ def translate_timeline_to_ffmpeg(
 
     # Step 3: Apply image overlays
     for idx, (label, el) in enumerate(overlay_image_labels):
-        input_number = len(inputs) - len(overlay_image_labels) + idx  # position in all_inputs (before music)
-        # Actually we need the correct index...
-        # Find the real input index for this label
         real_idx = next(
             j for j, inp in enumerate(all_inputs) if inp.label == label
         )
-        frame = el.get("frame", {})
-        x = frame.get("x", 0)
-        y = frame.get("y", 0)
-        w = frame.get("width", 200)
-        h = frame.get("height", 200)
+        # Geometry lives in props (matches the video loop above and
+        # extract_overlay_elements' output); `frame` is a legacy fallback that
+        # was never actually populated for image elements.
+        props = el.get("props", {}) or el.get("frame", {}) or {}
+        x = props.get("x", 0)
+        y = props.get("y", 0)
+        w = props.get("width", canvas_width)
+        h = props.get("height", canvas_height)
+        fit = props.get("fit", "cover")
         start = el.get("s", 0)
         end = el.get("e", 5)
         out_label = f"ov_img_{idx}"
-        filters.append(
-            f"[{real_idx}:v]scale={w}:{h}[{label}_scaled]"
-        )
+        filters.append(_aspect_scale_chain(f"{real_idx}:v", w, h, fit, f"{label}_scaled"))
         filters.append(
             f"[{current_v_label}][{label}_scaled]overlay=x={x}:y={y}"
             f":enable='between(t,{start},{end})'[{out_label}]"

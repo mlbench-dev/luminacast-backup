@@ -1160,6 +1160,10 @@ export function castToEditorStarterTimeline(
               carousel_total: itemCount,
               carousel_transition: transition,
               carousel_speed_seconds: speed,
+              // Product media: fit the whole asset, never crop or stretch it.
+              // ArrangePhase's applyAspectFit() tightens the box to the
+              // asset's real aspect ratio once probed.
+              fit: "contain" as const,
             },
           };
           items[carouselItemId] = cItem;
@@ -1206,6 +1210,8 @@ export function castToEditorStarterTimeline(
               carousel_total: itemCount,
               carousel_transition: transition,
               carousel_speed_seconds: speed,
+              // See the video branch above — product media is fit, not cropped.
+              fit: "contain" as const,
             },
           };
           items[carouselItemId] = cItem;
@@ -1261,6 +1267,10 @@ export function castToEditorStarterTimeline(
           // Products always carry the parent block's category color so the
           // chip on the timeline visually groups with its block.
           category_color: categoryHex,
+          // The chip box is canvas-aspect (0.3w x 0.3h); a product photo of
+          // any other shape must fit inside it, not stretch. applyAspectFit()
+          // then shrinks the chip to the photo's real aspect ratio.
+          fit: "contain" as const,
         },
       };
       items[prodItemId] = prodItem;
@@ -1778,6 +1788,10 @@ export function editorStarterToLuminacastSnapshot(undoableState: UndoableState):
         props.fadeOutDurationInSeconds = ii.fadeOutDurationInSeconds ?? 0;
         props.borderRadius = ii.borderRadius ?? 0;
         props.rotation = ii.rotation ?? 0;
+        // How the renderer should fit a mismatched-aspect asset into its
+        // box: "contain" (fit + pad — product shots) vs "cover" (fill +
+        // crop — the default for b-roll / backgrounds).
+        props.fit = item.metadata?.fit ?? "cover";
       }
 
       if (item.type === "video") {
@@ -1794,6 +1808,7 @@ export function editorStarterToLuminacastSnapshot(undoableState: UndoableState):
         props.cropTop = vi.cropTop ?? 0;
         props.cropRight = vi.cropRight ?? 0;
         props.cropBottom = vi.cropBottom ?? 0;
+        props.fit = item.metadata?.fit ?? "cover";
       }
 
       if (item.type === "audio") {
