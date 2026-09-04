@@ -1112,6 +1112,19 @@ def _canvas_dims_for_render(timeline: dict) -> tuple[int, int, int]:
     return cw, ch, fps
 
 
+def _infinitetalk_sizes_map(output_format: str | None = None, is_landscape: bool = False) -> dict[str, tuple[int, int]]:
+    """Return map of {"480p": (w, h), "720p": (w, h), "1080p": (w, h)} for the layout."""
+    if output_format == "16:9" or is_landscape:
+        return {"480p": (848, 480), "720p": (1280, 720), "1080p": (1920, 1080)}
+    elif output_format == "1:1":
+        return {"480p": (480, 480), "720p": (720, 720), "1080p": (1080, 1080)}
+    elif output_format == "4:5":
+        return {"480p": (480, 600), "720p": (720, 900), "1080p": (1080, 1350)}
+    else:
+        return {"480p": (480, 848), "720p": (720, 1280), "1080p": (1080, 1920)}
+
+
+
 def _expected_timeline_duration_s(timeline: dict) -> float:
     """Maximum element ``e`` across every track — i.e. the timeline's
     intended end-of-cast in seconds. Used by the post-compose remux to
@@ -5206,9 +5219,6 @@ async def _render_async(task, render_id: str):
                 candidates = await resolve_voiceover_visual_sources(
                     block_id, _vo_session, r2, cast_id,
                 )
-                idle_url = await resolve_avatar_idle_image(cast_id, _vo_session, r2)
-            if idle_url:
-                candidates.append(("image", idle_url))
 
             video_bytes: bytes | None = None
             broll_source = "none"
@@ -5259,9 +5269,7 @@ async def _render_async(task, render_id: str):
                     )
 
                     video_bytes = cand_bytes
-                    if url == idle_url:
-                        broll_source = "ken_burns_avatar_idle_after_failure"
-                    elif kind == "video":
+                    if kind == "video":
                         broll_source = "product_video"
                     else:
                         broll_source = "ken_burns_image"
@@ -5281,32 +5289,15 @@ async def _render_async(task, render_id: str):
                     continue
 
             if not video_bytes:
-                if broll_error is None:
-                    broll_error = "no B-roll source resolved (no product/parallel_media/stock_media_url/avatar-idle available)"
-                logger.warning(
-                    "Voiceover block %s could not produce a bake (%s) — "
-                    "skipping (slot will fall back to compose background)",
+                # If no genuine B-roll media succeeded, do NOT fall back to a frozen
+                # motionless still photo of the avatar. Instead, promote the block to
+                # speaking mode so WaveSpeed InfiniteTalk animates the avatar's face
+                # and lipsyncs with natural mouth motion to the audio!
+                logger.info(
+                    "Voiceover block %s: no B-roll source succeeded (%s); promoting to speaking avatar cascade with lipsync",
                     block_id, broll_error,
                 )
-                now = datetime.now(timezone.utc)
-                # Real elapsed time + the actual failure reason, not a fake
-                # 0.0s/instant timestamp — the previous version stamped
-                # started_at=completed_at=now regardless of how long the
-                # attempt actually ran, which made a 30s ffmpeg timeout
-                # indistinguishable from an instant failure in block_statuses
-                # and cost real time to root-cause.
-                await _update_block_status(render_id, block_id,
-                    state="done", provider="voice", error=broll_error[:300],
-                    started_at=bake_start, completed_at=now,
-                    duration_s=max((now - bake_start).total_seconds(), 0.0))
-                completed_count += 1
-                pct = int(5 + (completed_count / len(pending_jobs)) * 85)
-                await _update_render(render_id,
-                    baking_chunks_completed=completed_count,
-                    progress_percent=pct,
-                    progress_step=f"Block {completed_count}/{len(pending_jobs)}",
-                )
-                return primary_id, None
+                block_render_mode = "avatar_full"
 
             # Record the exact audio used for this block's bake so the
             # post-bake rewrite step (originally lipsync-only — see
@@ -5357,11 +5348,14 @@ async def _render_async(task, render_id: str):
             bake_start = datetime.now(timezone.utc)
             await _update_block_status(render_id, block_id, state="baking", started_at=bake_start)
 
-            # Resolve canvas dims for T2V — default to 480x848 vertical,
+            # Resolve canvas dims for T2V — default based on canvas aspect ratio,
             # matching the avatar bake output so FFmpeg compose treats the
             # clip identically.
-            t2v_width = ((v1_el or {}).get("props") or {}).get("width") or 480
-            t2v_height = ((v1_el or {}).get("props") or {}).get("height") or 848
+            _cw_t2v, _ch_t2v, _ = _canvas_dims_for_render(timeline)
+            _def_w = 848 if _cw_t2v > _ch_t2v else 480
+            _def_h = 480 if _cw_t2v > _ch_t2v else 848
+            t2v_width = ((v1_el or {}).get("props") or {}).get("width") or _def_w
+            t2v_height = ((v1_el or {}).get("props") or {}).get("height") or _def_h
 
             t2v_prompt = motion_prompt
             if not t2v_prompt or t2v_prompt.startswith("A person talking naturally"):
@@ -6606,8 +6600,11 @@ async def _render_async(task, render_id: str):
                     effective_block_size = _HOSTKEY_MAX_SIZE
                 else:
                     effective_block_size = block_size
-                w, h = {"480p": (480, 848), "720p": (720, 1280), "1080p": (1080, 1920)}.get(
-                    effective_block_size, (480, 848)
+                _cw_b, _ch_b, _ = _canvas_dims_for_render(timeline)
+                _fmt_b = getattr(cast, "output_format", None) or ("16:9" if _cw_b > _ch_b else "1:1" if _cw_b == _ch_b else "9:16")
+                _size_table = _infinitetalk_sizes_map(_fmt_b, is_landscape=(_cw_b > _ch_b))
+                w, h = _size_table.get(
+                    effective_block_size, _size_table.get("480p", (480, 848))
                 )
 
                 # Build the cascade via the provider_chain helper. For
@@ -6980,11 +6977,12 @@ async def _render_async(task, render_id: str):
         try:
             if backend == "hostkey" and not is_pip_block:
                 _src_w, _src_h = w, h
-                _tgt_w, _tgt_h = {
-                    "480p": (480, 848),
-                    "720p": (720, 1280),
-                    "1080p": (1080, 1920),
-                }.get(block_size, (480, 848))
+                _cw_b, _ch_b, _ = _canvas_dims_for_render(timeline)
+                _fmt_b = getattr(cast, "output_format", None) or ("16:9" if _cw_b > _ch_b else "1:1" if _cw_b == _ch_b else "9:16")
+                _size_table = _infinitetalk_sizes_map(_fmt_b, is_landscape=(_cw_b > _ch_b))
+                _tgt_w, _tgt_h = _size_table.get(
+                    block_size, _size_table.get("480p", (480, 848))
+                )
                 if (_src_w, _src_h) != (_tgt_w, _tgt_h):
                     import tempfile as _tempfile
                     import subprocess as _subprocess
@@ -7097,6 +7095,24 @@ async def _render_async(task, render_id: str):
             "Block %s baked via %s (tier %s) → %s (%d bytes)",
             block_id, provider_used, tier_used, baked_key, len(video_bytes),
         )
+
+        try:
+            from models.variant import Variant as _VPostBake
+            from sqlalchemy import select as _sa_select_pb
+            async with factory() as _pb_sess:
+                _v_res = await _pb_sess.execute(
+                    _sa_select_pb(_VPostBake).where(
+                        _VPostBake.block_id == block_id,
+                        _VPostBake.is_active.is_(True),
+                    )
+                )
+                _v_inst = _v_res.scalar_one_or_none()
+                if _v_inst:
+                    _v_inst.video_key = baked_key
+                    _v_inst.final_video_key = baked_key
+                    await _pb_sess.commit()
+        except Exception as _pb_err:
+            sentry_sdk.capture_exception(_pb_err)
 
         # Write cost row — $0 for HOSTKEY, Modal ~$0.005/s output, WaveSpeed
         # ~$0.03/s with $0.15 minimum, RunPod at INFINITETALK_COST_PER_SECOND.

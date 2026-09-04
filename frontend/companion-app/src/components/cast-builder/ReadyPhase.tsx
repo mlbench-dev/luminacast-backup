@@ -103,6 +103,22 @@ export function ReadyPhase({ cast, onEdit, onEditScript }: ReadyPhaseProps) {
 
   const activeRender = selectedRender || latestReadyRender;
 
+  const defaultAspect = useMemo(() => {
+    switch (cast?.output_format) {
+      case "16:9":
+        return 16 / 9;
+      case "1:1":
+        return 1;
+      case "4:5":
+        return 4 / 5;
+      default:
+        return 9 / 16;
+    }
+  }, [cast?.output_format]);
+
+  const [videoAspect, setVideoAspect] = useState<number | null>(null);
+  const activeAspect = videoAspect ?? defaultAspect;
+
   return (
     <div className="max-w-2xl mx-auto p-6 space-y-6">
       <div className="flex items-center gap-3">
@@ -125,7 +141,14 @@ export function ReadyPhase({ cast, onEdit, onEditScript }: ReadyPhaseProps) {
       </div>
 
       {/* Video Player */}
-      <div className="rounded-xl overflow-hidden bg-black border border-white/10 relative group">
+      <div
+        className="rounded-xl overflow-hidden bg-black border border-white/10 relative group mx-auto w-full"
+        style={{
+          aspectRatio: String(activeAspect),
+          maxHeight: "70vh",
+          maxWidth: activeAspect < 1 ? `calc(70vh * ${activeAspect})` : undefined,
+        }}
+      >
         {videoUrl ? (
           <>
             <video
@@ -134,9 +157,15 @@ export function ReadyPhase({ cast, onEdit, onEditScript }: ReadyPhaseProps) {
               controls
               autoPlay={false}
               playsInline
-              className="w-full aspect-9/16 max-h-[70vh] object-contain bg-black"
+              className="w-full h-full object-contain bg-black"
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
+              onLoadedMetadata={(e) => {
+                const { videoWidth, videoHeight } = e.currentTarget;
+                if (videoWidth > 0 && videoHeight > 0) {
+                  setVideoAspect(videoWidth / videoHeight);
+                }
+              }}
               data-testid="ready-video-player"
             />
             {/* Play button overlay when paused */}
@@ -153,7 +182,7 @@ export function ReadyPhase({ cast, onEdit, onEditScript }: ReadyPhaseProps) {
             )}
           </>
         ) : (
-          <div className="w-full aspect-9/16 max-h-[70vh] flex items-center justify-center text-white/40">
+          <div className="w-full h-full flex items-center justify-center text-white/40">
             <div className="text-center space-y-2">
               <Play className="w-8 h-8 mx-auto" />
               <p className="text-sm">No video available yet</p>

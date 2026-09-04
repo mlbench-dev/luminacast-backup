@@ -5,7 +5,7 @@
  * estimated time, cancel button. On completion: video player + download.
  * On error: retry button + friendly error message.
  */
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { Loader2, Film, CheckCircle2, XCircle, RefreshCw, Play, Download, ArrowLeft, Ban } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ import type { Cast } from "@/lib/types";
 
 interface FinalizingPhaseProps {
   castId: string;
+  cast?: Cast;
+  outputFormat?: string;
   onReady: (cast: Cast) => void;
   onError: (error: string) => void;
 }
@@ -74,7 +76,7 @@ function getProgressPercent(status?: string, bakingCompleted?: number, bakingTot
   }
 }
 
-export function FinalizingPhase({ castId, onReady, onError }: FinalizingPhaseProps) {
+export function FinalizingPhase({ castId, cast, outputFormat, onReady, onError }: FinalizingPhaseProps) {
   const [renderState, setRenderState] = useState<RenderState>("polling");
   const [renderInfo, setRenderInfo] = useState<RenderInfo>({});
   const [progress, setProgress] = useState(0);
@@ -86,6 +88,23 @@ export function FinalizingPhase({ castId, onReady, onError }: FinalizingPhasePro
   const [playing, setPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const startTimeRef = useRef(Date.now());
+
+  const effectiveFormat = outputFormat || cast?.output_format || completedCast?.output_format;
+  const defaultAspect = useMemo(() => {
+    switch (effectiveFormat) {
+      case "16:9":
+        return 16 / 9;
+      case "1:1":
+        return 1;
+      case "4:5":
+        return 4 / 5;
+      default:
+        return 9 / 16;
+    }
+  }, [effectiveFormat]);
+
+  const [videoAspect, setVideoAspect] = useState<number | null>(null);
+  const activeAspect = videoAspect ?? defaultAspect;
 
   // Elapsed time counter
   useEffect(() => {
@@ -255,7 +274,14 @@ export function FinalizingPhase({ castId, onReady, onError }: FinalizingPhasePro
         </div>
 
         {/* Video Player */}
-        <div className="rounded-xl overflow-hidden bg-black border border-white/10 relative group">
+        <div
+          className="rounded-xl overflow-hidden bg-black border border-white/10 relative group mx-auto w-full"
+          style={{
+            aspectRatio: String(activeAspect),
+            maxHeight: "70vh",
+            maxWidth: activeAspect < 1 ? `calc(70vh * ${activeAspect})` : undefined,
+          }}
+        >
           {videoUrl ? (
             <>
               <video
@@ -264,9 +290,15 @@ export function FinalizingPhase({ castId, onReady, onError }: FinalizingPhasePro
                 controls
                 autoPlay={false}
                 playsInline
-                className="w-full aspect-9/16 max-h-[70vh] object-contain bg-black"
+                className="w-full h-full object-contain bg-black"
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
+                onLoadedMetadata={(e) => {
+                  const { videoWidth, videoHeight } = e.currentTarget;
+                  if (videoWidth > 0 && videoHeight > 0) {
+                    setVideoAspect(videoWidth / videoHeight);
+                  }
+                }}
                 data-testid="render-video-player"
               />
               {!playing && (
@@ -281,7 +313,7 @@ export function FinalizingPhase({ castId, onReady, onError }: FinalizingPhasePro
               )}
             </>
           ) : (
-            <div className="w-full aspect-9/16 max-h-[70vh] flex items-center justify-center text-white/40">
+            <div className="w-full h-full min-h-[200px] flex items-center justify-center text-white/40">
               <div className="text-center space-y-2">
                 <CheckCircle2 className="w-8 h-8 mx-auto text-green-400" />
                 <p className="text-sm">Render complete — video processing</p>

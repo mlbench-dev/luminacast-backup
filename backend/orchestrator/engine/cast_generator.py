@@ -2028,16 +2028,17 @@ def _demote_surplus_avatar_blocks(
         if surplus <= 0 or not demotable:
             return scenes
 
-        # Demote talking-head body blocks to voiceover: the script survives,
-        # now read as narration over the block's stock b-roll (auto_populate
-        # already fetches a clip for every block). The hook (first) and CTA
-        # (last) are excluded above, so the bookends always stay on-camera.
+        # Demote talking-head body blocks to talking-head PIP: the script survives,
+        # read as active narration over the block's b-roll while the avatar speaks
+        # in a corner PIP window. The hook (first) and CTA (last) are excluded
+        # above, so the bookends always stay full-frame on-camera.
         demoted = 0
         for i in demotable:
             if demoted >= surplus:
                 break
             scene = scenes[i]
-            scene["category"] = "avatar_voiceover"
+            scene["category"] = "pip_talking_head"
+            scene["render_mode"] = "pip"
             if not scene.get("background_type"):
                 scene["background_type"] = "stock_video"
             scene["ratio_demoted"] = True
@@ -2046,7 +2047,7 @@ def _demote_surplus_avatar_blocks(
         if demoted:
             _log(
                 "info",
-                f"{log_label}: demoted surplus avatar blocks to voiceover",
+                f"{log_label}: demoted surplus avatar blocks to pip_talking_head",
                 cast_id=cast_id,
                 demoted=demoted,
                 block_count=n,
