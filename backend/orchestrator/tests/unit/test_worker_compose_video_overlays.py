@@ -188,6 +188,32 @@ def test_fake_download_contract():
         assert os.path.exists(dest)
 
 
+def test_video_overlay_with_fit_cover():
+    """Video overlay with fit=cover should use aspect-preserving scale+crop."""
+    ov = _video_overlay(idx=1, x=0, y=0, w=1920, h=1080, start=5.0, end=10.0)
+    ov["fit"] = "cover"
+
+    parts, current_label = wfc._build_overlay_filter_parts([ov], "[0:v]")
+    fc = ";".join(parts)
+
+    assert "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1" in fc
+    assert "setpts=PTS-STARTPTS+5.0/TB[scaled1]" in fc
+    assert "overlay=0:0:enable='between(t,5.0,10.0)':eof_action=pass[img1]" in fc
+
+
+def test_video_overlay_with_fit_contain():
+    """Video overlay with fit=contain should use aspect-preserving scale+pad."""
+    ov = _video_overlay(idx=1, x=0, y=0, w=1920, h=1080, start=5.0, end=10.0)
+    ov["fit"] = "contain"
+
+    parts, current_label = wfc._build_overlay_filter_parts([ov], "[0:v]")
+    fc = ";".join(parts)
+
+    assert "format=rgba,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1" in fc
+    assert "setpts=PTS-STARTPTS+5.0/TB[scaled1]" in fc
+    assert "overlay=0:0:enable='between(t,5.0,10.0)':eof_action=pass[img1]" in fc
+
+
 if __name__ == "__main__":
     import pytest
 

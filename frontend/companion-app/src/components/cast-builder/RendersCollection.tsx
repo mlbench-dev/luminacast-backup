@@ -33,6 +33,7 @@ interface RenderItem {
 
 interface RendersCollectionProps {
   castId: string;
+  outputFormat?: string;
 }
 
 export interface RendersCollectionHandle {
@@ -48,7 +49,7 @@ const STATUS_BADGE: Record<string, { label: string; color: string }> = {
 };
 
 export const RendersCollection = forwardRef<RendersCollectionHandle, RendersCollectionProps>(
-  function RendersCollection({ castId }, ref) {
+  function RendersCollection({ castId, outputFormat }, ref) {
   const triggerRef = useRef<HTMLDivElement>(null);
   const portalRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -345,6 +346,7 @@ export const RendersCollection = forwardRef<RendersCollectionHandle, RendersColl
           videoKey={playingRender.output_video_r2_key}
           version={playingRender.version}
           quality={playingRender.quality}
+          outputFormat={outputFormat}
           onClose={() => setPlayingRender(null)}
         />
       )}

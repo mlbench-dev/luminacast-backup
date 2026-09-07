@@ -428,9 +428,28 @@ def _build_overlay_filter_parts(overlay_elements, current_label):
             fade_out_start = max(float(start), float(end) - fade_out_s)
             fade_chain += f",fade=t=out:st={fade_out_start}:d={fade_out_s}:alpha=1"
         alpha_prefix = "format=yuva420p,"
-
+        fit = ov.get("fit")
         if w and h and int(w) > 0 and int(h) > 0:
-            scale_expr = f"scale={int(w)}:{int(h)}"
+            bw, bh = int(w), int(h)
+            fit_str = str(fit).lower() if fit else ""
+            if fit_str == "contain":
+                if ov_type == "video":
+                    scale_expr = (
+                        f"format=rgba,scale={bw}:{bh}:force_original_aspect_ratio=decrease,"
+                        f"pad={bw}:{bh}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1"
+                    )
+                else:
+                    scale_expr = (
+                        f"scale={bw}:{bh}:force_original_aspect_ratio=decrease,"
+                        f"pad={bw}:{bh}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1"
+                    )
+            elif fit_str == "cover":
+                scale_expr = (
+                    f"scale={bw}:{bh}:force_original_aspect_ratio=increase,"
+                    f"crop={bw}:{bh},setsar=1"
+                )
+            else:
+                scale_expr = f"scale={bw}:{bh}"
         else:
             scale_expr = "scale=iw*0.3:-1"
             if x == 0 and y == 0:

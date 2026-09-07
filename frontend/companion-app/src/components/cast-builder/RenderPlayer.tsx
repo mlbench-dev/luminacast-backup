@@ -16,10 +16,11 @@ interface RenderPlayerProps {
   videoKey: string;
   version?: number;
   quality?: string;
+  outputFormat?: string;
   onClose: () => void;
 }
 
-export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: RenderPlayerProps) {
+export function RenderPlayer({ renderId, videoKey, version, quality, outputFormat, onClose }: RenderPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -30,12 +31,19 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
   const [buffered, setBuffered] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [pipSupported] = useState(() => typeof document !== "undefined" && "pictureInPictureEnabled" in document);
-  // Was hardcoded to 9:16 — correct for a vertical cast but squeezes a real
-  // 16:9 (or any non-vertical) render into a tall narrow box via
-  // object-contain, even though the underlying video file is fine (confirmed
-  // via ffprobe: a "squeezed" 16:9 render was genuinely 1920x1080 — only
-  // this player's fixed-aspect container was wrong). Read the video's own
-  // intrinsic dimensions once metadata loads instead of assuming an aspect.
+
+  const defaultAspect = (() => {
+    switch (outputFormat) {
+      case "16:9":
+        return 16 / 9;
+      case "1:1":
+        return 1;
+      case "4:5":
+        return 4 / 5;
+      default:
+        return 9 / 16;
+    }
+  })();
   const [videoAspect, setVideoAspect] = useState<number | null>(null);
 
   // Keyboard shortcuts
@@ -156,7 +164,7 @@ export function RenderPlayer({ renderId, videoKey, version, quality, onClose }: 
         className="relative bg-black rounded-xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
         style={(() => {
-          const ar = videoAspect ?? 9 / 16;
+          const ar = videoAspect ?? defaultAspect;
           return {
             width: `min(90vw, calc(90vh * ${ar}))`,
             maxWidth: "90vw",

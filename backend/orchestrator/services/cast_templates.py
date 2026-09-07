@@ -98,10 +98,10 @@ TEMPLATES: dict[str, dict] = {
     "demo_heavy": {
         "id": "demo_heavy",
         "name": "Demo Heavy",
-        "description": "Short hook, then close-up product b-roll with voiceover, ending on a CTA.",
+        "description": "Short hook, then close-up product demo with talking-head PIP, ending on a CTA.",
         "block_sequence": ["HOOK", "PRODUCT_DEMO", "FEATURE_SHOWCASE", "PRODUCT_DEMO", "CTA"],
-        "bias": {"avatar_speaking": 0.3, "broll": 0.7, "uploaded_video": 0.0},
-        "default_mic_on": False,
+        "bias": {"avatar_speaking": 0.5, "broll": 0.5, "uploaded_video": 0.0},
+        "default_mic_on": True,
         "default_caption_preset": "minimal_lower",
         "est_duration_range": [25, 50],
         "preview_image_key": None,
@@ -118,29 +118,29 @@ TEMPLATES: dict[str, dict] = {
             {
                 "beat": "PRODUCT_DEMO",
                 "block_type": "PRODUCT_DEMO",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [6, 12],
                 "framing": "CLOSE",
-                "purpose": "Hands-on demonstration cutaway showing the product actively solving the problem in real-time.",
+                "purpose": "Hands-on demonstration showing product solving the problem, with avatar speaking in talking-head PIP.",
             },
             {
                 "beat": "FEATURE_SHOWCASE",
                 "block_type": "FEATURE_SHOWCASE",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [5, 10],
                 "framing": "MACRO",
-                "purpose": "Macro visual focus highlighting key textures, build quality, and specific engineering/design features.",
+                "purpose": "Macro visual focus highlighting key features with avatar explaining in talking-head PIP.",
             },
             {
                 "beat": "PRODUCT_DEMO",
                 "block_type": "PRODUCT_DEMO",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [6, 12],
                 "framing": "MEDIUM_CLOSE",
-                "purpose": "Visual proof of the final result, ease of use, or clean finish with voiceover commentary.",
+                "purpose": "Visual proof of the final result with avatar delivering active commentary in talking-head PIP.",
             },
             {
                 "beat": "CTA",
@@ -153,19 +153,20 @@ TEMPLATES: dict[str, dict] = {
             },
         ],
         "video_generation_prompt": (
-            "DEMO HEAVY FORMAT (STRICT PRODUCT SHOWCASE & B-ROLL FOCUS):\n"
-            "- 70%+ of total screen time is dedicated to high-definition hands-on product demonstration and macro b-roll cutaways.\n"
-            "- The host avatar appears on camera ONLY for the initial hook (3-4s) and the final CTA block (4-5s).\n"
-            "- All intermediate core blocks MUST be category=avatar_voiceover with real product media cutaways.\n"
-            "- Visuals prioritize crisp product detail, active handling, and tangible problem-solving proof over host face time."
+            "DEMO HEAVY FORMAT (HANDS-ON PRODUCT DEMONSTRATION WITH TALKING-HEAD PIP):\n"
+            "- High-definition hands-on product demonstration and macro b-roll visuals with host avatar actively speaking and lipsyncing.\n"
+            "- The host avatar appears full-frame for the initial hook and final CTA, and in a talking-head PIP corner window for intermediate demo beats.\n"
+            "- Avatar lipsync and spoken commentary accompany every demonstration beat — avatar is never static or silent.\n"
+            "- Visuals prioritize crisp product detail and active problem-solving proof with on-camera host presence."
         ),
         "visual_rules": [
-            "Avatar appears on camera ONLY for the initial hook and final CTA blocks.",
-            "All middle blocks MUST be avatar_voiceover with product footage/images as the primary visual background.",
-            "Visual cues must illustrate exact physical actions matching the voiceover narration.",
+            "Avatar appears on camera full-frame for the initial hook and final CTA blocks.",
+            "All middle demo blocks feature the avatar actively speaking and lipsyncing in talking-head PIP over demonstration footage.",
+            "Visual cues illustrate exact physical actions matching the spoken commentary.",
+            "Avatar is never a static picture — always actively speaking with mouth motion.",
         ],
         "script_direction": (
-            "Write descriptive, synchronized voiceover narration timed to visual product cues.\n"
+            "Write descriptive, synchronized spoken narration timed to visual product cues.\n"
             "- HOOK FORMULA: Open with visual curiosity (e.g., 'Watch what happens when I put X to the test...' or 'Here is why this tool is replacing everything else.').\n"
             "- BODY DEMO: Walk through specific features and sensory details ('Notice how smooth...', 'In just 30 seconds...').\n"
             "- CTA FORMULA: Final summary and direct link instruction ('Click below to grab yours today.')."
@@ -203,11 +204,11 @@ TEMPLATES: dict[str, dict] = {
             {
                 "beat": "PRODUCT",
                 "block_type": "PRODUCT",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [6, 12],
                 "framing": "ANGLE_LEFT_3Q",
-                "purpose": "Dynamic b-roll punch showing the product breakthrough in action.",
+                "purpose": "Dynamic b-roll punch showing product breakthrough in action with avatar in talking-head PIP.",
             },
             {
                 "beat": "STORY",
@@ -250,10 +251,10 @@ TEMPLATES: dict[str, dict] = {
     "social_proof_stack": {
         "id": "social_proof_stack",
         "name": "Social Proof Stack",
-        "description": "Opens on stats, then alternates testimonial-style voiceover and product b-roll.",
+        "description": "Opens on stats, then alternates talking-head PIP testimonial proof and product b-roll.",
         "block_sequence": ["SOCIAL_PROOF", "TESTIMONIAL", "PRODUCT", "SOCIAL_PROOF", "CTA"],
-        "bias": {"avatar_speaking": 0.4, "broll": 0.6, "uploaded_video": 0.0},
-        "default_mic_on": False,
+        "bias": {"avatar_speaking": 0.6, "broll": 0.4, "uploaded_video": 0.0},
+        "default_mic_on": True,
         "default_caption_preset": "caps_punch",
         "est_duration_range": [25, 50],
         "preview_image_key": None,
@@ -270,20 +271,20 @@ TEMPLATES: dict[str, dict] = {
             {
                 "beat": "TESTIMONIAL",
                 "block_type": "TESTIMONIAL",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [6, 12],
                 "framing": "CLOSE",
-                "purpose": "Customer review quotes and real-world testimonial evidence breakdown with product visuals.",
+                "purpose": "Customer review quotes and real-world testimonial evidence breakdown with avatar in talking-head PIP.",
             },
             {
                 "beat": "PRODUCT",
                 "block_type": "PRODUCT",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [6, 12],
                 "framing": "MEDIUM_CLOSE",
-                "purpose": "Product capability showcase backing up the customer satisfaction claims.",
+                "purpose": "Product capability showcase backing up customer satisfaction claims with avatar in talking-head PIP.",
             },
             {
                 "beat": "SOCIAL_PROOF",
@@ -305,16 +306,16 @@ TEMPLATES: dict[str, dict] = {
             },
         ],
         "video_generation_prompt": (
-            "SOCIAL PROOF STACK FORMAT (DATA, REVIEWS & TESTIMONIAL DRIVEN):\n"
+            "SOCIAL PROOF STACK FORMAT (DATA, REVIEWS & TESTIMONIAL DRIVEN WITH TALKING-HEAD PIP):\n"
             "- Opens immediately on shocking statistics, verified rating numbers, or customer testimonial proof points.\n"
-            "- Alternates testimonial-style avatar narration with on-screen review graphics, stats, and real-life product cutaways.\n"
-            "- 60%+ of screen time is dedicated to proof elements, ratings, testimonials, and tangible evidence.\n"
+            "- Host avatar is on-camera speaking and lipsyncing throughout: full-frame for hook, proof breakdown, and CTA, and in talking-head PIP during customer review cutaways.\n"
+            "- 60%+ of screen time features on-camera avatar lipsyncing over review graphics, stats, and real-life product proof.\n"
             "- Establishes undeniable credibility and peer consensus that drives viewer trust and conversion."
         ),
         "visual_rules": [
             "Open on bold social proof (numbers, 5-star ratings, customer review quotes).",
-            "Intercut testimonial narration with proof-point product cutaways and satisfaction visuals.",
-            "Use avatar_voiceover for review quotes and statistical breakdowns.",
+            "Intercut spoken narration with proof-point product cutaways and satisfaction visuals.",
+            "Avatar is on-camera and lipsyncing across all blocks (full-frame or talking-head PIP) — never static.",
         ],
         "script_direction": (
             "Write an authoritative, evidence-backed script centered on real-world proof.\n"
@@ -328,7 +329,7 @@ TEMPLATES: dict[str, dict] = {
         "name": "Before/After Reveal",
         "description": "Split-screen or transition reveal built around a transformation.",
         "block_sequence": ["HOOK", "COMPARISON", "PRODUCT_DEMO", "COMPARISON", "CTA"],
-        "bias": {"avatar_speaking": 0.45, "broll": 0.4, "uploaded_video": 0.15},
+        "bias": {"avatar_speaking": 0.6, "broll": 0.3, "uploaded_video": 0.1},
         "default_mic_on": True,
         "default_caption_preset": "pill_highlight",
         "est_duration_range": [20, 45],
@@ -346,20 +347,20 @@ TEMPLATES: dict[str, dict] = {
             {
                 "beat": "COMPARISON",
                 "block_type": "COMPARISON",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [5, 10],
                 "framing": "WIDE",
-                "purpose": "Visual breakdown of the old, slow, or frustrating way of doing things.",
+                "purpose": "Visual breakdown of the old, slow, or frustrating way of doing things with avatar in talking-head PIP.",
             },
             {
                 "beat": "PRODUCT_DEMO",
                 "block_type": "PRODUCT_DEMO",
-                "category": "avatar_voiceover",
-                "render_mode": "background",
+                "category": "pip_talking_head",
+                "render_mode": "pip",
                 "target_duration_range": [6, 12],
                 "framing": "CLOSE",
-                "purpose": "The dramatic transformation moment — introducing the product solution in action.",
+                "purpose": "The dramatic transformation moment introducing product solution with avatar in talking-head PIP.",
             },
             {
                 "beat": "COMPARISON",
@@ -381,16 +382,16 @@ TEMPLATES: dict[str, dict] = {
             },
         ],
         "video_generation_prompt": (
-            "BEFORE/AFTER REVEAL FORMAT (TRANSFORMATION & DRAMATIC CONTRAST):\n"
+            "BEFORE/AFTER REVEAL FORMAT (TRANSFORMATION & DRAMATIC CONTRAST WITH TALKING-HEAD PIP):\n"
             "- Structured around a clear, dramatic transformation contrast (Problem State vs Solved State).\n"
-            "- Opening hook plunges into the painful/frustrating 'BEFORE' reality.\n"
-            "- Middle blocks build anticipation and deliver a dramatic visual reveal/transition to the 'AFTER' result.\n"
-            "- Uses comparison blocks and demonstration footage to highlight the undeniable before-and-after transformation."
+            "- Opening hook plunges into the painful/frustrating 'BEFORE' reality with avatar on camera.\n"
+            "- Middle blocks feature avatar in talking-head PIP delivering spoken reactions over the transformation visuals.\n"
+            "- Uses comparison blocks and demonstration footage with constant avatar lipsync to highlight the transformation."
         ),
         "visual_rules": [
             "Establish stark visual contrast between the 'before' problem and 'after' solution.",
             "Feature comparison visuals, split-screen concepts, and a dramatic transition reveal beat.",
-            "Balance avatar reaction with vivid transformation product footage.",
+            "Avatar is on-camera and lipsyncing across all blocks (full-frame or talking-head PIP) — never a static picture.",
         ],
         "script_direction": (
             "Create emotional contrast between frustration and relief.\n"
