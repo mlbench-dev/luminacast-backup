@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import re
 import tempfile
 import shutil
 from typing import Optional
@@ -382,6 +383,73 @@ _PRODUCT_INTERACTION_KEYWORDS = (
 )
 
 
+# Try-on routing. Kling Kolors (fal-ai/kling/v1-5/kolors-virtual-try-on) is a
+# Leffa-based garment-warping model whose only trick is draping a torso/leg
+# garment over a body — given a mouse, a rice cooker or a serum bottle it still
+# warps a generic t-shirt onto the person ("it turned my mouse into a shirt").
+# So classification is an ALLOW-list: only positively-recognised apparel hits
+# Kling; footwear gets a dedicated FLUX feet edit; everything else (incl.
+# unknown / unlabelled products) falls back to the safe FLUX "holding the
+# product" edit and can never accidentally reach the garment warp.
+#
+# Matching is WHOLE-WORD (so "desktop" ≠ "top", "suitcase" ≠ "suit") on the
+# product NAME + DESCRIPTION only. The retailer category is deliberately NOT
+# used: Amazon's "Clothing, Shoes & Jewelry" lumps garments, footwear,
+# sunglasses, watches and bags together, so it can't tell them apart — and a
+# real garment's name almost always contains its noun ("Polo Shirt", "Chino
+# Pants"). A short veto list catches home textiles whose fabric words ("fleece
+# throw", "cotton blanket") would otherwise read as clothing.
+_TRYON_APPAREL_WORDS = frozenset((
+    "shirt", "t-shirt", "tshirt", "tee", "blouse", "top", "tops", "polo",
+    "jersey", "tunic", "camisole", "tank", "tanktop", "crewneck", "henley",
+    "flannel",
+    "hoodie", "hoody", "sweatshirt", "sweater", "jumper", "pullover",
+    "cardigan", "turtleneck", "fleece", "knitwear",
+    "jacket", "coat", "blazer", "parka", "windbreaker", "gilet", "puffer",
+    "anorak", "peacoat",
+    "vest", "waistcoat", "poncho", "kimono", "robe", "bathrobe",
+    "dress", "gown", "frock",
+    "jeans", "pants", "trousers", "chinos", "chino", "slacks", "shorts",
+    "skirt", "leggings", "legging", "joggers", "sweatpants", "trackpants",
+    "jumpsuit", "romper", "playsuit", "overalls", "dungarees", "bodysuit",
+    "leotard", "tracksuit", "onesie", "swimsuit", "swimwear", "tankini",
+    "bikini",
+    "uniform", "activewear", "sportswear", "loungewear", "outerwear",
+    "outfit", "apparel", "clothing", "clothes", "garment", "menswear",
+    "womenswear",
+))
+_TRYON_FOOTWEAR_WORDS = frozenset((
+    "shoe", "shoes", "sneaker", "sneakers", "boot", "boots",
+    "sandal", "sandals", "heel", "heels", "loafer", "loafers",
+    "trainer", "trainers", "footwear", "slipper", "slippers",
+    "cleat", "cleats", "espadrille", "espadrilles", "moccasin", "moccasins",
+))
+# Home textiles: fabric words here would trip the apparel list otherwise.
+_TRYON_HOME_TEXTILE_WORDS = frozenset((
+    "blanket", "throw", "pillow", "pillowcase", "cushion", "duvet", "comforter",
+    "quilt", "curtain", "curtains", "drape", "drapes", "rug", "carpet",
+    "towel", "towels", "sheet", "sheets", "bedsheet", "tablecloth", "napkin",
+    "upholstery", "tapestry", "coverlet",
+))
+
+_WORD_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def classify_tryon_product(name, description=None) -> str:
+    """Return how a product should be shown on the avatar for a try-on look:
+    ``"footwear"`` (FLUX feet edit), ``"apparel"`` (Kling Kolors virtual
+    try-on), or ``"other"`` (FLUX "holding the product" — the safe default for
+    anything not positively recognised as clothing)."""
+    words = set(_WORD_RE.findall(f"{name or ''} {description or ''}".lower()))
+    if words & _TRYON_HOME_TEXTILE_WORDS:
+        return "other"
+    if words & _TRYON_FOOTWEAR_WORDS:
+        return "footwear"
+    if words & _TRYON_APPAREL_WORDS:
+        return "apparel"
+    return "other"
+
+
 def _action_prompt_mentions_product(prompt: str, product) -> bool:
     """Heuristic: does the action prompt indicate the avatar interacts with the product?
 
@@ -644,43 +712,18 @@ async def _generate_look_async(
 
                 face_url = r2.get_public_url(avatar.face_ref_key)
 
-                # Determine if this is a wearable product
-                product_name = (product.name or "").lower()
-                product_desc = (product.description or "").lower()
-                product_cat = (product.category or "").lower()
-
-                NON_WEARABLE_KEYWORDS = [
-                    "cream", "serum", "lotion", "moisturizer", "cleanser", "toner",
-                    "sunscreen", "oil", "balm", "mask", "scrub", "soap", "shampoo",
-                    "conditioner", "perfume", "fragrance", "supplement", "vitamin",
-                    "phone", "case", "charger", "cable", "earbuds", "headphones",
-                    "speaker", "watch band", "screen protector", "gadget", "tool",
-                    "candle", "diffuser", "pillow", "blanket", "mug", "bottle",
-                ]
-
-                # Kling Kolors (fal-ai/kling/v1-5/kolors-virtual-try-on) is a
-                # Leffa-based garment-warping model — its own example asset is
-                # a t-shirt, and it has no garment-category parameter. It was
-                # producing near-unchanged output plus warping/ghosting
-                # artifacts on shoe products because it has no notion of
-                # footwear placement; it only knows how to drape a garment
-                # over the torso/legs. Route footwear to the same
-                # identity-preserving FLUX Kontext edit used for non-wearables
-                # instead, with a feet-specific prompt.
-                FOOTWEAR_KEYWORDS = [
-                    "shoe", "shoes", "sneaker", "sneakers", "boot", "boots",
-                    "sandal", "sandals", "heel", "heels", "loafer", "loafers",
-                    "trainer", "trainers", "footwear", "slipper", "slippers",
-                    "cleat", "cleats", "flip flop", "flip-flop",
-                ]
-
-                is_wearable = not any(
-                    kw in product_name or kw in product_desc or kw in product_cat
-                    for kw in NON_WEARABLE_KEYWORDS
+                # Route by product type — see classify_tryon_product. An
+                # allow-list, so an unknown / non-clothing product falls back
+                # to the safe "holding the product" edit and never hits the
+                # garment-warping model (which would just put a t-shirt on it).
+                _tryon_kind = classify_tryon_product(
+                    product.name, product.description
                 )
-                is_footwear = is_wearable and any(
-                    kw in product_name or kw in product_desc or kw in product_cat
-                    for kw in FOOTWEAR_KEYWORDS
+                is_footwear = _tryon_kind == "footwear"
+                is_apparel = _tryon_kind == "apparel"
+                logger.info(
+                    "Try-on look %s: product='%s' cat='%s' -> %s",
+                    look_id, product.name, product.category, _tryon_kind,
                 )
 
                 if is_footwear:
@@ -757,8 +800,11 @@ async def _generate_look_async(
                         raise RuntimeError(f"FLUX Kontext returned no output: {str(result)[:300]}")
 
                     logger.info("Footwear product '%s' — used FLUX 'wearing shoes' instead of Kling Kolors try-on", product.name)
-                elif not is_wearable:
-                    # Non-wearable: generate avatar HOLDING the product via FLUX Kontext
+                elif not is_apparel:
+                    # Not recognised as clothing (a gadget, an appliance, a
+                    # bottle, an unlabelled product): DON'T warp a t-shirt onto
+                    # the avatar — generate them HOLDING the real product via
+                    # FLUX Kontext instead.
                     # Download both face image and product image as references
                     face_path = os.path.join(tmpdir, "face.jpg")
                     product_path = os.path.join(tmpdir, "product.jpg")
@@ -813,9 +859,9 @@ async def _generate_look_async(
                     if not output_image_url:
                         raise RuntimeError(f"FLUX Kontext returned no output: {str(result)[:300]}")
 
-                    logger.info("Non-wearable product '%s' — used FLUX 'holding product' instead of try-on", product.name)
+                    logger.info("Non-apparel product '%s' — used FLUX 'holding product' instead of try-on", product.name)
                 else:
-                    # Wearable product — use Kling Kolors virtual try-on
+                    # Apparel — use Kling Kolors virtual try-on
                     # Use body_motion front photo (full-body) instead of face_ref_key (headshot)
                     # Kling Kolors requires full body pose detection
                     from sqlalchemy import select as sa_select

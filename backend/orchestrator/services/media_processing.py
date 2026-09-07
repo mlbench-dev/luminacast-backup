@@ -221,18 +221,45 @@ _MIC_OFF_REVERB_DECAY = float(os.environ.get("MIC_OFF_REVERB_DECAY", "0.18"))
 _MIC_OFF_COMP_RATIO = float(os.environ.get("MIC_OFF_COMP_RATIO", "2.0"))
 
 
+def _ambient_dynamics_tail(
+    nodes: list[str], *, duration_s: float | None, comp_ratio: float
+) -> list[str]:
+    """Append the shared mic-OFF tail to ``nodes``: an optional duration
+    pin, then the soft "untreated room" compand.
+
+    ``aecho`` reflections lengthen the signal by ~their longest delay.
+    When ``duration_s`` is known we trim back to the input length
+    (``atrim``/``asetpts``) BEFORE the compand+loudnorm stages — trimming
+    after a single-pass ``loudnorm`` does not restore the exact length
+    (loudnorm buffers and drops trailing samples), so the trim must sit
+    while the PTS is still clean. This keeps the lipsync WAV sample-
+    aligned no matter how long the reflection taps are.
+    """
+    # Slower attack/decay scaled by the softness ratio so a higher
+    # MIC_OFF_COMP_RATIO genuinely loosens the dynamics.
+    attack = round(0.025 * max(comp_ratio, 0.1), 4)
+    decay = round(0.25 * max(comp_ratio, 0.1), 4)
+    out = list(nodes)
+    if duration_s and duration_s > 0:
+        out.append(f"atrim=end={_num(round(float(duration_s), 4))}")
+        out.append("asetpts=N/SR/TB")
+    out.append(
+        # Softer compression: slow attack/decay, lower makeup gain than
+        # the clip-mic compand — dynamics breathe like an untreated room.
+        f"compand=attacks={_num(attack)}:decays={_num(decay)}:"
+        "points=-80/-80|-50/-40|-25/-22|0/-10|20/-6:gain=2"
+    )
+    return out
+
+
 def _mic_off_ambient_eq(*, duration_s: float | None = None) -> list[str]:
-    """Build the mic-OFF ambient/room EQ + dynamics nodes.
+    """Build the mic-OFF ambient/room EQ + dynamics nodes (the STUDIO /
+    generic-default profile — the driest, most controlled space).
 
     Reads the ``MIC_OFF_*`` env knobs at call time (not import time) so
     tests and production can override without reloading the module.
-
-    The ``aecho`` early reflection lengthens the signal by ~reverb_ms.
-    When ``duration_s`` is known we immediately trim back to the input
-    length (``atrim``/``asetpts``) BEFORE the compand+loudnorm stages —
-    trimming after a single-pass ``loudnorm`` does not restore the exact
-    length (loudnorm buffers and drops trailing samples), so the trim
-    must sit directly after the echo while the PTS is still clean.
+    Output is deliberately unchanged from the vetted production chain;
+    ``room`` and ``outdoor`` scenes route to :func:`_scene_ambient_eq`.
     """
     hpf = _float_env("MIC_OFF_HPF_HZ", _MIC_OFF_HPF_HZ)
     presence_hz = _float_env("MIC_OFF_PRESENCE_HZ", _MIC_OFF_PRESENCE_HZ)
@@ -240,10 +267,6 @@ def _mic_off_ambient_eq(*, duration_s: float | None = None) -> list[str]:
     reverb_ms = _float_env("MIC_OFF_REVERB_MS", _MIC_OFF_REVERB_MS)
     reverb_decay = _float_env("MIC_OFF_REVERB_DECAY", _MIC_OFF_REVERB_DECAY)
     comp_ratio = _float_env("MIC_OFF_COMP_RATIO", _MIC_OFF_COMP_RATIO)
-    # Slower attack/decay scaled by the softness ratio so a higher
-    # MIC_OFF_COMP_RATIO genuinely loosens the dynamics.
-    attack = round(0.025 * max(comp_ratio, 0.1), 4)
-    decay = round(0.25 * max(comp_ratio, 0.1), 4)
     nodes = [
         # Gentle high-pass: thin the proximity-free low end.
         f"highpass=f={_num(hpf)}",
@@ -252,18 +275,104 @@ def _mic_off_ambient_eq(*, duration_s: float | None = None) -> list[str]:
         # Light room sense: one short, low-gain early reflection.
         f"aecho=0.8:0.85:{_num(reverb_ms)}:{_num(reverb_decay)}",
     ]
-    if duration_s and duration_s > 0:
-        # Drop the echo tail right here so the downstream loudnorm sees an
-        # exact-length signal and the WAV stays sample-aligned.
-        nodes.append(f"atrim=end={_num(round(float(duration_s), 4))}")
-        nodes.append("asetpts=N/SR/TB")
-    nodes.append(
-        # Softer compression: slow attack/decay, lower makeup gain than
-        # the clip-mic compand — dynamics breathe like an untreated room.
-        f"compand=attacks={_num(attack)}:decays={_num(decay)}:"
-        "points=-80/-80|-50/-40|-25/-22|0/-10|20/-6:gain=2"
+    return _ambient_dynamics_tail(
+        nodes, duration_s=duration_s, comp_ratio=comp_ratio
     )
-    return nodes
+
+
+# ── Per-environment acoustic profiles (mic-OFF only) ─────────────────
+#
+# The scene's environment (studio / room / outdoor — an AvatarLook
+# column set when the scene is created, see routers/avatar_looks.py) is
+# resolved to a chain id by services.mic_presets.select_scene_preset and
+# lands here. Before this, ``room`` reused the studio chain byte-for-byte
+# and ``outdoor`` was the studio chain + one high-pass — so the scene
+# picker changed almost nothing about the voice. Each profile now
+# carries the acoustic signature of its space:
+#
+#   room    → an untreated indoor room: a low-mid "box" resonance,
+#             denser early reflections, soft-furnishing HF absorption.
+#   outdoor → open air: almost no reflections (one faint, distant slap),
+#             the room boom high-passed away, distance/air HF loss.
+#
+# studio is intentionally absent — it stays on _mic_off_ambient_eq / the
+# MIC_OFF_* knobs so its vetted output does not move.
+#
+# NOTE: a real ambience BED (street / traffic / wind under an outdoor
+# line) is a mixing-stage concern, not EQ — tracked as a follow-up
+# (SCENE_AC_OUTDOOR_AMBIENCE_*), not done here.
+#
+# Every value is overridable via ``SCENE_AC_<ENV>_<KNOB>`` at call time,
+# mirroring the MIC_OFF_* knobs, so the feel can be tuned without a
+# redeploy. ``reflections`` is a tuple of (delay_ms, gain) aecho taps.
+_SCENE_ACOUSTIC_PROFILES: dict[str, dict] = {
+    "room": {
+        "hpf_hz": 80.0,           # keep a little low end — small rooms boom
+        "box_hz": 250.0,          # low-mid resonance of a boxy space
+        "box_db": 2.0,
+        "presence_hz": 3500.0,
+        "presence_db": -2.5,      # a touch further off-axis than studio
+        "feedback": 0.9,
+        "reflections": ((33.0, 0.20), (58.0, 0.13)),
+        "lowpass_hz": 7800.0,     # soft furnishings absorb the very top
+    },
+    "outdoor": {
+        "hpf_hz": 130.0,          # no room / proximity boom in open air
+        "box_hz": None,
+        "box_db": 0.0,
+        "presence_hz": 4000.0,
+        "presence_db": -2.0,
+        "feedback": 0.6,
+        "reflections": ((115.0, 0.05),),  # one faint, distant surface
+        "lowpass_hz": 7200.0,     # distance / air absorption of the highs
+    },
+}
+
+
+def _scene_profile_val(env: str, knob: str, default: float | None) -> float | None:
+    """Read a ``SCENE_AC_<ENV>_<KNOB>`` float override at call time."""
+    raw = os.environ.get(f"SCENE_AC_{env.upper()}_{knob.upper()}")
+    if raw is not None and raw.strip() != "":
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+def _scene_ambient_eq(env: str, *, duration_s: float | None = None) -> list[str]:
+    """Mic-OFF EQ + reflections for a ``room`` or ``outdoor`` scene.
+
+    Shares the duration-pin + soft compand tail with the studio chain
+    (:func:`_ambient_dynamics_tail`) so the lipsync feed stays sample-
+    aligned regardless of how long the reflection taps run.
+    """
+    p = _SCENE_ACOUSTIC_PROFILES[env]
+    hpf = _scene_profile_val(env, "HPF_HZ", p["hpf_hz"])
+    presence_hz = _scene_profile_val(env, "PRESENCE_HZ", p["presence_hz"])
+    presence_db = _scene_profile_val(env, "PRESENCE_DB", p["presence_db"])
+    lowpass_hz = _scene_profile_val(env, "LOWPASS_HZ", p["lowpass_hz"])
+    feedback = _scene_profile_val(env, "FEEDBACK", p["feedback"])
+    comp_ratio = _float_env("MIC_OFF_COMP_RATIO", _MIC_OFF_COMP_RATIO)
+
+    nodes = [f"highpass=f={_num(hpf)}"]
+    if p["box_hz"]:
+        box_hz = _scene_profile_val(env, "BOX_HZ", p["box_hz"])
+        box_db = _scene_profile_val(env, "BOX_DB", p["box_db"])
+        # Low-mid "box" resonance of an untreated room.
+        nodes.append(f"equalizer=f={_num(box_hz)}:w=1.2:g={_num(box_db)}")
+    # Presence dip: push the voice off-axis / further into the space.
+    nodes.append(f"equalizer=f={_num(presence_hz)}:w=2:g={_num(presence_db)}")
+    # Early reflections — one aecho with per-tap delay|gain lists.
+    delays = "|".join(_num(d) for d, _ in p["reflections"])
+    gains = "|".join(_num(g) for _, g in p["reflections"])
+    nodes.append(f"aecho=0.8:{_num(feedback)}:{delays}:{gains}")
+    if lowpass_hz:
+        # Absorption / distance loss of the highs.
+        nodes.append(f"lowpass=f={_num(lowpass_hz)}")
+    return _ambient_dynamics_tail(
+        nodes, duration_s=duration_s, comp_ratio=comp_ratio
+    )
 
 
 def _float_env(name: str, default: float) -> float:
@@ -331,10 +440,13 @@ def _voice_filter_chain(
 
 _CHAIN_BUILDERS = {
     "clip_mic": lambda **kw: _VOICE_EQ_CLIP_MIC,
+    # studio scene / generic mic-OFF default — vetted chain, unchanged.
     "ambient_room": lambda duration_s=None: _mic_off_ambient_eq(duration_s=duration_s),
-    "ambient_room_soft": lambda duration_s=None: _mic_off_ambient_eq(duration_s=duration_s),
+    # room scene — untreated indoor space (box resonance, denser reflections).
+    "ambient_room_soft": lambda duration_s=None: _scene_ambient_eq("room", duration_s=duration_s),
     "clip_mic_windscreen": lambda **kw: _VOICE_EQ_CLIP_MIC + ["highpass=f=120"],
-    "ambient_outdoor": lambda duration_s=None: _mic_off_ambient_eq(duration_s=duration_s) + ["highpass=f=110"],
+    # outdoor scene — open air (near-dry, low end + air HF removed).
+    "ambient_outdoor": lambda duration_s=None: _scene_ambient_eq("outdoor", duration_s=duration_s),
 }
 
 def _voice_filter_chain_for_scene(chain_id: str | None, *, clip_mic_enabled: bool, duration_s: float | None = None) -> str:

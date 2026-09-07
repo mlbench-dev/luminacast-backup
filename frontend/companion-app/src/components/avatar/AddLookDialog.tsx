@@ -167,6 +167,10 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
             {/* Product search */}
             <div>
               <label className="text-sm text-text-muted mb-1 block">Select a product to try on</label>
+              <p className="text-[11px] text-text-muted mb-2 -mt-0.5">
+                Clothing is worn on the avatar. Shoes are placed on the feet.
+                Anything else (gadgets, appliances, bottles…) is shown held in hand.
+              </p>
               <div className="relative mb-2">
                 <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-text-muted" />
                 <Input
@@ -241,8 +245,11 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g., Try on: Blue Dress"
-                maxLength={100}
+                maxLength={200}
               />
+              <p className="text-[11px] text-text-muted mt-1">
+                Just a label for your looks list — it doesn't change the generated image.
+              </p>
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-4 border-t border-border mt-4">
@@ -356,7 +363,7 @@ export function AddLookDialog({ avatarId, open, onOpenChange, lookType = "backgr
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={lookType === "body_motion" ? "e.g., Front Pose, 3/4 Left" : "e.g., Office, Studio, Beach"}
-              maxLength={100}
+              maxLength={200}
             />
           </div>
 

@@ -103,3 +103,33 @@ def test_post_process_preserves_duration(clip_mic_enabled: bool):
         f"mix MP3 duration {mix_dur:.4f}s drifted from input "
         f"{measured_in:.4f}s by {(mix_dur - measured_in) * 1000:.1f}ms"
     )
+
+
+@pytest.mark.parametrize("scene_chain_id", ["ambient_room_soft", "ambient_outdoor"])
+def test_post_process_scene_chains_preserve_duration(scene_chain_id: str):
+    """The room / outdoor scene chains add longer reflection taps than the
+    studio chain (up to ~115ms). The trailing atrim must still pin both
+    outputs to the input length so the lipsync feed stays sample-aligned."""
+    tmp = tempfile.mkdtemp(prefix="ppv_scene_dur_")
+    in_path = os.path.join(tmp, "in.wav")
+    out_lipsync = os.path.join(tmp, "out.lipsync.wav")
+    out_mix = os.path.join(tmp, "out.mix.mp3")
+
+    in_dur = 4.0
+    _synth_wav(out_path=in_path, duration_s=in_dur)
+    measured_in = _probe_duration_s(in_path)
+
+    lip, mix = asyncio.run(
+        post_process_voice(
+            in_path, out_lipsync, out_mix,
+            clip_mic_enabled=False,
+            scene_chain_id=scene_chain_id,
+            block_id="blk_scene_dur",
+        )
+    )
+    # A drift beyond the guard makes post_process_voice fall back to the
+    # raw input; assert it produced real, distinct output files instead.
+    assert lip == out_lipsync and mix == out_mix
+
+    assert abs(_probe_duration_s(lip) - measured_in) <= 0.005
+    assert abs(_probe_duration_s(mix) - measured_in) <= 0.075
