@@ -46,6 +46,7 @@ Following Synthesia's pattern:
 - Changed from `autodiscover_tasks` to explicit `include=[...]`
 - Removed task_routes that routed to non-existent queues
 
+
 #### `backend/orchestrator/models/avatar.py` — ADD FIELDS
 Add these columns to Avatar model:
 ```python
