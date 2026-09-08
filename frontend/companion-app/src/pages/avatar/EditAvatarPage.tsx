@@ -489,14 +489,11 @@ export function EditAvatarPage() {
                           onSetDefault={() => setDefaultMutation.mutate(existing.id)}
                           onDelete={() => deleteLookMutation.mutate(existing.id)}
                           onRegenerate={() => {
-                            deleteLookMutation.mutate(existing.id);
-                            setTimeout(() => {
-                              avatarLooksApi.create(avatarId!, {
-                                name: `AI: ${pose.label}`,
-                                look_type: "body_motion",
-                                pose_angle: pose.value,
-                              }).then(() => qc.invalidateQueries({ queryKey: ["avatar-looks", avatarId] }));
-                            }, 1000);
+                            // Regenerate through the Body Shot pipeline (full-body
+                            // canonical reference) and re-sync this look in place —
+                            // keeps the "Shots" step and this tab identical.
+                            avatarLooksApi.regenerateBodyMotionPose(avatarId!, pose.value)
+                              .then(() => qc.invalidateQueries({ queryKey: ["avatar-looks", avatarId] }));
                           }}
                         />
                       );
@@ -513,11 +510,8 @@ export function EditAvatarPage() {
                           disabled={!avatar?.face_ref_key}
                           title={!avatar?.face_ref_key ? "Avatar has no face image yet" : undefined}
                           onClick={() => {
-                            avatarLooksApi.create(avatarId!, {
-                              name: `AI: ${pose.label}`,
-                              look_type: "body_motion",
-                              pose_angle: pose.value,
-                            }).then(() => qc.invalidateQueries({ queryKey: ["avatar-looks", avatarId] }));
+                            avatarLooksApi.regenerateBodyMotionPose(avatarId!, pose.value)
+                              .then(() => qc.invalidateQueries({ queryKey: ["avatar-looks", avatarId] }));
                           }}
                         >
                           Generate

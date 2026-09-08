@@ -17,4 +17,10 @@ export const avatarLooksApi = {
     api.post(`/avatar/${avatarId}/looks/${lookId}/set-default`).then((r) => r.data),
   generateAllBodyMotion: (avatarId: string) =>
     api.post(`/avatar/${avatarId}/generate-all-body-motion`).then((r) => r.data),
+  /** Regenerate ONE Body-Motion pose. Routes through the avatar's Body Shot
+   * pipeline (full-body canonical reference) and re-syncs the look, so the
+   * "Shots" step and the "Body Motion" tab stay identical. Falls back to the
+   * standalone look pipeline for avatars with no Body Shot set. */
+  regenerateBodyMotionPose: (avatarId: string, pose: string) =>
+    api.post(`/avatar/ai/regenerate-body-motion-pose`, { avatar_id: avatarId, pose }).then((r) => r.data),
 };

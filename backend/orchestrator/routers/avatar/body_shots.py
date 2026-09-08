@@ -62,6 +62,46 @@ FAL_QWEN_ANGLES = {
     "back":                {"horizontal_angle": 180, "vertical_angle": 0},
 }
 
+async def _sync_body_motion_look(db: AsyncSession, avatar_id: str, pose: str, r2_key: str) -> None:
+    """Point the Body-Motion ``AvatarLook`` for ``pose`` at ``r2_key`` (create
+    it if absent).
+
+    Body-Motion looks are a VIEW of the avatar's Body Shots — the renderer and
+    the cast builder read ``AvatarLook`` rows, never ``BodyShotSet`` — so a
+    Body-Shot (re)generation MUST propagate here, or Edit-Avatar's "Shots" and
+    "Body Motion" tabs end up showing different images for the same pose.
+    Mirrors _shared._seed_body_motion_looks_from_body_shot_set's row shape.
+    """
+    look = (
+        await db.execute(
+            select(AvatarLook).where(
+                AvatarLook.avatar_id == avatar_id,
+                AvatarLook.look_type == "body_motion",
+                AvatarLook.pose_angle == pose,
+            ).limit(1)
+        )
+    ).scalars().first()
+    if look is not None:
+        look.face_ref_key = r2_key
+        look.status = "ready"
+        look.error_message = None
+    else:
+        label = _BODY_MOTION_POSE_LABELS.get(pose, pose)
+        db.add(AvatarLook(
+            id=f"al_{uuid.uuid4().hex[:12]}",
+            avatar_id=avatar_id,
+            name=f"AI: {label}",
+            face_ref_key=r2_key,
+            background_prompt=f"Body motion pose: {pose}",
+            is_default=False,
+            is_original=False,
+            status="ready",
+            look_type="body_motion",
+            pose_angle=pose,
+        ))
+    await db.commit()
+
+
 class GenerateBodyDescriptionRequest(BaseModel):
     avatar_id: str
 
@@ -1248,13 +1288,20 @@ async def regenerate_body_shot(
         await r2.upload_bytes(img_bytes, r2_key, "image/jpeg")
 
         # Update the BodyShotSet record
-        if bss.angles:
-            bss.angles[req.angle] = r2_key
-            from sqlalchemy.orm.attributes import flag_modified
-            flag_modified(bss, "angles")
-            if req.angle == "front":
-                bss.front_shot_key = r2_key
-            await db.commit()
+        bss.angles = {**(bss.angles or {}), req.angle: r2_key}
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(bss, "angles")
+        if req.angle == "front":
+            bss.front_shot_key = r2_key
+        await db.commit()
+
+        # Body-Motion looks are a view of Body Shots — propagate so the two
+        # Edit-Avatar tabs never disagree. Best-effort; never fail the shot.
+        try:
+            await _sync_body_motion_look(db, avatar.id, req.angle, r2_key)
+        except Exception as sync_exc:
+            sentry_sdk.capture_exception(sync_exc)
+            logger.warning(f"body-motion look sync failed for {req.angle}: {sync_exc}")
 
         # Validate the regenerated shot
         validation = None
@@ -1290,3 +1337,81 @@ async def regenerate_body_shot(
         sentry_sdk.capture_exception(e)
         logger.error(f"regenerate-body-shot failed: {e}")
         raise HTTPException(status_code=500, detail=str(e)[:200])
+
+
+class RegenerateBodyMotionPoseRequest(BaseModel):
+    avatar_id: str
+    pose: str
+
+
+@router.post("/ai/regenerate-body-motion-pose")
+async def regenerate_body_motion_pose(
+    req: RegenerateBodyMotionPoseRequest,
+    user: User = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit-Avatar → "Body Motion" tab: regenerate ONE pose.
+
+    Body-Motion looks are a view of the avatar's Body Shots. When the avatar
+    has a completed Body Shot set we regenerate the pose through THAT single
+    pipeline (full-body canonical reference + Qwen numeric angle control, via
+    ``regenerate_body_shot``) and re-sync the ``AvatarLook`` — so the "Shots"
+    step and the "Body Motion" tab can no longer drift apart (different image,
+    different framing). Only avatars that never ran Body Shots fall back to the
+    standalone per-look pipeline.
+    """
+    avatar = await db.get(Avatar, req.avatar_id)
+    if not avatar or avatar.user_id != ctx.workspace_owner_id:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    if req.pose not in BODY_SHOT_ANGLES:
+        raise HTTPException(status_code=400, detail=f"Invalid pose: {req.pose}")
+
+    bss = (
+        await db.execute(
+            select(BodyShotSet)
+            .where(BodyShotSet.avatar_id == avatar.id, BodyShotSet.status == "completed")
+            .order_by(BodyShotSet.created_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+
+    if bss is not None:
+        # One pipeline. regenerate_body_shot updates BodyShotSet.angles AND
+        # calls _sync_body_motion_look, so the AvatarLook this tab renders is
+        # updated in place.
+        result = await regenerate_body_shot(
+            RegenerateBodyShotRequest(avatar_id=req.avatar_id, set_id=bss.id, angle=req.pose),
+            user=user, ctx=ctx, db=db,
+        )
+        result["source"] = "body_shot"
+        return result
+
+    # Legacy avatars (clone flows that never generated a Body Shot set):
+    # standalone per-look pipeline, same as the old tab behaviour.
+    if not avatar.face_ref_key:
+        raise HTTPException(status_code=400, detail="Avatar has no face image yet")
+    existing = (
+        await db.execute(
+            select(AvatarLook).where(
+                AvatarLook.avatar_id == avatar.id,
+                AvatarLook.look_type == "body_motion",
+                AvatarLook.pose_angle == req.pose,
+            ).limit(1)
+        )
+    ).scalars().first()
+    if existing is not None:
+        await db.delete(existing)
+        await db.commit()
+    look_id = f"al_{uuid.uuid4().hex[:12]}"
+    label = _BODY_MOTION_POSE_LABELS.get(req.pose, req.pose)
+    db.add(AvatarLook(
+        id=look_id, avatar_id=avatar.id, name=f"AI: {label}",
+        background_prompt=f"Body motion pose: {req.pose}",
+        is_default=False, is_original=False, status="pending",
+        look_type="body_motion", pose_angle=req.pose,
+    ))
+    await db.commit()
+    from tasks.avatar_looks import generate_avatar_look_task
+    generate_avatar_look_task.delay(look_id)
+    return {"look_id": look_id, "pose": req.pose, "status": "pending", "source": "look_pipeline"}
