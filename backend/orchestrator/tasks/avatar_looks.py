@@ -89,6 +89,13 @@ FAL_QWEN_BODY_MOTION_ANGLES = {
     "back":                {"horizontal_angle": 180, "vertical_angle": 0},
 }
 
+# fal Qwen "multiple-angles" framing controls — keep in sync with
+# FAL_QWEN_BODY_ZOOM / FAL_QWEN_BODY_IMAGE_SIZE in routers/avatar/body_shots.py.
+# The LoRA's `zoom` defaults to 5 (MEDIUM = waist-up crop); 0-3 = wide shot
+# (full body). Pin wide + a tall 9:16 output so a rotated pose stays head-to-toe.
+FAL_QWEN_BODY_MOTION_ZOOM = 2
+FAL_QWEN_BODY_MOTION_IMAGE_SIZE = {"width": 1024, "height": 1792}
+
 
 @celery_app.task(name="tasks.avatar_looks.generate", bind=True, max_retries=1)
 def generate_avatar_look_task(self, look_id: str):
@@ -1094,6 +1101,10 @@ async def _generate_look_async(
                                 "image_urls": [face_url],
                                 "horizontal_angle": qwen_angle_params["horizontal_angle"],
                                 "vertical_angle": qwen_angle_params["vertical_angle"],
+                                # Wide framing + tall output so the rotated pose
+                                # stays head-to-toe, not the LoRA's waist-up crop.
+                                "zoom": FAL_QWEN_BODY_MOTION_ZOOM,
+                                "image_size": FAL_QWEN_BODY_MOTION_IMAGE_SIZE,
                                 "num_inference_steps": 40,
                                 "guidance_scale": 5.0,
                                 "output_format": "jpeg",

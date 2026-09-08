@@ -62,6 +62,17 @@ FAL_QWEN_ANGLES = {
     "back":                {"horizontal_angle": 180, "vertical_angle": 0},
 }
 
+# fal Qwen "multiple-angles" framing controls. The LoRA's `zoom` defaults to 5
+# = MEDIUM shot (~waist-up crop). That default is why single-tile Regenerate
+# (which routes through fal Qwen) and the fal-tier batch shots came back HALF
+# body, while the self-hosted Qwen tier (explicit 1024x1792) and the look
+# pipeline (full-body FLUX prompts) came back FULL body — same "single is half,
+# regenerate-all is full" report. Scale per fal: 0-3 = wide shot (full body),
+# 4-6 = medium, 7-10 = close-up. Pin a wide value + a tall 9:16 output on every
+# fal Qwen call so rotated shots stay head-to-toe like the canonical.
+FAL_QWEN_BODY_ZOOM = 2
+FAL_QWEN_BODY_IMAGE_SIZE = {"width": 1024, "height": 1792}
+
 # The Qwen rotation LoRA can't produce a true LEFT and a true RIGHT profile
 # (or 3/4) facing opposite ways — it collapses both to the same side. A
 # horizontal flip of the left-side shot IS an anatomically-correct right-side
@@ -786,6 +797,10 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
                             "image_urls": [canonical_url],
                             "horizontal_angle": fal_angles["horizontal_angle"],
                             "vertical_angle": fal_angles["vertical_angle"],
+                            # Wide framing + tall output so the rotated shot is
+                            # head-to-toe, not the LoRA's default waist-up crop.
+                            "zoom": FAL_QWEN_BODY_ZOOM,
+                            "image_size": FAL_QWEN_BODY_IMAGE_SIZE,
                             "seed": angle_seed,
                             # Higher steps + guidance = sharper, better fabric/skin
                             # detail at the cost of ~30% extra compute per shot.
@@ -1332,6 +1347,11 @@ async def regenerate_body_shot(
                     "image_urls": [canonical_url],
                     "horizontal_angle": fal_angles["horizontal_angle"],
                     "vertical_angle": fal_angles["vertical_angle"],
+                    # Wide framing + tall output so the regenerated tile is
+                    # head-to-toe, not the LoRA's default waist-up crop — this
+                    # is the "single regenerate = half body" fix.
+                    "zoom": FAL_QWEN_BODY_ZOOM,
+                    "image_size": FAL_QWEN_BODY_IMAGE_SIZE,
                     "seed": new_seed,
                     "num_inference_steps": 40,
                     "guidance_scale": 5.0,
