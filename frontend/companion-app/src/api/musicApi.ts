@@ -32,6 +32,17 @@ export interface SfxItem {
   url: string;
 }
 
+export interface AmbienceItem {
+  key: string;
+  icon: string;
+  label: string;
+  /** Which scene environment this bed is the default for ("Room" / "Outdoor"). */
+  scene: string;
+  duration: number;
+  description: string;
+  url: string;
+}
+
 export interface AIGeneratedTrack {
   id: string;
   url: string;
@@ -132,4 +143,8 @@ export const musicApi = {
     api.delete<{ deleted: boolean }>("/music/uploaded/" + id).then((r) => r.data),
   sfxLibrary: () =>
     api.get<{ items: SfxItem[] }>("/music/sfx/library").then((r) => r.data),
+  ambienceLibrary: () =>
+    api
+      .get<{ enabled: boolean; items: AmbienceItem[] }>("/music/ambience/library")
+      .then((r) => r.data),
 };

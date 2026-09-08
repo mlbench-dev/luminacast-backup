@@ -1208,3 +1208,46 @@ async def list_sfx_library(user: User = Depends(get_current_user)):
             for sfx in SFX_LIBRARY
         ]
     }
+
+
+# Which scene environment each ambience bed is the default for — mirrors
+# services/ambience_library._ENV_DEFAULT, for display only.
+_AMBIENCE_ENV_LABEL: dict[str, str] = {
+    "room_tone": "Room", "office_hum": "Room",
+    "wind_soft": "Outdoor", "city_street": "Outdoor",
+    "nature_birds": "Outdoor", "ocean_waves": "Outdoor",
+    "cafe_murmur": "Room",
+}
+_AMBIENCE_ICON: dict[str, str] = {
+    "room_tone": "🏠", "office_hum": "🏢", "cafe_murmur": "☕",
+    "city_street": "🏙️", "wind_soft": "🌬️", "nature_birds": "🐦", "ocean_waves": "🌊",
+}
+
+
+@router.get("/ambience/library")
+async def list_ambience_library(user: User = Depends(get_current_user)):
+    """Browseable ambience-bed library for the Ambience tab (audition / download).
+
+    Ambience beds are NOT dragged onto the timeline like SFX — the renderer
+    picks one automatically from each scene's environment (studio / room /
+    outdoor) when ``SCENE_AMBIENCE_ENABLED`` is on. This endpoint is the
+    single source of truth's public view (``services/ambience_library``);
+    files are seeded by ``scripts/seed_ambience_library.py`` as ``.wav``.
+    """
+    from services.ambience_library import list_entries, scene_ambience_enabled
+
+    return {
+        "enabled": scene_ambience_enabled(),
+        "items": [
+            {
+                "key": e.name,
+                "label": e.name.replace("_", " ").title(),
+                "icon": _AMBIENCE_ICON.get(e.name, "🎧"),
+                "description": f"{_AMBIENCE_ENV_LABEL.get(e.name, 'Scene')} atmosphere bed",
+                "scene": _AMBIENCE_ENV_LABEL.get(e.name, ""),
+                "duration": e.loop_s,
+                "url": e.url,
+            }
+            for e in list_entries()
+        ],
+    }

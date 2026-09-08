@@ -92,6 +92,7 @@ export type {
   CatalogTrack,
   UploadedTrack,
   SfxItem,
+  AmbienceItem,
   AIGeneratedTrack,
   LibraryParamOption,
   LibraryParams,

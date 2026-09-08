@@ -6,6 +6,7 @@ import {
   type MusicSoundCast,
   type MusicTrackItem,
   type SfxItem,
+  type AmbienceItem,
   type AIGeneratedTrack,
   type LibraryTrack,
 } from "@/lib/api";
@@ -37,6 +38,7 @@ import {
   RefreshCw,
   Sparkles,
   Volume2,
+  Wind,
   Play,
   Pause,
   Construction,
@@ -142,7 +144,7 @@ function getCastIdFromPath(): string | null {
 // Top-level Music page
 // ─────────────────────────────────────────────────────────────────────────
 
-type MainTab = "browse" | "generate" | "sfx" | "uploaded" | "saved";
+type MainTab = "browse" | "generate" | "sfx" | "ambience" | "uploaded" | "saved";
 
 export function MusicPage() {
   const [tab, setTab] = useState<MainTab>("browse");
@@ -183,6 +185,12 @@ export function MusicPage() {
           label="SFX"
         />
         <TabButton
+          active={tab === "ambience"}
+          onClick={() => setTab("ambience")}
+          icon={<Wind className="w-3.5 h-3.5" />}
+          label="Ambience"
+        />
+        <TabButton
           active={tab === "uploaded"}
           onClick={() => setTab("uploaded")}
           icon={<Upload className="w-3.5 h-3.5" />}
@@ -200,6 +208,7 @@ export function MusicPage() {
         {tab === "browse" && <BrowseTab />}
         {tab === "generate" && <GenerateTab castId={castId} />}
         {tab === "sfx" && <SFXTab />}
+        {tab === "ambience" && <AmbienceTab />}
         {tab === "uploaded" && <UploadedTab />}
         {tab === "saved" && <SavedTab />}
       </div>
@@ -1067,6 +1076,99 @@ function SFXTab() {
         <div className="text-center py-3 text-white/30 text-xs flex items-center justify-center gap-2">
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
           Loading more…
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Ambience tab — background atmosphere beds
+// ─────────────────────────────────────────────────────────────────────────
+
+function AmbienceTab() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["ambience-library"],
+    queryFn: () => musicApi.ambienceLibrary(),
+  });
+  const items: AmbienceItem[] = data?.items ?? [];
+  const enabled = data?.enabled ?? false;
+  const { playingUrl, toggle } = useAudioPreview();
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-white/45 leading-relaxed">
+        Atmosphere beds — wind, room tone, street noise — that play low under
+        the narration for the length of a scene. Unlike SFX you don&apos;t place
+        these: the renderer picks one automatically from each scene&apos;s
+        environment (<span className="text-white/60">Room</span> or{" "}
+        <span className="text-white/60">Outdoor</span>; a studio scene gets
+        none). Click to preview or download.
+      </p>
+
+      {!isLoading && !enabled && (
+        <div className="text-[11px] text-amber-300/80 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+          Scene ambience is currently turned off for this environment — these
+          beds won&apos;t be mixed into renders until it&apos;s enabled.
+        </div>
+      )}
+
+      {isLoading && (
+        <div className="text-center py-8 text-white/30 text-sm">
+          <Loader2 className="w-5 h-5 mx-auto animate-spin mb-2" />
+          Loading…
+        </div>
+      )}
+
+      {!isLoading && items.length === 0 && (
+        <div className="text-center py-10 border border-dashed border-white/10 rounded-xl text-white/40 text-sm">
+          No ambience library yet
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+          {items.map((amb) => {
+            const isPlaying = playingUrl === amb.url;
+            return (
+              <div
+                key={amb.key}
+                className="flex items-center gap-3 p-3 bg-white/[0.03] border border-white/[0.07] rounded-xl hover:bg-white/[0.05] transition-all"
+              >
+                <button
+                  onClick={() => toggle(amb.url)}
+                  title={isPlaying ? "Stop" : "Preview"}
+                  className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg bg-white/[0.06] hover:bg-white/[0.12] transition-colors"
+                >
+                  {isPlaying ? (
+                    <Pause className="w-4 h-4" />
+                  ) : (
+                    <Play className="w-4 h-4" />
+                  )}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-base leading-none">{amb.icon}</span>
+                    <span className="text-xs text-white/70 truncate">
+                      {amb.label}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-white/35 mt-0.5">
+                    {amb.scene ? `${amb.scene} · ` : ""}
+                    {amb.duration.toFixed(0)}s loop
+                  </div>
+                </div>
+                <a
+                  href={amb.url}
+                  download={`${amb.key}.wav`}
+                  title="Download"
+                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-white/40 hover:text-white/80 hover:bg-white/[0.08] transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -1172,6 +1172,136 @@ def _audio_track_elements(timeline: dict) -> list[dict]:
     return out
 
 
+_AMBIENCE_GAP_BRIDGE_S = 1.5   # merge same-env runs separated by <= this
+_AMBIENCE_MIN_RUN_S = 2.0      # ignore runs shorter than this
+
+
+def _timeline_block_spans(timeline: dict) -> dict[str, tuple[float, float]]:
+    """``{block_id: (min_start_s, max_end_s)}`` across every element that
+    carries a ``metadata.block_id`` and a valid slot (``e > s``)."""
+    spans: dict[str, list[float]] = {}
+    if not timeline or not isinstance(timeline, dict):
+        return {}
+    for track in timeline.get("tracks") or []:
+        if not isinstance(track, dict):
+            continue
+        for el in track.get("elements") or []:
+            if not isinstance(el, dict):
+                continue
+            bid = (el.get("metadata") or {}).get("block_id")
+            if not bid:
+                continue
+            try:
+                s = float(el.get("s") or 0)
+                e = float(el.get("e") or 0)
+            except (TypeError, ValueError):
+                continue
+            if e <= s:
+                continue
+            cur = spans.get(bid)
+            if cur is None:
+                spans[bid] = [s, e]
+            else:
+                cur[0] = min(cur[0], s)
+                cur[1] = max(cur[1], e)
+    return {bid: (v[0], v[1]) for bid, v in spans.items()}
+
+
+def _coalesce_env_runs(
+    spans: dict[str, tuple[float, float]],
+    block_env: dict[str, str],
+    *,
+    gap_bridge_s: float = _AMBIENCE_GAP_BRIDGE_S,
+    min_run_s: float = _AMBIENCE_MIN_RUN_S,
+) -> list[tuple[str, float, float]]:
+    """Order blocks by start time and merge consecutive blocks that share an
+    environment (bridging gaps up to ``gap_bridge_s``) into
+    ``[(env, start_s, end_s), ...]``, dropping runs shorter than
+    ``min_run_s``. Environment is lower-cased; missing → ``""``.
+    """
+    ordered = sorted(spans.items(), key=lambda kv: kv[1][0])
+    runs: list[list] = []  # [env, start, end]
+    for bid, (s, e) in ordered:
+        env = (block_env.get(bid) or "").strip().lower()
+        if runs and runs[-1][0] == env and s - runs[-1][2] <= gap_bridge_s:
+            runs[-1][2] = max(runs[-1][2], e)
+        else:
+            runs.append([env, s, e])
+    return [(env, s, e) for env, s, e in runs if e - s >= min_run_s]
+
+
+async def _build_ambience_plan(
+    *, timeline: dict, cast_id: str, factory, render_id: str,
+) -> list[tuple[float, float, str, float, str]]:
+    """Derive per-scene ambience-bed segments from the timeline + each block's
+    scene environment.
+
+    Returns ``[(start_s, end_s, url, volume, env), ...]`` — one entry per
+    contiguous run of blocks that share a ``room``/``outdoor`` environment
+    (``studio`` gets no bed). Empty when ``SCENE_AMBIENCE_ENABLED`` is off, no
+    block has a bedded environment, or the timeline carries no block spans.
+    ``_post_compose_audio_remux`` loops each ``url`` to fill its span and mixes
+    it as a ducked-under-voice bed, like background music but quieter.
+    """
+    from services.ambience_library import scene_ambience_enabled, for_environment
+
+    if not scene_ambience_enabled():
+        return []
+
+    spans = _timeline_block_spans(timeline)
+    if not spans:
+        return []
+
+    # Resolve each block's scene environment (Block -> AvatarLook.environment).
+    from models.block import Block
+    from models.avatar_look import AvatarLook, DEFAULT_ENVIRONMENT
+    from sqlalchemy import select as _sa_select
+
+    block_env: dict[str, str] = {}
+    try:
+        async with factory() as _sess:
+            brows = (await _sess.execute(
+                _sa_select(Block.id, Block.avatar_look_id).where(
+                    Block.id.in_(list(spans.keys()))
+                )
+            )).all()
+            look_ids = {lid for _, lid in brows if lid}
+            look_env: dict[str, str] = {}
+            if look_ids:
+                lrows = (await _sess.execute(
+                    _sa_select(AvatarLook.id, AvatarLook.environment).where(
+                        AvatarLook.id.in_(list(look_ids))
+                    )
+                )).all()
+                look_env = {lid: (env or DEFAULT_ENVIRONMENT) for lid, env in lrows}
+            for bid, lid in brows:
+                block_env[bid] = (
+                    look_env.get(lid, DEFAULT_ENVIRONMENT) if lid else DEFAULT_ENVIRONMENT
+                )
+    except Exception as exc:
+        sentry_sdk.capture_exception(exc)
+        logger.warning(
+            "Render %s: ambience env lookup failed (%s); shipping without a bed",
+            render_id, exc,
+        )
+        return []
+
+    out: list[tuple[float, float, str, float, str]] = []
+    for env, s, e in _coalesce_env_runs(spans, block_env):
+        entry = for_environment(env)
+        if entry is None:
+            continue
+        out.append((float(s), float(e), entry.url, float(entry.default_volume), env))
+
+    if out:
+        logger.info(
+            "Render %s: ambience plan — %d segment(s): %s",
+            render_id, len(out),
+            ", ".join(f"{env}[{s:.1f}-{e:.1f}s]" for s, e, _u, _v, env in out),
+        )
+    return out
+
+
 def _rewrite_mux_audio_to_lipsync(
     timeline: dict,
     *,
@@ -1576,6 +1706,7 @@ async def _post_compose_audio_remux(
     timeline: dict,
     render_id: str,
     cast_music_volume: float | None = None,
+    ambience_plan: list[tuple[float, float, str, float, str]] | None = None,
 ) -> None:
     """Defensive post-compose audio remux.
 
@@ -1596,6 +1727,11 @@ async def _post_compose_audio_remux(
          render — it is never padded / held / reversed (the "lady walks
          backwards" artefact this code exists to prevent).
       5. Re-uploads the remuxed mp4 over the same key.
+
+    ``ambience_plan`` (from ``_build_ambience_plan``, gated on
+    ``SCENE_AMBIENCE_ENABLED``) adds a looped, ducked-under-voice atmosphere
+    bed per room/outdoor scene run. When it is empty the filtergraph is
+    byte-identical to the pre-ambience version.
 
     Wrapped in try/except by the caller; this function may raise.
     """
@@ -1729,7 +1865,35 @@ async def _post_compose_audio_remux(
                 else:
                     narration.append((s_start, slot_dur, local))
 
-        if not narration and not music and not sfx:
+        # Scene ambience beds (SCENE_AMBIENCE_ENABLED): each plan entry is a
+        # contiguous room/outdoor run that gets a low, looped atmosphere bed
+        # mixed under the voice like music. Sources are NOT timeline elements,
+        # so download them here (once per distinct url).
+        ambience: list[tuple[float, float, str, float, str]] = []  # (start, end, path, vol, env)
+        if ambience_plan:
+            _amb_paths: dict[str, str | None] = {}
+            async with httpx.AsyncClient(timeout=remux_timeout_s) as _amb_http:
+                for _ai, (a_s, a_e, a_url, a_vol, a_env) in enumerate(ambience_plan):
+                    if a_url not in _amb_paths:
+                        _p = os.path.join(tmpdir, f"amb_{len(_amb_paths)}")
+                        try:
+                            _resp = await _amb_http.get(a_url, follow_redirects=True)
+                            _resp.raise_for_status()
+                            with open(_p, "wb") as _f:
+                                _f.write(_resp.content)
+                            _amb_paths[a_url] = _p
+                        except Exception as _amb_exc:
+                            sentry_sdk.capture_exception(_amb_exc)
+                            logger.warning(
+                                "Render %s remux: ambience fetch failed (%s: %s); skipping that bed",
+                                render_id, a_env, _amb_exc,
+                            )
+                            _amb_paths[a_url] = None
+                    _local = _amb_paths.get(a_url)
+                    if _local:
+                        ambience.append((a_s, a_e, _local, a_vol, a_env))
+
+        if not narration and not music and not sfx and not ambience:
             logger.info(
                 "Render %s post-compose remux: no audio downloaded; leaving compose output unchanged",
                 render_id,
@@ -1763,6 +1927,11 @@ async def _post_compose_audio_remux(
         )
         for _start, p in ordered_inputs:
             cmd.extend(["-i", p])
+        # Ambience beds come last so normal input indices are unchanged.
+        # -stream_loop -1 makes each short loop replay forever; atrim (below)
+        # bounds it to its scene run.
+        for _a_s, _a_e, _a_p, _a_vol, _a_env in ambience:
+            cmd.extend(["-stream_loop", "-1", "-i", _a_p])
 
         filter_parts: list[str] = []
         # ffmpeg input indices: 0 is the video, audio inputs start at 1 in the
@@ -1824,7 +1993,27 @@ async def _post_compose_audio_remux(
             sfx_labels.append(f"[{out}]")
             ai += 1
 
-        # Build the narration bus (and a sidechain key copy if we have music).
+        # Ambience beds: each source is -stream_loop'd forever on input, so
+        # atrim bounds it to its scene run; short fades top & tail hide the
+        # loop seam and the entrance/exit.
+        ambience_labels: list[str] = []
+        for k_, (a_start, a_end, _p, a_vol, _env) in enumerate(ambience):
+            out = f"amb{k_}"
+            a_dur = max(0.1, float(a_end) - float(a_start))
+            delay_ms = max(0, int(round(float(a_start) * 1000)))
+            _fade = max(0.05, min(0.8, a_dur / 4.0))
+            filter_parts.append(
+                f"[{ai}:a]aresample=48000,aformat=channel_layouts=stereo,"
+                f"atrim=duration={a_dur:.3f},asetpts=PTS-STARTPTS,"
+                f"volume={a_vol:.6f},"
+                f"afade=t=in:st=0:d={_fade:.3f},"
+                f"afade=t=out:st={a_dur - _fade:.3f}:d={_fade:.3f},"
+                f"adelay={delay_ms}|{delay_ms}[{out}]"
+            )
+            ambience_labels.append(f"[{out}]")
+            ai += 1
+
+        # Build the narration bus (and a sidechain key copy per ducked bed).
         final_bus_labels: list[str] = []
         if narration_labels:
             if len(narration_labels) == 1:
@@ -1834,19 +2023,31 @@ async def _post_compose_audio_remux(
                     f"{''.join(narration_labels)}amix=inputs={len(narration_labels)}:"
                     f"duration=longest:dropout_transition=0:normalize=0[nar_bus]"
                 )
-            if music_labels:
-                filter_parts.append(
-                    "[nar_bus]asplit[nar_main][nar_key]"
-                )
-                narration_main = "[nar_main]"
-                narration_key = "[nar_key]"
-            else:
+            # One sidechain key copy of the voice per ducked bed bus (music,
+            # ambience). With neither, no split (byte-identical to the
+            # pre-ambience graph); with both, a 3-way split.
+            _duck_buses = (1 if music_labels else 0) + (1 if ambience_labels else 0)
+            if _duck_buses == 0:
                 narration_main = "[nar_bus]"
                 narration_key = ""
+                ambience_key = ""
+            elif _duck_buses == 1:
+                filter_parts.append("[nar_bus]asplit[nar_main][nar_key]")
+                narration_main = "[nar_main]"
+                narration_key = "[nar_key]" if music_labels else ""
+                ambience_key = "[nar_key]" if ambience_labels else ""
+            else:
+                filter_parts.append(
+                    "[nar_bus]asplit=3[nar_main][nar_key_m][nar_key_a]"
+                )
+                narration_main = "[nar_main]"
+                narration_key = "[nar_key_m]"
+                ambience_key = "[nar_key_a]"
             final_bus_labels.append(narration_main)
         else:
             narration_main = ""
             narration_key = ""
+            ambience_key = ""
 
         # Music bus: sum → EQ → sidechain-duck under the voice.
         if music_labels:
@@ -1872,6 +2073,29 @@ async def _post_compose_audio_remux(
                 final_bus_labels.append("[mus_ducked]")
             else:
                 final_bus_labels.append("[mus_eq]")
+
+        # Ambience bus: sum → band-limit → duck under the voice. Quieter and
+        # a lighter compression than music (0.06/4 vs 0.05/6) — an atmosphere
+        # bed that dips for speech but never pumps.
+        if ambience_labels:
+            if len(ambience_labels) == 1:
+                filter_parts.append(f"{ambience_labels[0]}anull[amb_sum]")
+            else:
+                filter_parts.append(
+                    f"{''.join(ambience_labels)}amix=inputs={len(ambience_labels)}:"
+                    f"duration=longest:dropout_transition=0:normalize=0[amb_sum]"
+                )
+            filter_parts.append(
+                "[amb_sum]highpass=f=120,lowpass=f=9000[amb_eq]"
+            )
+            if ambience_key:
+                filter_parts.append(
+                    f"[amb_eq]{ambience_key}sidechaincompress="
+                    f"threshold=0.06:ratio=4:attack=20:release=400[amb_ducked]"
+                )
+                final_bus_labels.append("[amb_ducked]")
+            else:
+                final_bus_labels.append("[amb_eq]")
 
         # SFX punch through at their own level (no ducking).
         final_bus_labels.extend(sfx_labels)
@@ -1931,9 +2155,9 @@ async def _post_compose_audio_remux(
         delta = expected_duration - actual_duration
         logger.info(
             "[remux] render %s: actual=%.2fs expected=%.2fs delta=%.2fs "
-            "audio_inputs=%d → %d bytes uploaded over %s",
+            "audio_inputs=%d (+%d ambience) → %d bytes uploaded over %s",
             render_id, actual_duration, expected_duration, delta,
-            len(ordered_inputs), out_size, output_key,
+            len(ordered_inputs), len(ambience), out_size, output_key,
         )
         # One grep-able line per render documenting the timeline strategy.
         # Under overshoot+trim the composed video is asserted to already
@@ -7732,6 +7956,17 @@ async def _render_async(task, render_id: str):
     # single transient failure (network blip fetching a track, a flaky ffmpeg
     # invocation) used to permanently and silently drop background
     # music/SFX from an otherwise-successful render with no visible error.
+    # Scene ambience beds (SCENE_AMBIENCE_ENABLED) — derived from each block's
+    # room/outdoor scene environment, mixed as a ducked bed inside the remux.
+    # Best-effort: a failure here just means no bed, never a failed render.
+    try:
+        ambience_plan = await _build_ambience_plan(
+            timeline=timeline, cast_id=cast_id, factory=factory, render_id=render_id,
+        )
+    except Exception as _amb_plan_exc:
+        sentry_sdk.capture_exception(_amb_plan_exc)
+        ambience_plan = []
+
     remux_error: Exception | None = None
     for attempt in range(2):
         try:
@@ -7741,6 +7976,7 @@ async def _render_async(task, render_id: str):
                 timeline=timeline,
                 render_id=render_id,
                 cast_music_volume=cast_music_volume,
+                ambience_plan=ambience_plan,
             )
             remux_error = None
             break
