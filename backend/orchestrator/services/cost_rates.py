@@ -32,6 +32,11 @@ COST_RATES = {
     "fal/veo_3":                       0.40,       # $0.40 per second of video
     "fal/flux_kontext_pro":            0.04,       # $0.04 per image
     "fal/flux_kontext_max":            0.10,       # ~$0.10 per image
+    # Nano Banana Pro (Google Gemini 3 Pro Image). fal list price, verified
+    # 2026-09: $0.15/image at 1K or 2K, $0.30 at 4K. We request 2K.
+    # Source: https://fal.ai/models/fal-ai/nano-banana-pro
+    "fal/nano_banana_pro":             0.15,       # $0.15 per image (1K/2K)
+    "fal/nano_banana_pro_4k":          0.30,       # $0.30 per 4K image
     "fal/qwen_angles":                 0.02,       # $0.02 per megapixel
 
     # ── Video-second backends (lip-sync / element bakes) — per output second ──

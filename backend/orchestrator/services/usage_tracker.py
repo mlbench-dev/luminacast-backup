@@ -223,6 +223,11 @@ def calculate_fal_image_cost(model: str, count: int = 1) -> float:
         per_image = COST_RATES["fal/flux_kontext_max"]
     elif "kontext" in bare:
         per_image = COST_RATES["fal/flux_kontext_pro"]
+    elif "nano" in bare or "banana" in bare:
+        per_image = (
+            COST_RATES["fal/nano_banana_pro_4k"] if "4k" in bare
+            else COST_RATES["fal/nano_banana_pro"]
+        )
     elif "qwen" in bare:
         per_image = COST_RATES["fal/qwen_angles"]
     else:

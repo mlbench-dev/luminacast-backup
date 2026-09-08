@@ -99,9 +99,25 @@ async def generate_ai_image_asset(
     )
     prompt = f"{scene_instruction} {preserve_clause}"
 
+    from services.nano_banana import (
+        nano_banana_pro_enabled,
+        edit_image_subscribe,
+        NANO_BANANA_MODEL_TAG,
+    )
+    use_nano = nano_banana_pro_enabled()
+    gen_model = NANO_BANANA_MODEL_TAG if use_nano else "flux_pro_kontext"
+
     try:
         import asyncio
         import fal_client
+
+        def _run_nano_banana():
+            os.environ["FAL_KEY"] = app_settings.FAL_API_KEY
+            # Nano Banana Pro composites the real product pixels from the
+            # reference instead of re-imagining the product from its name
+            # (FLUX Kontext's failure mode). aspect_ratio="auto" follows the
+            # source photo's framing.
+            return edit_image_subscribe(prompt, [source_image_url])
 
         def _run_flux_kontext():
             os.environ["FAL_KEY"] = app_settings.FAL_API_KEY
@@ -116,8 +132,11 @@ async def generate_ai_image_asset(
                 },
             )
 
-        result = await asyncio.to_thread(_run_flux_kontext)
-        image_url = result["images"][0]["url"]
+        if use_nano:
+            image_url = await asyncio.to_thread(_run_nano_banana)
+        else:
+            result = await asyncio.to_thread(_run_flux_kontext)
+            image_url = result["images"][0]["url"]
 
         import httpx
 
@@ -132,7 +151,7 @@ async def generate_ai_image_asset(
                 asset_type="ai_generated_image", media_type="image",
                 r2_key=r2_key, r2_url=r2.get_public_url(r2_key),
                 file_size_bytes=len(resp.content),
-                generation_prompt=prompt, generation_model="flux_pro_kontext",
+                generation_prompt=prompt, generation_model=gen_model,
             )
             db.add(asset)
             await db.commit()

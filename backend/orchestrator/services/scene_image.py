@@ -147,24 +147,37 @@ async def generate_scene_image(
     _ensure_fal_key()
     prompt = _build_scene_prompt(motion_prompt)
 
+    from services.nano_banana import (
+        nano_banana_pro_enabled,
+        edit_image_run_async,
+    )
+    use_nano = nano_banana_pro_enabled()
+    _cost_cents = 15 if use_nano else 4  # $0.15 (NBP 2K) vs $0.04 (Kontext Pro)
+
     with sentry_sdk.start_span(op="fal_ai", description="scene image generate") as span:
         span.set_data("product_id", product_id or "")
+        span.set_data("model", "nano_banana_pro" if use_nano else "flux_kontext")
         _fal_start = time.monotonic()
-        result = await fal_client.run_async(
-            FAL_KONTEXT_MODEL,
-            arguments={
-                "prompt": prompt,
-                "image_url": product_asset_url,
-                "guidance_scale": 3.5,
-                "num_inference_steps": 28,
-                "output_format": "jpeg",
-            },
-        )
-
-        images = (result or {}).get("images", [])
-        if not images:
-            raise ValueError("scene image generation returned no images")
-        scene_url = images[0].get("url", "")
+        if use_nano:
+            # Nano Banana Pro composites the real product pixels from the
+            # reference instead of re-imagining it from text (FLUX Kontext's
+            # failure mode — a generic bottle / wrong object).
+            scene_url = await edit_image_run_async(prompt, [product_asset_url])
+        else:
+            result = await fal_client.run_async(
+                FAL_KONTEXT_MODEL,
+                arguments={
+                    "prompt": prompt,
+                    "image_url": product_asset_url,
+                    "guidance_scale": 3.5,
+                    "num_inference_steps": 28,
+                    "output_format": "jpeg",
+                },
+            )
+            images = (result or {}).get("images", [])
+            if not images:
+                raise ValueError("scene image generation returned no images")
+            scene_url = images[0].get("url", "")
         if not scene_url:
             raise ValueError("scene image generation returned an entry with no URL")
 
@@ -195,7 +208,7 @@ async def generate_scene_image(
     await log_api_usage(
         user_id=None, service="scene_image", operation="product_scene",
         success=True, duration_seconds=round(time.monotonic() - _fal_start, 1),
-        cost_cents=4,
+        cost_cents=_cost_cents,
     )
 
     return scene_bytes

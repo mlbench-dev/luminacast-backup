@@ -760,6 +760,11 @@ async def _generate_look_async(
                         with open(product_path, "wb") as f:
                             f.write(resp_prod.content)
 
+                    from services.nano_banana import (
+                        nano_banana_pro_enabled, edit_image_subscribe,
+                    )
+                    _use_nano = nano_banana_pro_enabled()
+
                     footwear_prompt = (
                         f"Same person, same face, same identity, same pose, same outfit. "
                         f"They are now wearing the exact shoes shown in the reference image "
@@ -767,6 +772,16 @@ async def _generate_look_async(
                         f"The shoes must match the reference image exactly in shape, color, "
                         f"materials, and design. Feet and shoes clearly visible, natural "
                         f"standing pose, photorealistic, studio lighting."
+                    )
+                    footwear_prompt_nano = (
+                        "The first image is a full-body photo of a person. The second "
+                        "image is a pair of shoes. Edit the first image so the same "
+                        "person — identical face, hair, body, pose and outfit — is "
+                        "wearing the exact shoes from the second image on their feet, "
+                        "replacing their current footwear. Match the shoes exactly: "
+                        "shape, colour, materials, logos and text. Feet and shoes "
+                        "clearly visible, natural standing pose, photorealistic, "
+                        "studio lighting."
                     )
 
                     def call_flux_footwear():
@@ -785,21 +800,32 @@ async def _generate_look_async(
                         )
                         return result
 
-                    result = await asyncio.to_thread(call_flux_footwear)
+                    def call_nano_footwear():
+                        body_url = fal_client.upload_file(body_path)
+                        prod_url = fal_client.upload_file(product_path)
+                        return edit_image_subscribe(
+                            footwear_prompt_nano, [body_url, prod_url]
+                        )
 
-                    output_image_url = None
-                    if isinstance(result, dict):
-                        images = result.get("images") or []
-                        if images and isinstance(images[0], dict):
-                            output_image_url = images[0].get("url")
-                        elif "image" in result:
-                            img = result["image"]
-                            output_image_url = img.get("url") if isinstance(img, dict) else img
+                    if _use_nano:
+                        output_image_url = await asyncio.to_thread(call_nano_footwear)
+                    else:
+                        result = await asyncio.to_thread(call_flux_footwear)
+                        output_image_url = None
+                        if isinstance(result, dict):
+                            images = result.get("images") or []
+                            if images and isinstance(images[0], dict):
+                                output_image_url = images[0].get("url")
+                            elif "image" in result:
+                                img = result["image"]
+                                output_image_url = img.get("url") if isinstance(img, dict) else img
+                        if not output_image_url:
+                            raise RuntimeError(f"FLUX Kontext returned no output: {str(result)[:300]}")
 
-                    if not output_image_url:
-                        raise RuntimeError(f"FLUX Kontext returned no output: {str(result)[:300]}")
-
-                    logger.info("Footwear product '%s' — used FLUX 'wearing shoes' instead of Kling Kolors try-on", product.name)
+                    logger.info(
+                        "Footwear product '%s' — used %s 'wearing shoes' instead of Kling Kolors try-on",
+                        product.name, "Nano Banana Pro" if _use_nano else "FLUX",
+                    )
                 elif not is_apparel:
                     # Not recognised as clothing (a gadget, an appliance, a
                     # bottle, an unlabelled product): DON'T warp a t-shirt onto
@@ -818,6 +844,11 @@ async def _generate_look_async(
                         with open(product_path, "wb") as f:
                             f.write(resp_prod.content)
 
+                    from services.nano_banana import (
+                        nano_banana_pro_enabled, edit_image_subscribe,
+                    )
+                    _use_nano = nano_banana_pro_enabled()
+
                     hold_prompt = (
                         f"Same person, same face, same identity. "
                         f"Person holding the exact product shown in the reference image — "
@@ -826,6 +857,19 @@ async def _generate_look_async(
                         f"The product must match the reference image exactly in shape, color, "
                         f"packaging, and label. "
                         f"Professional studio lighting, photorealistic, high quality."
+                    )
+                    hold_prompt_nano = (
+                        "The first image is a portrait of a person. The second image is "
+                        "a product. Edit the first image so the same person — identical "
+                        "face, hair and identity — is presenting the exact product from "
+                        "the second image to the camera with a natural smile. Reproduce "
+                        "the product exactly as in the second image: shape, size, "
+                        "proportions, colour, materials, packaging, logos and text. If "
+                        "the product is large or not hand-held (an appliance, a PC, a "
+                        "monitor), show the person standing next to it or resting a hand "
+                        "on it at its real size — do NOT shrink it to fit a hand or "
+                        "swap it for a smaller item. Professional studio lighting, "
+                        "photorealistic."
                     )
 
                     def call_flux_hold():
@@ -844,22 +888,32 @@ async def _generate_look_async(
                         )
                         return result
 
-                    result = await asyncio.to_thread(call_flux_hold)
+                    def call_nano_hold():
+                        person_url = fal_client.upload_file(face_path)
+                        prod_url = fal_client.upload_file(product_path)
+                        return edit_image_subscribe(
+                            hold_prompt_nano, [person_url, prod_url]
+                        )
 
-                    # Extract output image URL (same as background looks)
-                    output_image_url = None
-                    if isinstance(result, dict):
-                        images = result.get("images") or []
-                        if images and isinstance(images[0], dict):
-                            output_image_url = images[0].get("url")
-                        elif "image" in result:
-                            img = result["image"]
-                            output_image_url = img.get("url") if isinstance(img, dict) else img
+                    if _use_nano:
+                        output_image_url = await asyncio.to_thread(call_nano_hold)
+                    else:
+                        result = await asyncio.to_thread(call_flux_hold)
+                        output_image_url = None
+                        if isinstance(result, dict):
+                            images = result.get("images") or []
+                            if images and isinstance(images[0], dict):
+                                output_image_url = images[0].get("url")
+                            elif "image" in result:
+                                img = result["image"]
+                                output_image_url = img.get("url") if isinstance(img, dict) else img
+                        if not output_image_url:
+                            raise RuntimeError(f"FLUX Kontext returned no output: {str(result)[:300]}")
 
-                    if not output_image_url:
-                        raise RuntimeError(f"FLUX Kontext returned no output: {str(result)[:300]}")
-
-                    logger.info("Non-apparel product '%s' — used FLUX 'holding product' instead of try-on", product.name)
+                    logger.info(
+                        "Non-apparel product '%s' — used %s 'presenting product' instead of try-on",
+                        product.name, "Nano Banana Pro" if _use_nano else "FLUX",
+                    )
                 else:
                     # Apparel — use Kling Kolors virtual try-on
                     # Use body_motion front photo (full-body) instead of face_ref_key (headshot)
