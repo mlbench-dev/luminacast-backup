@@ -52,6 +52,12 @@ export function EditAvatarPage() {
   const [descValue, setDescValue] = useState("");
   const [editingDesc, setEditingDesc] = useState(false);
   const [bodyDescValue, setBodyDescValue] = useState("");
+  // Set the instant "Regenerate poses" is clicked, before the wiped looks are
+  // re-created — bridges the gap until `looksGenerating` (polled) picks up.
+  const [isRegeneratingPoses, setIsRegeneratingPoses] = useState(false);
+  // Pose whose single-tile Regenerate is in flight (the server call is
+  // synchronous, so look.status never flips — this drives the tile spinner).
+  const [regeneratingPose, setRegeneratingPose] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const mainVideoRef = useRef<HTMLVideoElement>(null);
 
@@ -82,6 +88,20 @@ export function EditAvatarPage() {
 
   const allLooks: AvatarLook[] = looksData?.looks || [];
   const filteredLooks = allLooks.filter((l) => (l.look_type || "background") === activeTab);
+  // Any look in this tab still generating — used to disable the bulk
+  // "Regenerate poses" / "Generate all" actions so they can't stack a second
+  // job on top of an in-flight one.
+  const someLookInFlight = filteredLooks.some(
+    (l) => l.status === "pending" || l.status === "generating"
+  );
+  const looksGenerating =
+    isRegeneratingPoses || someLookInFlight || regeneratingPose !== null;
+
+  // Once the polled data shows generation actually started, drop the local
+  // just-clicked flag and let `someLookInFlight` carry it.
+  useEffect(() => {
+    if (someLookInFlight) setIsRegeneratingPoses(false);
+  }, [someLookInFlight]);
 
   useEffect(() => {
     if (avatar?.name) setNameValue(avatar.name);
@@ -458,13 +478,15 @@ export function EditAvatarPage() {
                         size="sm"
                         variant="outline"
                         onClick={handleRegeneratePoses}
-                        disabled={!avatar?.face_ref_key || !bodyDescValue.trim()}
+                        disabled={!avatar?.face_ref_key || !bodyDescValue.trim() || looksGenerating}
                         title={
                           !avatar?.face_ref_key
                             ? "Avatar has no face image yet"
                             : !bodyDescValue.trim()
                               ? "Add a body description first"
-                              : "Regenerate all 6 angle poses from this description"
+                              : looksGenerating
+                                ? "Poses are still generating…"
+                                : "Regenerate all 6 angle poses from this description"
                         }
                         className="text-xs"
                       >
@@ -475,27 +497,48 @@ export function EditAvatarPage() {
                   <GenerateAllMissingButton
                     avatarId={avatarId!}
                     existingLooks={filteredLooks}
-                    disabled={!avatar?.face_ref_key}
+                    disabled={!avatar?.face_ref_key || looksGenerating}
                   />
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   {ALL_POSES.map((pose) => {
                     const existing = filteredLooks.find((l) => l.pose_angle === pose.value);
+                    const poseBusy = regeneratingPose === pose.value;
+                    const runRegen = () => {
+                      // Regenerate through the Body Shot pipeline (full-body
+                      // canonical reference) and re-sync this look in place —
+                      // keeps the "Shots" step and this tab identical. The call
+                      // is synchronous server-side, so drive the spinner here.
+                      setRegeneratingPose(pose.value);
+                      avatarLooksApi.regenerateBodyMotionPose(avatarId!, pose.value)
+                        .then(() => qc.invalidateQueries({ queryKey: ["avatar-looks", avatarId] }))
+                        .catch((err: any) => toast({
+                          title: `Failed to regenerate ${pose.label}`,
+                          description: err?.response?.data?.detail || err.message,
+                          variant: "destructive",
+                        }))
+                        .finally(() => setRegeneratingPose(null));
+                    };
                     if (existing) {
                       return (
                         <LookCard
                           key={pose.value}
                           look={existing}
+                          busy={poseBusy}
                           onPreview={() => setPreviewLook(existing)}
                           onSetDefault={() => setDefaultMutation.mutate(existing.id)}
                           onDelete={() => deleteLookMutation.mutate(existing.id)}
-                          onRegenerate={() => {
-                            // Regenerate through the Body Shot pipeline (full-body
-                            // canonical reference) and re-sync this look in place —
-                            // keeps the "Shots" step and this tab identical.
-                            avatarLooksApi.regenerateBodyMotionPose(avatarId!, pose.value)
-                              .then(() => qc.invalidateQueries({ queryKey: ["avatar-looks", avatarId] }));
-                          }}
+                          onRegenerate={(looksGenerating && !poseBusy) ? undefined : runRegen}
                         />
+                      );
+                    }
+                    if (poseBusy) {
+                      return (
+                        <div
+                          key={pose.value}
+                          className="border border-border rounded-xl flex items-center justify-center aspect-9/16 bg-black"
+                        >
+                          <Loader2 className="w-6 h-6 animate-spin text-text-muted" />
+                        </div>
                       );
                     }
                     return (
@@ -507,12 +550,15 @@ export function EditAvatarPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          disabled={!avatar?.face_ref_key}
-                          title={!avatar?.face_ref_key ? "Avatar has no face image yet" : undefined}
-                          onClick={() => {
-                            avatarLooksApi.regenerateBodyMotionPose(avatarId!, pose.value)
-                              .then(() => qc.invalidateQueries({ queryKey: ["avatar-looks", avatarId] }));
-                          }}
+                          disabled={!avatar?.face_ref_key || looksGenerating}
+                          title={
+                            !avatar?.face_ref_key
+                              ? "Avatar has no face image yet"
+                              : looksGenerating
+                                ? "Poses are still generating…"
+                                : undefined
+                          }
+                          onClick={runRegen}
                         >
                           Generate
                         </Button>
@@ -703,23 +749,27 @@ function LookCard({
   onSetDefault,
   onDelete,
   onRegenerate,
+  busy = false,
 }: {
   look: AvatarLook;
   onPreview: () => void;
   onSetDefault: () => void;
   onDelete: () => void;
   onRegenerate?: () => void;
+  /** Client-side "regenerating this tile" — the server call is synchronous
+   * and never flips look.status, so the parent drives the spinner. */
+  busy?: boolean;
 }) {
   return (
     <div className="border border-border rounded-lg overflow-hidden group">
       <button onClick={onPreview} className="relative aspect-9/16 bg-black w-full overflow-hidden">
-        {look.image_url && look.status === "ready" ? (
+        {look.image_url && look.status === "ready" && !busy ? (
           <img
             src={look.image_url}
             alt={look.name}
             className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
           />
-        ) : look.status === "generating" || look.status === "pending" ? (
+        ) : busy || look.status === "generating" || look.status === "pending" ? (
           <div className="w-full h-full flex items-center justify-center text-text-muted">
             <Loader2 className="w-6 h-6 animate-spin" />
           </div>
@@ -757,7 +807,7 @@ function LookCard({
             the user knows it's there; brightens + expands its label on
             hover. Visible only when the look has actually rendered —
             generating / failed slots use other UI. */}
-        {onRegenerate && look.status === "ready" && (
+        {onRegenerate && look.status === "ready" && !busy && (
           <div
             role="button"
             tabIndex={0}
