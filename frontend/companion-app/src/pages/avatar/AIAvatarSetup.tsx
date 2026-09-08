@@ -936,38 +936,44 @@ function FacePhase({
       )}
       <div className="flex-1 min-w-0 space-y-5">
         {/* Generation prompt: editable so the user can refine the description
-          BEFORE clicking Regenerate. Edits persist back to the parent state
-          (and to the avatar record on Regenerate). The textarea autosizes
-          up to ~5 lines so a long description is comfortable to edit. */}
-        <div className="flex items-start gap-3 rounded-lg border border-border bg-bg/50 p-3">
-          <div className="flex-1 min-w-0 space-y-1">
-            <p className="text-[10px] text-text-muted uppercase tracking-wide">
-              Description for {avatarName || "your avatar"}
-            </p>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Describe the avatar's appearance — the model uses this to generate the 8 faces below."
-              rows={3}
-              className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40"
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0 self-start mt-5"
-            onClick={handleGenerateFaces}
-            disabled={isGeneratingFaces || !description.trim()}
-            title={!description.trim() ? "Add a description first" : "Generate 8 new faces from this description"}
-          >
-            <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingFaces && "animate-spin")} /> Regenerate
-          </Button>
+          before regenerating the face grid. Edits persist back to the parent
+          state (and to the avatar record when "Regenerate faces" runs). The
+          textarea autosizes so a long description is comfortable to edit. */}
+        <div className="space-y-1 rounded-lg border border-border bg-bg/50 p-3">
+          <p className="text-[10px] text-text-muted uppercase tracking-wide">
+            Description for {avatarName || "your avatar"}
+          </p>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Describe the avatar's appearance — the model uses this to generate the 8 faces below."
+            rows={3}
+            className="w-full resize-y rounded-md border border-border/50 bg-background/60 px-2 py-1.5 text-xs text-text placeholder:text-text-muted leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
         </div>
 
         {isGeneratingFaces && (
           <div className="flex flex-col items-center justify-center py-12 space-y-3">
             <Loader2 className="h-8 w-8 animate-spin text-accent" />
             <span className="text-text-muted">Generating 8 faces...</span>
+          </div>
+        )}
+
+        {/* Faces auto-generate on mount; this is the retry path if that call
+          failed (the "Regenerate faces" button below only shows once a batch
+          exists). */}
+        {!isGeneratingFaces && faces.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-3 py-12">
+            <span className="text-sm text-text-muted">No faces yet.</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleGenerateFaces}
+              disabled={!description.trim()}
+              title={!description.trim() ? "Add a description first" : "Generate 8 faces from this description"}
+            >
+              <RefreshCw className={cn("mr-1 h-3 w-3", isGeneratingFaces && "animate-spin")} /> Generate faces
+            </Button>
           </div>
         )}
 

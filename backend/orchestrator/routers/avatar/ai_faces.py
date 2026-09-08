@@ -75,7 +75,14 @@ async def create_ai_avatar(
     avatar = Avatar(
         id=avatar_id,
         user_id=ctx.workspace_owner_id,        type=AvatarType.DIGITAL,
-        status=AvatarStatus.PROCESSING,
+        # DRAFT, not PROCESSING: no pipeline has run yet, this is just the
+        # empty shell the setup wizard fills in. PROCESSING here made the
+        # card un-resumable (Setup.tsx excludes PROCESSING from
+        # isClickableForResume) AND put it on the 30-minute stale-PROCESSING
+        # auto-fail sweep in list_avatars — so a user who took their time in
+        # the wizard came back to a failed, hidden avatar. The first real
+        # pipeline step (voice preview / render) flips it to PROCESSING itself.
+        status=AvatarStatus.DRAFT,
         name=req.name or "AI Avatar",
         progress_step="Waiting for face and voice selection",
         progress_percent=0,

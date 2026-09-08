@@ -254,7 +254,24 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
   // fix: don't make the card clickable at all while it's mid-render — the
   // amber "Processing..." badge (progress_step) already communicates that
   // state, this just stops it from being an entry point back into the form.
-  const isClickableForResume = isDraft || isFaceCandidatesReady || isCandidatesReady || isFailed;
+  //
+  // EXCEPTION: an AI avatar that was CREATED but has generated nothing yet.
+  // create_ai_avatar historically stamped status=PROCESSING before any
+  // pipeline ran, so leaving the wizard mid-setup left the card stuck and
+  // un-resumable. Nothing is in flight (no candidates, no face, no voice, no
+  // preview, 0%), so resuming into the wizard is safe — it just lands on
+  // step 1.
+  const isDigital = avatar.type === AvatarType.DIGITAL;
+  const isAiSetupNotStarted =
+    isDigital &&
+    isProcessing &&
+    (avatar.progress_percent ?? 0) === 0 &&
+    !avatar.face_ref_key &&
+    !(avatar.candidate_frames && avatar.candidate_frames.length > 0) &&
+    !avatar.voice_id &&
+    !avatar.preview_video_url;
+  const isClickableForResume =
+    isDraft || isFaceCandidatesReady || isCandidatesReady || isFailed || isAiSetupNotStarted;
   const [showRegenInput, setShowRegenInput] = useState(false);
   const [isRecloning, setIsRecloning] = useState(false);
   const defaultScript = "Hi everyone! Welcome to my stream. I'm so excited to show you some amazing products today!";
@@ -267,6 +284,7 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
   const statusBadge = () => {
     if (isDraft) return <Badge className="bg-gray-900/50 text-gray-400 border-gray-700">Draft</Badge>;
     if (isApproved) return <Badge className="bg-green-900/50 text-green-400 border-green-700">Approved</Badge>;
+    if (isAiSetupNotStarted) return <Badge className="bg-blue-900/50 text-blue-400 border-blue-700">Continue setup &rarr;</Badge>;
     if (isProcessing) return <Badge className="bg-amber-900/50 text-amber-400 border-amber-700">{avatar.progress_step || "Processing..."}</Badge>;
     if (isFaceCandidatesReady) return <Badge className="bg-blue-900/50 text-blue-400 border-blue-700">Tap to pick your face &rarr;</Badge>;
     if (isCandidatesReady) return <Badge className="bg-blue-900/50 text-blue-400 border-blue-700">Awaiting selection</Badge>;
@@ -303,8 +321,8 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
         "relative rounded-lg border p-4 transition-all hover:border-purple-500",
         isDraft && "border-gray-600 bg-gray-900/20 border-dashed",
         isApproved && "border-green-700 bg-green-900/20",
-        isProcessing && "border-amber-700 bg-amber-900/20",
-        (isFaceCandidatesReady || isCandidatesReady) && "border-blue-700 bg-blue-900/20",
+        isProcessing && !isAiSetupNotStarted && "border-amber-700 bg-amber-900/20",
+        (isFaceCandidatesReady || isCandidatesReady || isAiSetupNotStarted) && "border-blue-700 bg-blue-900/20",
         isFailed && "border-red-700 bg-red-900/20",
         isReady && "border-purple-500 bg-purple-900/20",
         !isDraft && !isProcessing && !isCandidatesReady && !isFaceCandidatesReady && !isReady && !isFailed && !isApproved && "border-gray-700 bg-surface",
@@ -349,7 +367,7 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
 
       <div className="mt-3">{statusBadge()}</div>
 
-      {(isDraft || isFaceCandidatesReady || isCandidatesReady) && (
+      {(isDraft || isFaceCandidatesReady || isCandidatesReady || isAiSetupNotStarted) && (
         <button
           onClick={(e) => { e.stopPropagation(); navigate(avatar.type === AvatarType.DIGITAL ? `/my-avatar/ai/${avatar.id}` : `/my-avatar/clone/${avatar.id}`); }}
           className="mt-2 text-xs text-accent hover:underline flex items-center gap-1 font-medium"
@@ -368,7 +386,7 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
       )}
 
 
-      {isProcessing && (
+      {isProcessing && !isAiSetupNotStarted && (
         <div className="mt-2 space-y-1">
           <Progress value={avatar.progress_percent || 0} className="h-1.5" />
           <p className="text-[10px] text-text-muted">{Math.round(avatar.progress_percent || 0)}% complete</p>
