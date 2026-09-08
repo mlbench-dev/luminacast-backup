@@ -922,6 +922,7 @@ If you cannot see clothing in image 1, return {"matches": true, "discrepancies":
         "system": """Same person shown in the reference photo. Full body standing pose, head to toe visible, do not crop at the waist or knees.
 Keep the EXACT same clothing, hairstyle, and accessories as in the reference photo.
 {body_description}.
+Natural, realistic human body proportions — the head is roughly one-seventh of the total standing height. Correct anatomical scale, NOT stylised, NOT a caricature, NOT an oversized head.
 Plain white studio background, professional fashion photography lighting, soft natural studio lighting, 85mm prime lens, f/2.8, shallow depth of field, sharp focus on the subject, fine skin texture, photorealistic, high detail, ultra high resolution.""",
     },
 

@@ -375,30 +375,46 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
             body_description=body_desc_clothing,
         )
 
+        from services.nano_banana import (
+            nano_banana_pro_enabled, edit_image_run_async,
+        )
+        _nano_enabled = nano_banana_pro_enabled()
+
         async def _generate_canonical(prompt_text: str, seed: int) -> bytes | None:
+            engine = "Nano Banana Pro" if _nano_enabled else "Kontext Max"
             logger.info(
-                f"Stage 1: Generating canonical front for avatar {avatar.id} via Kontext Max "
+                f"Stage 1: Generating canonical front for avatar {avatar.id} via {engine} "
                 f"(seed={seed}, prompt_chars={len(prompt_text)})"
             )
-            # safety_tolerance=5 unlocks the highest available detail without
-            # changing the model. Keep JPEG to match the .jpg storage key.
-            result = await fal_client.run_async(
-                "fal-ai/flux-pro/kontext/max",
-                arguments={
-                    "prompt": prompt_text,
-                    "image_url": face_ref_url,
-                    "num_images": 1,
-                    "output_format": "jpeg",
-                    "seed": seed,
-                    "aspect_ratio": "9:16",
-                    "safety_tolerance": "5",
-                },
-            )
-            imgs = result.get("images", [])
-            if not imgs:
-                return None
+            if _nano_enabled:
+                # NBP follows the "natural proportions / not an oversized head"
+                # instruction literally — this is the head-to-body-ratio fix.
+                # aspect_ratio pinned to 9:16 to match the .jpg storage + the
+                # Stage-2 angle crop.
+                img_url = await edit_image_run_async(
+                    prompt_text, [face_ref_url], aspect_ratio="9:16",
+                )
+            else:
+                # safety_tolerance=5 unlocks the highest available detail
+                # without changing the model. Keep JPEG to match the .jpg key.
+                result = await fal_client.run_async(
+                    "fal-ai/flux-pro/kontext/max",
+                    arguments={
+                        "prompt": prompt_text,
+                        "image_url": face_ref_url,
+                        "num_images": 1,
+                        "output_format": "jpeg",
+                        "seed": seed,
+                        "aspect_ratio": "9:16",
+                        "safety_tolerance": "5",
+                    },
+                )
+                imgs = result.get("images", [])
+                if not imgs:
+                    return None
+                img_url = imgs[0]["url"]
             async with httpx.AsyncClient() as cli:
-                resp = await cli.get(imgs[0]["url"], timeout=60)
+                resp = await cli.get(img_url, timeout=60)
                 resp.raise_for_status()
                 return resp.content
 
@@ -750,32 +766,40 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
                     logger.warning(f"Tier 2 (Qwen fal.ai) failed for angle {angle}: {e}")
                     sentry_sdk.capture_exception(e)
 
-            # Tier 3: FLUX Kontext legacy fallback
+            # Tier 3: text-prompt fallback (Qwen numeric-angle tier failed).
+            # Nano Banana Pro when enabled — better prompt adherence + anatomy
+            # than FLUX Kontext for a prompt-driven rotation.
             if img_bytes is None:
                 try:
                     prompt = _build_kontext_prompt(angle)
-                    result = await fal_client.run_async(
-                        "fal-ai/flux-pro/kontext",
-                        arguments={
-                            "prompt": prompt,
-                            "image_urls": [canonical_url],
-                            # Bumped from 3.5/28 → 4.0/40 for sharper detail.
-                            "guidance_scale": 4.0,
-                            "num_inference_steps": 40,
-                            "output_format": "jpeg",
-                            "seed": angle_seed,
-                            "aspect_ratio": "9:16",
-                            "safety_tolerance": "5",
-                        },
-                    )
-                    images = result.get("images", [])
-                    if images:
+                    if _nano_enabled:
+                        img_url = await edit_image_run_async(
+                            prompt, [canonical_url], aspect_ratio="9:16",
+                        )
+                        engine_used = "nano_banana_pro"
+                    else:
+                        result = await fal_client.run_async(
+                            "fal-ai/flux-pro/kontext",
+                            arguments={
+                                "prompt": prompt,
+                                "image_urls": [canonical_url],
+                                "guidance_scale": 4.0,
+                                "num_inference_steps": 40,
+                                "output_format": "jpeg",
+                                "seed": angle_seed,
+                                "aspect_ratio": "9:16",
+                                "safety_tolerance": "5",
+                            },
+                        )
+                        images = result.get("images", [])
+                        img_url = images[0]["url"] if images else None
+                        engine_used = "flux_kontext_legacy"
+                    if img_url:
                         async with httpx.AsyncClient() as client:
-                            img_resp = await client.get(images[0]["url"], timeout=60)
+                            img_resp = await client.get(img_url, timeout=60)
                             img_resp.raise_for_status()
                             img_bytes = img_resp.content
-                        engine_used = "flux_kontext_legacy"
-                        logger.info(f"Tier 3 (FLUX Kontext) succeeded for angle {angle}")
+                        logger.info(f"Tier 3 ({engine_used}) succeeded for angle {angle}")
                 except Exception as e:
                     logger.error(f"All engines failed for angle {angle}: {e}")
                     sentry_sdk.capture_exception(e)
@@ -1258,29 +1282,40 @@ async def regenerate_body_shot(
                 f"regenerate {req.angle}: fal Qwen tier failed, falling back to FLUX Kontext: {qexc}"
             )
 
-        # Tier 2: FLUX Kontext + text prompt — fallback only.
+        # Tier 2: text-prompt fallback — Nano Banana Pro when enabled (better
+        # prompt adherence + anatomy than FLUX Kontext), else FLUX Kontext.
         if img_bytes is None:
-            result = await fal_client.run_async(
-                "fal-ai/flux-pro/kontext",
-                arguments={
-                    "prompt": prompt,
-                    "image_urls": [canonical_url],
-                    "guidance_scale": 4.0,
-                    "num_inference_steps": 40,
-                    "output_format": "jpeg",
-                    "seed": new_seed,
-                    "aspect_ratio": "9:16",
-                    "safety_tolerance": "5",
-                },
+            from services.nano_banana import (
+                nano_banana_pro_enabled, edit_image_run_async,
             )
-            images = result.get("images", [])
-            if not images:
+            if nano_banana_pro_enabled():
+                img_url = await edit_image_run_async(
+                    prompt, [canonical_url], aspect_ratio="9:16",
+                )
+                engine_used = "nano_banana_pro"
+            else:
+                result = await fal_client.run_async(
+                    "fal-ai/flux-pro/kontext",
+                    arguments={
+                        "prompt": prompt,
+                        "image_urls": [canonical_url],
+                        "guidance_scale": 4.0,
+                        "num_inference_steps": 40,
+                        "output_format": "jpeg",
+                        "seed": new_seed,
+                        "aspect_ratio": "9:16",
+                        "safety_tolerance": "5",
+                    },
+                )
+                images = result.get("images", [])
+                img_url = images[0]["url"] if images else None
+                engine_used = "flux_kontext"
+            if not img_url:
                 raise HTTPException(status_code=500, detail="Both image engines returned no image")
             async with httpx.AsyncClient() as client:
-                img_resp = await client.get(images[0]["url"], timeout=60)
+                img_resp = await client.get(img_url, timeout=60)
                 img_resp.raise_for_status()
                 img_bytes = img_resp.content
-            engine_used = "flux_kontext"
 
         logger.info(f"regenerate {req.angle}: generated via {engine_used}")
 
