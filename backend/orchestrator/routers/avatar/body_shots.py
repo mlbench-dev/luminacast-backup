@@ -62,6 +62,26 @@ FAL_QWEN_ANGLES = {
     "back":                {"horizontal_angle": 180, "vertical_angle": 0},
 }
 
+# The Qwen rotation LoRA can't produce a true LEFT and a true RIGHT profile
+# (or 3/4) facing opposite ways — it collapses both to the same side. A
+# horizontal flip of the left-side shot IS an anatomically-correct right-side
+# shot on a plain studio background in plain clothes, so the right-side angles
+# are always derived by mirroring, never generated.
+BODY_SHOT_MIRROR_FROM = {
+    "three_quarter_right": "three_quarter_left",
+    "profile_right": "profile_left",
+}
+
+
+def _hflip_jpeg(data: bytes) -> bytes:
+    import io as _io
+    from PIL import Image as _PILImage
+    im = _PILImage.open(_io.BytesIO(data)).convert("RGB")
+    buf = _io.BytesIO()
+    im.transpose(_PILImage.FLIP_LEFT_RIGHT).save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
 async def _sync_body_motion_look(db: AsyncSession, avatar_id: str, pose: str, r2_key: str) -> None:
     """Point the Body-Motion ``AvatarLook`` for ``pose`` at ``r2_key`` (create
     it if absent).
@@ -710,10 +730,28 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
 
         angles_dict = {}
         front_shot_key = None
+        # Raw bytes of each generated shot, kept so a right-side angle can be
+        # mirrored from its left-side twin without a round-trip to R2.
+        _shot_bytes: dict = {}
 
+        # ANGLES order already puts each *_left before its *_right, so the
+        # mirror source is always in _shot_bytes by the time we need it.
         for _angle_idx, angle in enumerate(ANGLES):
             img_bytes = None
             engine_used = None
+
+            # Right-side angles are mirrored from their left-side twin, never
+            # generated — see BODY_SHOT_MIRROR_FROM.
+            src_angle = BODY_SHOT_MIRROR_FROM.get(angle)
+            if src_angle and _shot_bytes.get(src_angle):
+                try:
+                    img_bytes = _hflip_jpeg(_shot_bytes[src_angle])
+                    engine_used = "mirror"
+                    logger.info(f"Angle {angle}: mirrored from {src_angle}")
+                except Exception as _mex:
+                    sentry_sdk.capture_exception(_mex)
+                    logger.warning(f"Mirror {angle} from {src_angle} failed, generating directly: {_mex}")
+                    img_bytes = None
             # Per-angle seed. The rotation LoRA is seed-sensitive — a single
             # locked seed across all six shots made a "bad" seed mirror /
             # collapse the facing for the WHOLE batch (the "all six face the
@@ -812,13 +850,18 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
             r2_key = f"creators/{user_id}/avatar/{avatar.id}/body_shots/{set_id}/{angle}.jpg"
             await r2.upload_bytes(img_bytes, r2_key, "image/jpeg")
             angles_dict[angle] = r2_key
+            _shot_bytes[angle] = img_bytes  # source for a later mirror
 
             if angle == "front":
                 front_shot_key = r2_key
 
             try:
                 from services.usage_tracker import calculate_fal_image_cost, log_usage
-                if engine_used == "qwen_self_hosted":
+                if engine_used == "mirror":
+                    _provider = "internal"
+                    _cost = 0.0
+                    _model = "mirror"
+                elif engine_used == "qwen_self_hosted":
                     _provider = "hostkey"
                     _cost = 0.0
                     _model = "qwen-body-shots"
@@ -1169,6 +1212,32 @@ async def regenerate_body_shot(
         canonical_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/canonical.jpg"
         canonical_url = r2.get_public_url(canonical_key)
 
+        # Right-side angles are a mirror of their left twin, never generated.
+        # Regenerate the LEFT one to change this pair.
+        _mirror_src = BODY_SHOT_MIRROR_FROM.get(req.angle)
+        if _mirror_src:
+            src_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{_mirror_src}.jpg"
+            async with httpx.AsyncClient() as _c:
+                _r = await _c.get(r2.get_public_url(src_key, cache_bust=True), timeout=60)
+                _r.raise_for_status()
+            flipped = _hflip_jpeg(_r.content)
+            r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}.jpg"
+            await r2.upload_bytes(flipped, r2_key, "image/jpeg")
+            bss.angles = {**(bss.angles or {}), req.angle: r2_key}
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(bss, "angles")
+            await db.commit()
+            try:
+                await _sync_body_motion_look(db, avatar.id, req.angle, r2_key)
+            except Exception as sync_exc:
+                sentry_sdk.capture_exception(sync_exc)
+            return {
+                "angle": req.angle,
+                "url": r2.get_public_url(r2_key, cache_bust=True),
+                "engine": "mirror",
+                "note": f"mirrored from {_mirror_src} — regenerate {_mirror_src} to change this pair",
+            }
+
         # Re-use the wardrobe summary extracted by the original pipeline run if
         # present; otherwise re-run the vision extractor against the SELECTED
         # face image. This is what fixes the "body shot still wears a hoodie
@@ -1337,6 +1406,23 @@ async def regenerate_body_shot(
         except Exception as sync_exc:
             sentry_sdk.capture_exception(sync_exc)
             logger.warning(f"body-motion look sync failed for {req.angle}: {sync_exc}")
+
+        # This angle is the mirror SOURCE for a right-side twin — regenerate
+        # the twin too so the pair stays a matched mirror.
+        _twin = next((k for k, v in BODY_SHOT_MIRROR_FROM.items() if v == req.angle), None)
+        if _twin:
+            try:
+                twin_bytes = _hflip_jpeg(img_bytes)
+                twin_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{_twin}.jpg"
+                await r2.upload_bytes(twin_bytes, twin_key, "image/jpeg")
+                bss.angles = {**(bss.angles or {}), _twin: twin_key}
+                flag_modified(bss, "angles")
+                await db.commit()
+                await _sync_body_motion_look(db, avatar.id, _twin, twin_key)
+                logger.info(f"regenerate {req.angle}: re-mirrored twin {_twin}")
+            except Exception as twin_exc:
+                sentry_sdk.capture_exception(twin_exc)
+                logger.warning(f"twin re-mirror {_twin} failed: {twin_exc}")
 
         # Validate the regenerated shot
         validation = None
