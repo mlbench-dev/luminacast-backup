@@ -33,6 +33,26 @@ from ._shared import normalize_tiktok_input, _r2_key_to_url, AvatarResponse, _av
 
 router = APIRouter()
 
+# The six body-shot camera angles + how the fal.ai Qwen "multiple-angles" LoRA
+# is driven for each. Single source of truth shared by the two-stage pipeline
+# (_run_body_shots_pipeline) and the per-tile regenerate endpoint — they used
+# to keep divergent copies, which is how regenerate ended up FLUX-only (no
+# numeric angle control → wrong-facing shots) while the pipeline used Qwen.
+# Convention + the LoRA's asymmetric under-rotation are documented at the
+# pipeline's inline copy; do not "simplify" three_quarter_left below 55°.
+BODY_SHOT_ANGLES = (
+    "front", "three_quarter_left", "three_quarter_right",
+    "profile_left", "profile_right", "back",
+)
+FAL_QWEN_ANGLES = {
+    "front":               {"horizontal_angle": 0,   "vertical_angle": 0},
+    "three_quarter_left":  {"horizontal_angle": 55,  "vertical_angle": 0},
+    "three_quarter_right": {"horizontal_angle": 315, "vertical_angle": 0},
+    "profile_left":        {"horizontal_angle": 90,  "vertical_angle": 0},
+    "profile_right":       {"horizontal_angle": 270, "vertical_angle": 0},
+    "back":                {"horizontal_angle": 180, "vertical_angle": 0},
+}
+
 class GenerateBodyDescriptionRequest(BaseModel):
     avatar_id: str
 
@@ -1098,8 +1118,7 @@ async def regenerate_body_shot(
         if not avatar.face_ref_key or not avatar.body_description:
             raise HTTPException(status_code=400, detail="Face and body description required")
 
-        VALID_ANGLES = {"front", "three_quarter_left", "three_quarter_right", "profile_left", "profile_right", "back"}
-        if req.angle not in VALID_ANGLES:
+        if req.angle not in BODY_SHOT_ANGLES:
             raise HTTPException(status_code=400, detail=f"Invalid angle: {req.angle}")
 
         r2 = get_r2_storage_service()
@@ -1194,27 +1213,66 @@ async def regenerate_body_shot(
             prompt = tmpl["system"].format(body_description=body_desc_for_angles)
 
         new_seed = random.randint(1, 999999)
-        result = await fal_client.run_async(
-            "fal-ai/flux-pro/kontext",
-            arguments={
-                "prompt": prompt,
-                "image_urls": [canonical_url],
-                "guidance_scale": 4.0,
-                "num_inference_steps": 40,
-                "output_format": "jpeg",
-                "seed": new_seed,
-                "aspect_ratio": "9:16",
-                "safety_tolerance": "5",
-            },
-        )
-        images = result.get("images", [])
-        if not images:
-            raise HTTPException(status_code=500, detail="No image generated")
+        img_bytes = None
+        engine_used = None
 
-        async with httpx.AsyncClient() as client:
-            img_resp = await client.get(images[0]["url"], timeout=60)
-            img_resp.raise_for_status()
-            img_bytes = img_resp.content
+        # Tier 1: fal.ai Qwen "multiple-angles" — the SAME engine + numeric
+        # angle map the two-stage pipeline uses. Text-prompt FLUX (Tier 2
+        # below) has no real angle control, which is why single-tile
+        # regenerate was producing wrong-facing shots AND, when that lone
+        # call errored, 500ing the whole request.
+        try:
+            fal_angles = FAL_QWEN_ANGLES[req.angle]
+            qwen_result = await fal_client.run_async(
+                "fal-ai/qwen-image-edit-2511-multiple-angles",
+                arguments={
+                    "image_urls": [canonical_url],
+                    "horizontal_angle": fal_angles["horizontal_angle"],
+                    "vertical_angle": fal_angles["vertical_angle"],
+                    "seed": new_seed,
+                    "num_inference_steps": 40,
+                    "guidance_scale": 5.0,
+                    "output_format": "jpeg",
+                },
+            )
+            qwen_images = qwen_result.get("images", [])
+            if qwen_images:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(qwen_images[0]["url"], timeout=60)
+                    r.raise_for_status()
+                    img_bytes = r.content
+                engine_used = "qwen_fal"
+        except Exception as qexc:
+            sentry_sdk.capture_exception(qexc)
+            logger.warning(
+                f"regenerate {req.angle}: fal Qwen tier failed, falling back to FLUX Kontext: {qexc}"
+            )
+
+        # Tier 2: FLUX Kontext + text prompt — fallback only.
+        if img_bytes is None:
+            result = await fal_client.run_async(
+                "fal-ai/flux-pro/kontext",
+                arguments={
+                    "prompt": prompt,
+                    "image_urls": [canonical_url],
+                    "guidance_scale": 4.0,
+                    "num_inference_steps": 40,
+                    "output_format": "jpeg",
+                    "seed": new_seed,
+                    "aspect_ratio": "9:16",
+                    "safety_tolerance": "5",
+                },
+            )
+            images = result.get("images", [])
+            if not images:
+                raise HTTPException(status_code=500, detail="Both image engines returned no image")
+            async with httpx.AsyncClient() as client:
+                img_resp = await client.get(images[0]["url"], timeout=60)
+                img_resp.raise_for_status()
+                img_bytes = img_resp.content
+            engine_used = "flux_kontext"
+
+        logger.info(f"regenerate {req.angle}: generated via {engine_used}")
 
         r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}.jpg"
         await r2.upload_bytes(img_bytes, r2_key, "image/jpeg")
