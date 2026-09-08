@@ -36,32 +36,29 @@ router = APIRouter()
 # The six body-shot camera angles + the horizontal_angle passed to fal.ai's
 # Qwen "qwen-image-edit-2511-multiple-angles" LoRA for each. SINGLE SOURCE OF
 # TRUTH — the two-stage pipeline (_run_body_shots_pipeline) and the per-tile
-# regenerate endpoint both read this. They used to keep divergent copies,
-# which is how regenerate ended up FLUX-only (no angle control) while the
-# pipeline used Qwen, and how left/right kept getting swapped in one but not
-# the other.
+# regenerate endpoint both read this, so they can't drift apart.
 #
 # CONVENTION (standard portrait): `three_quarter_left` shows the subject's
 # LEFT side of face; `profile_left` shows the subject's LEFT side. The Gemini
 # validator uses the same names.
 #
-# The horizontal_angle values below are EMPIRICAL — this LoRA does not map
-# angle → facing the way you'd expect, and confirmed on real output
-# (2026-09): the label→angle pairing was mirrored. `three_quarter_left` needs
-# the ~315° ("well-rotated") value, `three_quarter_right` the ~55° one, and
-# the profiles are likewise mirrored (left=270°, right=90°). `front`/`back`
-# are symmetric. If a regenerated angle still faces the wrong way, this map
-# is where to flip it.
+# These angle values are correct for a per-shot generation (confirmed on real
+# output: single-tile Regenerate produces the right facing). The
+# wrong/duplicated-facing shots the batch pipeline was producing were NOT an
+# angle-map bug — they came from the pipeline generating all six shots with
+# ONE locked seed. This LoRA's rotation is seed-sensitive, so a "bad" seed
+# mirrors or collapses the rotation for EVERY angle at once. The pipeline now
+# gives each angle its own seed (locked_seed + index) to de-correlate that.
 BODY_SHOT_ANGLES = (
     "front", "three_quarter_left", "three_quarter_right",
     "profile_left", "profile_right", "back",
 )
 FAL_QWEN_ANGLES = {
     "front":               {"horizontal_angle": 0,   "vertical_angle": 0},
-    "three_quarter_left":  {"horizontal_angle": 315, "vertical_angle": 0},
-    "three_quarter_right": {"horizontal_angle": 55,  "vertical_angle": 0},
-    "profile_left":        {"horizontal_angle": 270, "vertical_angle": 0},
-    "profile_right":       {"horizontal_angle": 90,  "vertical_angle": 0},
+    "three_quarter_left":  {"horizontal_angle": 55,  "vertical_angle": 0},
+    "three_quarter_right": {"horizontal_angle": 315, "vertical_angle": 0},
+    "profile_left":        {"horizontal_angle": 90,  "vertical_angle": 0},
+    "profile_right":       {"horizontal_angle": 270, "vertical_angle": 0},
     "back":                {"horizontal_angle": 180, "vertical_angle": 0},
 }
 
@@ -658,9 +655,16 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
         angles_dict = {}
         front_shot_key = None
 
-        for angle in ANGLES:
+        for _angle_idx, angle in enumerate(ANGLES):
             img_bytes = None
             engine_used = None
+            # Per-angle seed. The rotation LoRA is seed-sensitive — a single
+            # locked seed across all six shots made a "bad" seed mirror /
+            # collapse the facing for the WHOLE batch (the "all six face the
+            # same way, but single Regenerate is correct" report). Deriving
+            # each angle's seed from the batch seed keeps runs reproducible
+            # while de-correlating the failure.
+            angle_seed = locked_seed + _angle_idx
 
             # Tier 1: self-hosted Qwen on HOSTKEY
             if qwen_self_hosted_ok:
@@ -670,7 +674,7 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
                         angle=angle,
                         output_width=1024,
                         output_height=1792,
-                        seed=locked_seed,
+                        seed=angle_seed,
                     )
                     engine_used = "qwen_self_hosted"
                     logger.info(f"Tier 1 (Qwen self-hosted) succeeded for angle {angle}")
@@ -688,7 +692,7 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
                             "image_urls": [canonical_url],
                             "horizontal_angle": fal_angles["horizontal_angle"],
                             "vertical_angle": fal_angles["vertical_angle"],
-                            "seed": locked_seed,
+                            "seed": angle_seed,
                             # Higher steps + guidance = sharper, better fabric/skin
                             # detail at the cost of ~30% extra compute per shot.
                             "num_inference_steps": 40,
@@ -719,7 +723,7 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
                             "guidance_scale": 4.0,
                             "num_inference_steps": 40,
                             "output_format": "jpeg",
-                            "seed": locked_seed,
+                            "seed": angle_seed,
                             "aspect_ratio": "9:16",
                             "safety_tolerance": "5",
                         },
