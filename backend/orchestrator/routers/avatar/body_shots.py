@@ -1227,16 +1227,27 @@ async def regenerate_body_shot(
         canonical_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/canonical.jpg"
         canonical_url = r2.get_public_url(canonical_key)
 
+        # Version token for this regenerate's output keys. The single-tile
+        # regenerate used to overwrite a STABLE key ({angle}.jpg), and the
+        # looks list serves image_url off that key with no cache-bust — so the
+        # CDN + browser kept showing the OLD image and it looked like the
+        # regenerate "did nothing / just zoomed". A fresh key per run makes the
+        # URL actually change. (The batch pipeline is unaffected — it runs once
+        # per set_id.) Consumers treat bss.angles values as opaque keys.
+        _ver = uuid.uuid4().hex[:8]
+
         # Right-side angles are a mirror of their left twin, never generated.
         # Regenerate the LEFT one to change this pair.
         _mirror_src = BODY_SHOT_MIRROR_FROM.get(req.angle)
         if _mirror_src:
-            src_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{_mirror_src}.jpg"
+            src_key = (bss.angles or {}).get(_mirror_src) or (
+                f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{_mirror_src}.jpg"
+            )
             async with httpx.AsyncClient() as _c:
                 _r = await _c.get(r2.get_public_url(src_key, cache_bust=True), timeout=60)
                 _r.raise_for_status()
             flipped = _hflip_jpeg(_r.content)
-            r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}.jpg"
+            r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}_{_ver}.jpg"
             await r2.upload_bytes(flipped, r2_key, "image/jpeg")
             bss.angles = {**(bss.angles or {}), req.angle: r2_key}
             from sqlalchemy.orm.attributes import flag_modified
@@ -1408,7 +1419,7 @@ async def regenerate_body_shot(
 
         logger.info(f"regenerate {req.angle}: generated via {engine_used}")
 
-        r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}.jpg"
+        r2_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{req.angle}_{_ver}.jpg"
         await r2.upload_bytes(img_bytes, r2_key, "image/jpeg")
 
         # Update the BodyShotSet record
@@ -1433,7 +1444,7 @@ async def regenerate_body_shot(
         if _twin:
             try:
                 twin_bytes = _hflip_jpeg(img_bytes)
-                twin_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{_twin}.jpg"
+                twin_key = f"creators/{ctx.workspace_owner_id}/avatar/{avatar.id}/body_shots/{req.set_id}/{_twin}_{_ver}.jpg"
                 await r2.upload_bytes(twin_bytes, twin_key, "image/jpeg")
                 bss.angles = {**(bss.angles or {}), _twin: twin_key}
                 flag_modified(bss, "angles")
