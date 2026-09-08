@@ -33,23 +33,35 @@ from ._shared import normalize_tiktok_input, _r2_key_to_url, AvatarResponse, _av
 
 router = APIRouter()
 
-# The six body-shot camera angles + how the fal.ai Qwen "multiple-angles" LoRA
-# is driven for each. Single source of truth shared by the two-stage pipeline
-# (_run_body_shots_pipeline) and the per-tile regenerate endpoint — they used
-# to keep divergent copies, which is how regenerate ended up FLUX-only (no
-# numeric angle control → wrong-facing shots) while the pipeline used Qwen.
-# Convention + the LoRA's asymmetric under-rotation are documented at the
-# pipeline's inline copy; do not "simplify" three_quarter_left below 55°.
+# The six body-shot camera angles + the horizontal_angle passed to fal.ai's
+# Qwen "qwen-image-edit-2511-multiple-angles" LoRA for each. SINGLE SOURCE OF
+# TRUTH — the two-stage pipeline (_run_body_shots_pipeline) and the per-tile
+# regenerate endpoint both read this. They used to keep divergent copies,
+# which is how regenerate ended up FLUX-only (no angle control) while the
+# pipeline used Qwen, and how left/right kept getting swapped in one but not
+# the other.
+#
+# CONVENTION (standard portrait): `three_quarter_left` shows the subject's
+# LEFT side of face; `profile_left` shows the subject's LEFT side. The Gemini
+# validator uses the same names.
+#
+# The horizontal_angle values below are EMPIRICAL — this LoRA does not map
+# angle → facing the way you'd expect, and confirmed on real output
+# (2026-09): the label→angle pairing was mirrored. `three_quarter_left` needs
+# the ~315° ("well-rotated") value, `three_quarter_right` the ~55° one, and
+# the profiles are likewise mirrored (left=270°, right=90°). `front`/`back`
+# are symmetric. If a regenerated angle still faces the wrong way, this map
+# is where to flip it.
 BODY_SHOT_ANGLES = (
     "front", "three_quarter_left", "three_quarter_right",
     "profile_left", "profile_right", "back",
 )
 FAL_QWEN_ANGLES = {
     "front":               {"horizontal_angle": 0,   "vertical_angle": 0},
-    "three_quarter_left":  {"horizontal_angle": 55,  "vertical_angle": 0},
-    "three_quarter_right": {"horizontal_angle": 315, "vertical_angle": 0},
-    "profile_left":        {"horizontal_angle": 90,  "vertical_angle": 0},
-    "profile_right":       {"horizontal_angle": 270, "vertical_angle": 0},
+    "three_quarter_left":  {"horizontal_angle": 315, "vertical_angle": 0},
+    "three_quarter_right": {"horizontal_angle": 55,  "vertical_angle": 0},
+    "profile_left":        {"horizontal_angle": 270, "vertical_angle": 0},
+    "profile_right":       {"horizontal_angle": 90,  "vertical_angle": 0},
     "back":                {"horizontal_angle": 180, "vertical_angle": 0},
 }
 
@@ -596,58 +608,12 @@ async def _run_body_shots_pipeline(set_id: str, avatar_id: str, user_id: str) ->
         # Tier 3: FLUX Kontext legacy fallback
         from services.qwen_body_shots_client import QwenBodyShotsClient
 
-        ANGLES = [
-            "front", "three_quarter_left", "three_quarter_right",
-            "profile_left", "profile_right", "back",
-        ]
-
-        # CANONICAL ANGLE CONVENTION — standard portrait / fashion-photography:
-        #
-        #   `three_quarter_left`  → subject's LEFT side of face is shown to the
-        #                           camera; the subject's body is rotated toward
-        #                           the camera's RIGHT, so the subject's RIGHT
-        #                           shoulder/cheek is CLOSER to the camera.
-        #                           (Same convention every editing tool uses —
-        #                           Photoshop, Figma, Stable Diffusion, etc.)
-        #   `three_quarter_right` → mirror — subject's RIGHT side of face shown,
-        #                           subject's LEFT shoulder closer to camera.
-        #   `profile_left`        → pure side profile, subject's LEFT side faces
-        #                           the camera (camera sees subject's left side).
-        #   `profile_right`       → pure side profile, subject's RIGHT side faces
-        #                           the camera.
-        #   `front` / `back`      → self-explanatory.
-        #
-        # All three engines (Qwen self-hosted, fal.ai Qwen, FLUX Kontext) and
-        # the Gemini validator MUST agree on this convention. Earlier revisions
-        # had three_quarter_left/right swapped relative to the standard, which
-        # is why the user kept seeing the wrong shoulder forward.
-        #
-        # fal.ai Qwen `qwen-image-edit-2511-multiple-angles` interprets
-        # horizontal_angle as the camera's orbit position around the subject.
-        # In practice the LoRA's response is ASYMMETRIC: small positive values
-        # (~0-50°) under-rotate to nearly frontal output, while values near
-        # 360° (e.g. 315° = -45°) rotate properly. We compensate by:
-        #   - using 55° (not 45°) for `three_quarter_left` to force visible
-        #     rotation past the under-rotation band; subject's LEFT side of
-        #     face faces camera, subject's RIGHT shoulder leads.
-        #   - using 315° for `three_quarter_right`, which already rotates well;
-        #     subject's RIGHT side of face faces camera, LEFT shoulder leads.
-        #   - 90° / 270° for profiles, 180° for back.
-        # Do NOT lower three_quarter_left below 55° (it will read frontal). If
-        # 55° is still insufficient on review, escalate to 60°.
-        FAL_QWEN_ANGLES = {
-            "front":               {"horizontal_angle": 0,   "vertical_angle": 0},
-            # fal.ai Qwen "multiple-angles" LoRA under-rotates small positive
-            # horizontal_angle values (~0-50°). Empirically, 45° produces nearly
-            # frontal output while 315° (= -45°) rotates correctly. We use 55°
-            # here to force visible rotation. If 55° still reads too frontal,
-            # escalate to 60°. Do NOT lower below 55°.
-            "three_quarter_left":  {"horizontal_angle": 55,  "vertical_angle": 0},
-            "three_quarter_right": {"horizontal_angle": 315, "vertical_angle": 0},
-            "profile_left":        {"horizontal_angle": 90,  "vertical_angle": 0},
-            "profile_right":       {"horizontal_angle": 270, "vertical_angle": 0},
-            "back":                {"horizontal_angle": 180, "vertical_angle": 0},
-        }
+        # Angle list + fal.ai Qwen angle map are module-level constants
+        # (BODY_SHOT_ANGLES / FAL_QWEN_ANGLES) so the pipeline and the
+        # per-tile regenerate endpoint can't drift apart — see the block at
+        # the top of this file for the convention + why the values are what
+        # they are.
+        ANGLES = BODY_SHOT_ANGLES
 
         def _build_kontext_prompt(angle: str) -> str:
             """Legacy FLUX Kontext prompt builder (Tier 3 fallback).

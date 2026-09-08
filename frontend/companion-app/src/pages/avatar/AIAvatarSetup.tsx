@@ -1947,11 +1947,11 @@ function BodyShotsPhase({
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-3 gap-4">
               {ANGLE_ORDER.map((angle) => {
                 const angleMismatch = validation[angle] && !validation[angle].match;
                 return (
-                  <div key={angle} className="space-y-1" style={{ minWidth: 280 }}>
+                  <div key={angle} className="space-y-1 min-w-0">
                     <div className="relative group">
                       {angles[angle] ? (
                         <>
@@ -1959,7 +1959,7 @@ function BodyShotsPhase({
                             src={angles[angle]}
                             alt={ANGLE_LABELS[angle]}
                             className={`w-full rounded-lg border ${angleMismatch ? "border-yellow-500 border-2" : "border-border"}`}
-                            style={{ aspectRatio: "9/16", objectFit: "cover", minWidth: 280 }}
+                            style={{ aspectRatio: "9/16", objectFit: "cover" }}
                             data-testid={`body-shot-${angle}`}
                           />
                           {angleMismatch && (
@@ -1992,7 +1992,7 @@ function BodyShotsPhase({
                           )}
                         </>
                       ) : (
-                        <div className="w-full rounded-lg border border-border bg-surface flex items-center justify-center" style={{ aspectRatio: "9/16", minWidth: 280 }}>
+                        <div className="w-full rounded-lg border border-border bg-surface flex items-center justify-center" style={{ aspectRatio: "9/16" }}>
                           <Loader2 className="h-6 w-6 animate-spin text-accent/50" />
                         </div>
                       )}
