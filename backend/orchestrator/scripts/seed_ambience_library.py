@@ -21,19 +21,21 @@ from services.r2_storage import get_r2_storage_service
 from services.ambience_library import AMBIENCE_CATALOG
 
 
-# lavfi source chain per catalog name — a rough sonic stand-in, NOT the real
-# atmosphere. brown/pink noise shaped with a low-pass gives a "bed" feel;
-# the real files replace these 1:1 by name.
+# lavfi source graph per catalog name — a rough sonic stand-in, NOT the real
+# atmosphere, but shaped so the seven are audibly distinct while testing:
+# low hum tones under room/office/city, slow tremolo "swells" for wind/ocean,
+# a fast bright tremolo for birds, speech-band murmur for cafe. The real
+# licensed loops replace these 1:1 by name (same R2 key).
 _LAVFI_BY_NAME: dict[str, str] = {
-    "room_tone":    "anoisesrc=color=brown:amplitude=0.06,lowpass=f=400",
-    "office_hum":   "anoisesrc=color=brown:amplitude=0.05,lowpass=f=300,highpass=f=60",
-    "cafe_murmur":  "anoisesrc=color=pink:amplitude=0.08,lowpass=f=900,highpass=f=120",
-    "city_street":  "anoisesrc=color=brown:amplitude=0.10,lowpass=f=1200",
-    "wind_soft":    "anoisesrc=color=brown:amplitude=0.12,lowpass=f=700",
-    "nature_birds": "anoisesrc=color=pink:amplitude=0.07,lowpass=f=2000,highpass=f=300",
-    "ocean_waves":  "anoisesrc=color=brown:amplitude=0.11,lowpass=f=600",
+    "room_tone":    "anoisesrc=c=brown:a=0.05[n];sine=f=60:b=0[s];[n][s]amix=inputs=2:weights=1 0.06:normalize=0,lowpass=f=350",
+    "office_hum":   "anoisesrc=c=brown:a=0.04[n];sine=f=120:b=0[s];[n][s]amix=inputs=2:weights=1 0.10:normalize=0,highpass=f=60,lowpass=f=900",
+    "cafe_murmur":  "anoisesrc=c=pink:a=0.08,highpass=f=180,lowpass=f=1100,tremolo=f=0.5:d=0.5",
+    "city_street":  "anoisesrc=c=brown:a=0.10[n];sine=f=70:b=0[s];[n][s]amix=inputs=2:weights=1 0.12:normalize=0,lowpass=f=1400",
+    "wind_soft":    "anoisesrc=c=brown:a=0.13,lowpass=f=700,tremolo=f=0.18:d=0.7",
+    "nature_birds": "anoisesrc=c=pink:a=0.06[n];sine=f=2200:b=0[s];[n][s]amix=inputs=2:weights=1 0.05:normalize=0,highpass=f=400,lowpass=f=6000,tremolo=f=3.0:d=0.6",
+    "ocean_waves":  "anoisesrc=c=brown:a=0.12,lowpass=f=550,tremolo=f=0.1:d=0.9",
 }
-_DEFAULT_LAVFI = "anoisesrc=color=brown:amplitude=0.08,lowpass=f=800"
+_DEFAULT_LAVFI = "anoisesrc=c=brown:a=0.08,lowpass=f=800"
 
 
 def _placeholder_cmd(name: str, duration_s: float) -> list[str]:
@@ -61,6 +63,10 @@ async def main():
     r2 = get_r2_storage_service()
     uploaded = 0
     skipped = 0
+    # Re-seed over existing objects with --force / SEED_FORCE=1 (used when the
+    # placeholder recipe changes; harmless once real files are in place — just
+    # don't pass it then).
+    force = "--force" in sys.argv or os.getenv("SEED_FORCE", "").strip().lower() in {"1", "true", "yes"}
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for spec in AMBIENCE_SPECS:
@@ -68,14 +74,15 @@ async def main():
             key = f"ambience/{name}.wav"
             local_path = os.path.join(tmpdir, f"{name}.wav")
 
-            try:
-                existing = await r2.head_object(key)
-                if existing:
-                    print(f"  skip {name} (already exists)")
-                    skipped += 1
-                    continue
-            except Exception:
-                pass
+            if not force:
+                try:
+                    existing = await r2.head_object(key)
+                    if existing:
+                        print(f"  skip {name} (already exists)")
+                        skipped += 1
+                        continue
+                except Exception:
+                    pass
 
             cmd = spec["cmd"] + [local_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
