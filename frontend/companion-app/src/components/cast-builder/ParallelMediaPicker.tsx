@@ -116,9 +116,9 @@ export function ParallelMediaPicker({
           </div>
           <div className="text-[10px] text-white/40">
             {aiBroll === "generating"
-              ? "Creating an AI shot of your product for this beat…"
+              ? "Creating an AI clip for this beat…"
               : aiBroll === "failed"
-              ? "Couldn't generate a product shot — using stock for now."
+              ? "Couldn't generate an AI clip — using stock for now."
               : aiSuggestedItem
               ? "AI picked the visual below — swap it or add more."
               : aiQuery
@@ -145,7 +145,7 @@ export function ParallelMediaPicker({
             </div>
           </div>
           <div className="min-w-0 text-[11px] leading-snug text-fuchsia-100/90">
-            Generating a shot of your product for this beat…
+            Generating an AI clip for this beat…
             <span className="block text-fuchsia-200/50">
               Takes a few minutes — it&apos;ll appear here on its own.
             </span>
@@ -157,8 +157,8 @@ export function ParallelMediaPicker({
         <div className="flex items-start gap-2 rounded-md border border-amber-400/20 bg-amber-500/[0.06] p-2 text-[10px] text-amber-200/90">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
           <span>
-            AI couldn&apos;t make a product shot for this beat — showing stock. Use
-            &ldquo;Add visual&rdquo; to pick one, or check the product has a cover photo.
+            AI couldn&apos;t make a clip for this beat — showing stock. Use
+            &ldquo;Add visual&rdquo; to pick one.
           </span>
         </div>
       )}
@@ -273,6 +273,9 @@ function PexelsPickerModal({
   const [results, setResults] = useState<PexelsResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  // What the server actually searched for after stripping shot-style /
+  // filler words ("hoodie flat lay charcoal" → "charcoal hoodie").
+  const [resolvedQuery, setResolvedQuery] = useState<string | null>(null);
 
   const search = useCallback(async () => {
     if (!query.trim()) return;
@@ -284,6 +287,8 @@ function PexelsPickerModal({
       // Vertical b-roll over a portrait avatar block.
       params.orientation = "portrait";
       const { data } = await api.get(path, { params });
+      const rq = (data?.resolved_query || "").trim();
+      setResolvedQuery(rq && rq.toLowerCase() !== query.trim().toLowerCase() ? rq : null);
       setResults(
         (data?.results || []).map((r: any) => ({
           id: r.id,
@@ -303,6 +308,7 @@ function PexelsPickerModal({
         variant: "destructive",
       });
       setResults([]);
+      setResolvedQuery(null);
     } finally {
       setLoading(false);
     }
@@ -402,6 +408,12 @@ function PexelsPickerModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
+          {!loading && resolvedQuery && (
+            <div className="mb-3 text-[11px] text-white/45">
+              Showing results for <span className="text-white/70">"{resolvedQuery}"</span>
+              {" "}— trimmed to the subject for a closer match.
+            </div>
+          )}
           {loading && (
             <div className="flex items-center justify-center py-12 text-white/40 text-sm">
               <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Searching…

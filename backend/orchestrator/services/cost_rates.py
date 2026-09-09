@@ -29,6 +29,7 @@ COST_RATES = {
     "fal/wan_2.2_t2v":                 0.10,       # $0.10 per second (older model)
     "fal/wan_2.2_i2v":                 0.10,       # $0.10 per second
     "fal/kling_2.5_turbo_pro":         0.07,       # $0.07 per second of video
+    "fal/kling_2.1_master_t2v":        0.28,       # ~$0.28 per 5s text-to-video clip (scene b-roll)
     "fal/veo_3":                       0.40,       # $0.40 per second of video
     "fal/flux_kontext_pro":            0.04,       # $0.04 per image
     "fal/flux_kontext_max":            0.10,       # ~$0.10 per image

@@ -3505,6 +3505,13 @@ async def auto_populate_stock_media(
         # Build product-relevant query candidates (specific→generic). For
         # product casts this swaps the brand/topic query for product name +
         # feature words; otherwise we fall back to the LLM's own query.
+        from services.stock_query import stockify_query
+        # Drop shot-style / aesthetic / filler words from the LLM's query
+        # ("hoodie flat lay charcoal" -> "charcoal hoodie") so Pexels searches
+        # the subject, not the framing — otherwise it degrades to unrelated
+        # flat-lay footage.
+        clean_base = stockify_query(base_query) if base_query else ""
+
         product = _product_for_block(block, products)
         if product:
             queries = build_pexels_query(product, block)
@@ -3513,11 +3520,13 @@ async def auto_populate_stock_media(
             # as an extra fallback candidate.
             if base_query:
                 short_base = shorten_stock_query(base_query) or base_query
-                for cand in (short_base, base_query):
+                for cand in (clean_base, short_base, base_query):
                     if cand and cand.lower() not in {q.lower() for q in queries}:
                         queries.append(cand)
         elif base_query:
-            queries = [base_query]
+            queries = [q for q in (clean_base, base_query) if q]
+            # de-dupe while preserving order
+            queries = list(dict.fromkeys(queries))
         else:
             return
         if not queries:

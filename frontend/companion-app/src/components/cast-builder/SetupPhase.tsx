@@ -54,8 +54,8 @@ const BROLL_SOURCE_OPTIONS = [
   },
   {
     value: "ai_generated",
-    label: "AI-generated from product",
-    desc: "Product-only shots made from your product's own photo.",
+    label: "AI-generated",
+    desc: "Product shots from your product photo; other beats get an AI clip of the described scene.",
     hint: "Slower · runs in the background",
     Icon: Sparkles,
   },

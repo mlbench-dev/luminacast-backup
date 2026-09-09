@@ -18,6 +18,7 @@ from models.user_video import UserVideoAsset
 from routers.auth import get_current_user
 from services.pexels import get_pexels_client
 from services.r2_storage import get_r2_storage_service
+from services.stock_query import stockify_query
 from services.video_thumbnail import extract_video_thumbnail_jpeg
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,13 @@ async def search_stock_photos(
     per_page: int = Query(20, ge=1, le=40),
     user: User = Depends(get_current_user),
 ):
+    # Strip shot-style / aesthetic / filler words so a phrase like
+    # "hoodie flat lay charcoal" searches for "charcoal hoodie" instead of
+    # degrading to unrelated flat-lay footage.
+    search_q = stockify_query(q) or q
     try:
         client = get_pexels_client()
-        result = await client.search_photos(q, orientation, size, color, page, per_page)
+        result = await client.search_photos(search_q, orientation, size, color, page, per_page)
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     except httpx.HTTPStatusError as e:
@@ -80,6 +85,8 @@ async def search_stock_photos(
         "total_results": result.get("total_results", 0),
         "page": page,
         "per_page": per_page,
+        "query": q,
+        "resolved_query": search_q,
     }
 
 
@@ -93,9 +100,11 @@ async def search_stock_videos(
     per_page: int = Query(15, ge=1, le=40),
     user: User = Depends(get_current_user),
 ):
+    # See search_stock_photos — collapse a shot-style phrase to its subject.
+    search_q = stockify_query(q) or q
     try:
         client = get_pexels_client()
-        result = await client.search_videos(q, orientation, None, min_duration, max_duration, page, per_page)
+        result = await client.search_videos(search_q, orientation, None, min_duration, max_duration, page, per_page)
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     except httpx.HTTPStatusError as e:
@@ -132,6 +141,8 @@ async def search_stock_videos(
         "total_results": result.get("total_results", 0),
         "page": page,
         "per_page": per_page,
+        "query": q,
+        "resolved_query": search_q,
     }
 
 

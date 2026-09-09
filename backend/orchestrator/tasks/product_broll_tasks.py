@@ -108,11 +108,18 @@ async def _generate_async(cast_id: str) -> dict:
         # metadata.ai_broll="generating" so the Script tab can show a
         # "creating your product shot" state (and poll for completion)
         # instead of presenting the interim Pexels clip as the final pick.
+        from services.ai_broll import ai_broll_enabled
+        _scene_broll_ok = ai_broll_enabled()
         eligible: list = []
         for blk in rows:
             if not _block_has_broll(blk):
                 continue
-            if not (blk.product_id or primary_product_id):
+            has_product = bool(blk.product_id or primary_product_id)
+            has_query = bool((blk.stock_media_query or "").strip())
+            # Product beats always eligible (product shot). Product-less beats
+            # only when AI_BROLL_ENABLED and they have a query to generate from
+            # — otherwise there's nothing to anchor the shot on, keep Pexels.
+            if not has_product and not (_scene_broll_ok and has_query):
                 continue
             blk.block_metadata = {**(blk.block_metadata or {}), "ai_broll": "generating"}
             eligible.append(blk)
@@ -127,11 +134,63 @@ async def _generate_async(cast_id: str) -> dict:
 
         for blk in eligible:
             product_id = blk.product_id or primary_product_id
-            product = await db.get(Product, product_id)
+            product = await db.get(Product, product_id) if product_id else None
+
+            # No product to anchor the shot on → generate the described scene
+            # directly via Kling text-to-video (flag-gated). Falls back to the
+            # stock clip on any failure.
             if product is None:
-                blk.block_metadata = {**(blk.block_metadata or {}), "ai_broll": "failed"}
-                await db.commit()
-                failed += 1
+                try:
+                    from services.ai_broll import (
+                        generate_scene_broll_video, broll_aspect_ratio,
+                    )
+                    url, cost = await generate_scene_broll_video(
+                        prompt_query=(blk.stock_media_query or "").strip(),
+                        owner_id=owner_id,
+                        aspect_ratio=broll_aspect_ratio(blk),
+                        duration_seconds=5,
+                    )
+                    blk.image_asset_id = None
+                    blk.video_asset_id = None
+                    blk.parallel_media = [{
+                        "kind": "video", "url": url, "thumbnail": url,
+                        "source": "ai_generated", "start_offset_s": 0,
+                        "duration_s": None,
+                    }]
+                    blk.block_metadata = {
+                        **(blk.block_metadata or {}), "ai_broll": "done",
+                    }
+                    await db.commit()
+                    generated += 1
+                    try:
+                        from services.usage_tracker import log_usage
+                        await log_usage(
+                            db, user_id=owner_id, event_type="ai_broll_scene",
+                            provider="fal_ai", provider_cost_usd=cost, quantity=1,
+                            quantity_unit="videos", resource_type="cast",
+                            resource_id=cast_id, provider_model="kling-2.1-master-t2v",
+                        )
+                        await db.commit()
+                    except Exception as _uexc:
+                        import sentry_sdk
+                        sentry_sdk.capture_exception(_uexc)
+                        await db.rollback()
+                except Exception as exc:
+                    import sentry_sdk
+                    sentry_sdk.capture_exception(exc)
+                    logger.warning(
+                        "scene b-roll generation failed for block %s (%s); "
+                        "leaving the stock clip as the fallback",
+                        blk.id, exc,
+                    )
+                    await db.rollback()
+                    blk2 = await db.get(Block, blk.id)
+                    if blk2 is not None:
+                        blk2.block_metadata = {
+                            **(blk2.block_metadata or {}), "ai_broll": "failed",
+                        }
+                        await db.commit()
+                    failed += 1
                 continue
 
             # Scene prompt from the beat's own stock query, so each shot is the
