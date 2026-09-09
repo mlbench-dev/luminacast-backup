@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -253,6 +253,25 @@ async def delete_avatar_look(
 
     if look.is_original:
         raise HTTPException(400, "Cannot delete the original look.")
+
+    # Detach the look from everything that references it first. blocks
+    # (avatar_look_id + the two body-motion look FKs) and casts
+    # (default_avatar_look_id) have plain FKs with no ON DELETE, so deleting a
+    # look that's still assigned to a scene/cast 500s with an IntegrityError
+    # ("Couldn't delete scene"). Nulling the references makes those blocks fall
+    # back to the cast's default look / the avatar default at render time.
+    from models.block import Block
+    from models.cast import Cast
+
+    for _col in ("avatar_look_id", "body_motion_start_look_id", "body_motion_end_look_id"):
+        await db.execute(
+            sa_update(Block).where(getattr(Block, _col) == look_id).values({_col: None})
+        )
+    await db.execute(
+        sa_update(Cast)
+        .where(Cast.default_avatar_look_id == look_id)
+        .values(default_avatar_look_id=None)
+    )
 
     await db.delete(look)
     await db.commit()

@@ -268,6 +268,13 @@ export function AvatarLookPicker({
               Mic visible
             </button>
           </div>
+          <p className="text-[10px] text-white/35 leading-snug">
+            {environment === "studio"
+              ? "Studio: clean, dry sound — no room acoustics or background ambience."
+              : `${environment === "room" ? "Room" : "Outdoor"}: the voice gets matching room acoustics and a low ${
+                  environment === "room" ? "room-tone" : "outdoor"
+                } ambience bed is mixed under the narration in the final video.`}
+          </p>
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-white/30">
               The avatar's face stays the same; only the scene changes.
