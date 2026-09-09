@@ -1103,7 +1103,7 @@ function AmbienceTab() {
         these: the renderer picks one automatically from each scene&apos;s
         environment (<span className="text-white/60">Room</span> or{" "}
         <span className="text-white/60">Outdoor</span>; a studio scene gets
-        none). Click to preview or download.
+        none). Click to preview.
       </p>
 
       {!isLoading && !enabled && (
@@ -1153,19 +1153,12 @@ function AmbienceTab() {
                       {amb.label}
                     </span>
                   </div>
-                  <div className="text-[10px] text-white/35 mt-0.5">
-                    {amb.scene ? `${amb.scene} · ` : ""}
-                    {amb.duration.toFixed(0)}s loop
-                  </div>
+                  {amb.scene && (
+                    <div className="text-[10px] text-white/35 mt-0.5">
+                      {amb.scene}
+                    </div>
+                  )}
                 </div>
-                <a
-                  href={amb.url}
-                  download={`${amb.key}.wav`}
-                  title="Download"
-                  className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-white/40 hover:text-white/80 hover:bg-white/[0.08] transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                </a>
               </div>
             );
           })}
