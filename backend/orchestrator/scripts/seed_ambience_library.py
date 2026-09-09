@@ -39,11 +39,14 @@ _DEFAULT_LAVFI = "anoisesrc=color=brown:amplitude=0.08,lowpass=f=800"
 def _placeholder_cmd(name: str, duration_s: float) -> list[str]:
     src = _LAVFI_BY_NAME.get(name, _DEFAULT_LAVFI)
     # Short fades top & tail so a naive loop doesn't click at the seam.
+    # anoisesrc runs forever; -t bounds the output (embedding :duration= in the
+    # lavfi string attaches it to the trailing filter, which has no such option).
     fade_st = max(duration_s - 0.3, 0.0)
     return [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"{src}:duration={duration_s}",
+        "-f", "lavfi", "-i", src,
         "-af", f"afade=t=in:st=0:d=0.3,afade=t=out:st={fade_st}:d=0.3",
+        "-t", f"{duration_s}",
         "-ar", "44100", "-ac", "2",
     ]
 
