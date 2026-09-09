@@ -458,6 +458,9 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   const backgroundLooks = avatarLooks.filter(
     (l) => l.look_type === "background" && l.status === "ready",
   );
+  const pendingBackgroundLooks = avatarLooks.filter(
+    (l) => l.look_type === "background" && l.status !== "ready" && l.status !== "failed",
+  );
   // Reset the picked look whenever the avatar changes — a look is owned
   // by exactly one avatar. Only fires on a genuine SWITCH (a real avatar id
   // replaced by a different real avatar id), not on the initial null →
@@ -877,6 +880,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           <AvatarLookPicker
             avatarId={selectedAvatar}
             looks={backgroundLooks}
+            pendingLooks={pendingBackgroundLooks}
             value={selectedLookId}
             onChange={(lookId) => setSelectedLookId(lookId)}
             defaultLabel="Empty scene"

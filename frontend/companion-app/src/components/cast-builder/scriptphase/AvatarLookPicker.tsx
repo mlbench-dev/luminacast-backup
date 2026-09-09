@@ -34,6 +34,10 @@ interface Props {
   avatarId: string;
   /** Available looks (already filtered to background look_type + ready). */
   looks: AvatarLook[];
+  /** Background looks still generating (status pending/generating). Rendered
+   *  as spinner tiles so the user sees the scene is being made. The parent's
+   *  looks query must poll while any of these exist. */
+  pendingLooks?: AvatarLook[];
   value: string | null | undefined;
   onChange: (lookId: string | null) => void;
   /** Optional fallback label for the "no look picked" entry. */
@@ -49,6 +53,7 @@ interface Props {
 export function AvatarLookPicker({
   avatarId,
   looks,
+  pendingLooks = [],
   value,
   onChange,
   defaultLabel = "Avatar default",
@@ -186,6 +191,16 @@ export function AvatarLookPicker({
             }
           />
         ))}
+        {/* Scenes still generating — a spinner tile each so the user sees
+            something is happening (generation takes 30–60s). */}
+        {pendingLooks.map((look) => (
+          <PendingChip key={look.id} label={look.name || "New scene"} size={size} />
+        ))}
+        {/* The create request itself is in flight (before the pending row
+            has come back from the refetch). */}
+        {createMutation.isPending && (
+          <PendingChip label="Starting…" size={size} />
+        )}
         <button
           type="button"
           onClick={() => setGenOpen((v) => !v)}
@@ -298,6 +313,28 @@ export function AvatarLookPicker({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Square placeholder tile for a scene that's still generating. Matches
+ *  LookChip's photo-frame dimensions so the strip doesn't reflow when the
+ *  real thumbnail replaces it. */
+function PendingChip({ label, size }: { label: string; size: "sm" | "md" }) {
+  const dim = size === "md" ? "h-52 w-52" : "h-36 w-36";
+  return (
+    <div
+      className={cn(
+        "shrink-0 rounded-md border border-white/10 bg-white/[0.03] flex flex-col items-center justify-center gap-1.5 text-white/45",
+        dim,
+      )}
+      title={`${label} — generating (usually 30–60s)`}
+    >
+      <Loader2 className="w-5 h-5 animate-spin text-accent/70" />
+      <span className="text-[9px] px-1.5 text-center leading-tight max-w-full truncate">
+        {label}
+      </span>
+      <span className="text-[8px] text-white/30">generating…</span>
     </div>
   );
 }

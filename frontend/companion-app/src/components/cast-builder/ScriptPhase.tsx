@@ -355,12 +355,26 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     queryKey: ["avatar-looks-all", cast.avatar_id],
     queryFn: () => avatarLooksApi.list(cast.avatar_id),
     enabled: !!cast.avatar_id,
+    // Poll while any look is still generating so a freshly-created scene
+    // (and its spinner tile) resolves to the real thumbnail on its own.
+    refetchInterval: (query) => {
+      const raw = query.state.data;
+      const list: AvatarLook[] = Array.isArray(raw)
+        ? (raw as AvatarLook[])
+        : (((raw as { looks?: AvatarLook[] } | undefined)?.looks) ?? []);
+      return list.some((l) => l.status !== "ready" && l.status !== "failed")
+        ? 5000
+        : false;
+    },
   });
   // Backend returns { looks: [...] } — unwrap defensively.
   const allLooks: AvatarLook[] = Array.isArray(allLooksRaw)
     ? (allLooksRaw as AvatarLook[])
     : (((allLooksRaw as { looks?: AvatarLook[] } | undefined)?.looks) ?? []);
   const backgroundLooks = allLooks.filter(l => l.look_type === "background" && l.status === "ready");
+  const pendingBackgroundLooks = allLooks.filter(
+    l => l.look_type === "background" && l.status !== "ready" && l.status !== "failed",
+  );
   const bodyMotionLooks = allLooks.filter(l => l.look_type === "body_motion" && l.status === "ready");
 
   // Pull the avatar so each block's visual preview can show the avatar's
@@ -1552,6 +1566,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                             <AvatarLookPicker
                               avatarId={cast.avatar_id}
                               looks={backgroundLooks}
+                              pendingLooks={pendingBackgroundLooks}
                               value={block.avatar_look_id || null}
                               onChange={(lookId) => handleChangeBackground(block.id, lookId || "")}
                               defaultLabel="Cast scene"
