@@ -1,13 +1,38 @@
-"""Seed R2 with placeholder ambience-bed loops.
+"""Seed R2 with ambience-bed loops.
 
-Run once per environment:
+Two modes:
+
+  # 1. Synthetic stand-ins (filtered noise) — exercises the mixing path only.
   docker compose exec orchestrator python scripts/seed_ambience_library.py
 
-These are ffmpeg-synthesised stand-ins (filtered noise) so the mixing path can
-be exercised end to end. Replace them with licensed seamless loop recordings
-for production — the names + lengths are the contract in
-``services/ambience_library`` (AMBIENCE_CATALOG).
+  # 2. Real recordings — point at a folder of licensed files. For each catalog
+  #    name it uploads <name>.<ext> from that folder (any of
+  #    wav/mp3/m4a/aac/ogg/opus/flac), transcoded to 44.1 kHz stereo WAV.
+  #    Names with no file fall back to a synthetic stand-in.
+  docker compose cp ./sounds orchestrator:/tmp/amb_src
+  docker compose exec orchestrator python scripts/seed_ambience_library.py \
+      --from-dir /tmp/amb_src --start 5 --max-len 45 --loop-xfade 2 --force
+
+Flags:
+  --from-dir PATH   folder of real files (or env AMBIENCE_SRC_DIR)
+  --start SEC       skip the first SEC seconds of each real clip (default 0) —
+                    drops intros / fade-ins
+  --max-len SEC     trim each real clip to SEC seconds (default 0 = keep whole).
+                    Not required: the renderer loops + trims to each scene, so a
+                    long file just never repeats. Use this only to keep R2 small.
+  --loop-xfade SEC  overlap the (trimmed) clip's tail onto its head by SEC
+                    seconds so it loops seamlessly under -stream_loop (0 = off).
+                    Pointless on a file longer than any scene — it never loops.
+  --force           re-upload even if the R2 object already exists
+
+The names + intent are the contract in ``services/ambience_library``
+(AMBIENCE_CATALOG). R2 key per entry: ``ambience/<name>.wav``.
+
+Where to get real files: freesound.org (filter to CC0), Pixabay Audio,
+Zapsplat, or a paid pack (Epidemic Sound / Artlist). Length doesn't matter —
+grab whatever sounds right; --start/--max-len/--loop-xfade shape it here.
 """
+import argparse
 import asyncio
 import os
 import subprocess
@@ -19,6 +44,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.r2_storage import get_r2_storage_service
 from services.ambience_library import AMBIENCE_CATALOG
+
+_SRC_EXTS = (".wav", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac")
 
 
 # lavfi source graph per catalog name — a rough sonic stand-in, NOT the real
@@ -38,65 +65,171 @@ _LAVFI_BY_NAME: dict[str, str] = {
 _DEFAULT_LAVFI = "anoisesrc=c=brown:a=0.08,lowpass=f=800"
 
 
-def _placeholder_cmd(name: str, duration_s: float) -> list[str]:
+def _synthesize(name: str, duration_s: float, out_path: str) -> bool:
     src = _LAVFI_BY_NAME.get(name, _DEFAULT_LAVFI)
-    # Short fades top & tail so a naive loop doesn't click at the seam.
-    # anoisesrc runs forever; -t bounds the output (embedding :duration= in the
-    # lavfi string attaches it to the trailing filter, which has no such option).
     fade_st = max(duration_s - 0.3, 0.0)
-    return [
+    cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", src,
         "-af", f"afade=t=in:st=0:d=0.3,afade=t=out:st={fade_st}:d=0.3",
         "-t", f"{duration_s}",
-        "-ar", "44100", "-ac", "2",
+        "-ar", "44100", "-ac", "2", out_path,
     ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  FAIL {name} (synth): {r.stderr[-200:]}")
+        return False
+    return True
 
 
-AMBIENCE_SPECS = [
-    {"name": e.name, "cmd": _placeholder_cmd(e.name, e.loop_s)}
-    for e in AMBIENCE_CATALOG.values()
-]
+def _probe_duration(path: str) -> float:
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", path],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(r.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _run(cmd: list[str]) -> tuple[bool, str]:
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.returncode == 0, (r.stderr or "")[-200:]
+
+
+def _prepare_real(
+    src_path: str, out_path: str, *,
+    start: float = 0.0, max_len: float = 0.0, loop_xfade: float = 0.0,
+) -> bool:
+    """Turn a real recording into a 44.1 kHz stereo WAV bed:
+      1. optional trim — skip ``start`` s, keep ``max_len`` s
+      2. optional seamless loop — overlap the tail onto the head by
+         ``loop_xfade`` s so -stream_loop -1 doesn't click
+    Steps that aren't requested are skipped."""
+    workdir = os.path.dirname(out_path)
+    stage = os.path.join(workdir, "_stage_" + os.path.basename(out_path))
+
+    # 1. Trim / transcode to the staging WAV.
+    trim_cmd = ["ffmpeg", "-y"]
+    if start > 0:
+        trim_cmd += ["-ss", f"{start:.3f}"]
+    trim_cmd += ["-i", src_path]
+    if max_len > 0:
+        trim_cmd += ["-t", f"{max_len:.3f}"]
+    trim_cmd += ["-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", stage]
+    ok, err = _run(trim_cmd)
+    if not ok:
+        print(f"  FAIL trim/transcode: {err}")
+        return False
+
+    # 2. Seamless-loop crossfade, if asked and the clip is long enough.
+    if loop_xfade > 0:
+        dur = _probe_duration(stage)
+        x = min(loop_xfade, max(0.0, dur / 2.0 - 0.1))
+        if x > 0.05:
+            tail = dur - x
+            fc = (
+                f"[0:a]atrim=0:{tail:.3f},asetpts=PTS-STARTPTS[b];"
+                f"[0:a]atrim={tail:.3f},asetpts=PTS-STARTPTS[t];"
+                f"[t][b]acrossfade=d={x:.3f}:c1=tri:c2=tri[o]"
+            )
+            ok, err = _run([
+                "ffmpeg", "-y", "-i", stage,
+                "-filter_complex", fc, "-map", "[o]",
+                "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", out_path,
+            ])
+            if ok:
+                os.remove(stage)
+                return True
+            print(f"  warn loop-xfade failed, using un-looped clip: {err}")
+
+    os.replace(stage, out_path)
+    return True
+
+
+def _find_source(src_dir: str, name: str) -> str | None:
+    if not src_dir:
+        return None
+    for ext in _SRC_EXTS:
+        p = os.path.join(src_dir, f"{name}{ext}")
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 async def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--from-dir", default=os.getenv("AMBIENCE_SRC_DIR", ""))
+    ap.add_argument("--start", type=float, default=float(os.getenv("AMBIENCE_START", "0") or 0))
+    ap.add_argument("--max-len", type=float, default=float(os.getenv("AMBIENCE_MAX_LEN", "0") or 0))
+    ap.add_argument("--loop-xfade", type=float, default=float(os.getenv("AMBIENCE_LOOP_XFADE", "0") or 0))
+    ap.add_argument("--force", action="store_true",
+                    default=os.getenv("SEED_FORCE", "").strip().lower() in {"1", "true", "yes"})
+    args = ap.parse_args()
+
+    src_dir = args.from_dir.strip()
+    if src_dir and not os.path.isdir(src_dir):
+        print(f"--from-dir {src_dir!r} is not a directory")
+        sys.exit(1)
+    if src_dir:
+        print(
+            f"Real sources from: {src_dir} "
+            f"(start={args.start}s max-len={args.max_len or 'full'}s "
+            f"loop-xfade={args.loop_xfade}s)"
+        )
+
     r2 = get_r2_storage_service()
-    uploaded = 0
+    uploaded_real = 0
+    uploaded_synth = 0
     skipped = 0
-    # Re-seed over existing objects with --force / SEED_FORCE=1 (used when the
-    # placeholder recipe changes; harmless once real files are in place — just
-    # don't pass it then).
-    force = "--force" in sys.argv or os.getenv("SEED_FORCE", "").strip().lower() in {"1", "true", "yes"}
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        for spec in AMBIENCE_SPECS:
-            name = spec["name"]
+        for entry in AMBIENCE_CATALOG.values():
+            name = entry.name
             key = f"ambience/{name}.wav"
-            local_path = os.path.join(tmpdir, f"{name}.wav")
+            out_path = os.path.join(tmpdir, f"{name}.wav")
 
-            if not force:
+            if not args.force:
                 try:
-                    existing = await r2.head_object(key)
-                    if existing:
+                    if await r2.head_object(key):
                         print(f"  skip {name} (already exists)")
                         skipped += 1
                         continue
                 except Exception:
                     pass
 
-            cmd = spec["cmd"] + [local_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"  FAIL {name}: {result.stderr[-200:]}")
-                continue
+            real = _find_source(src_dir, name)
+            if real:
+                if not _prepare_real(
+                    real, out_path,
+                    start=args.start, max_len=args.max_len, loop_xfade=args.loop_xfade,
+                ):
+                    continue
+                kind = "real"
+            else:
+                if not _synthesize(name, entry.loop_s, out_path):
+                    continue
+                kind = "synth"
 
-            with open(local_path, "rb") as f:
+            with open(out_path, "rb") as f:
                 data = f.read()
             await r2.upload_bytes(data, key, "audio/wav")
-            print(f"  ok   {name} ({len(data)} bytes)")
-            uploaded += 1
+            print(f"  ok   {name:<13} [{kind}] ({len(data)} bytes)")
+            if kind == "real":
+                uploaded_real += 1
+            else:
+                uploaded_synth += 1
 
-    print(f"\nDone: {uploaded} uploaded, {skipped} skipped")
+    print(f"\nDone: {uploaded_real} real, {uploaded_synth} synthetic, {skipped} skipped")
+    if uploaded_synth and src_dir:
+        missing = [
+            e.name for e in AMBIENCE_CATALOG.values()
+            if not _find_source(src_dir, e.name)
+        ]
+        print(f"No real file found for: {', '.join(missing)} "
+              f"(expected <name>{{{','.join(_SRC_EXTS)}}} in {src_dir})")
 
 
 if __name__ == "__main__":
