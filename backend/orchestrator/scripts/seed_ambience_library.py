@@ -99,6 +99,17 @@ def _run(cmd: list[str]) -> tuple[bool, str]:
     return r.returncode == 0, (r.stderr or "")[-200:]
 
 
+def _looks_like_audio(path: str, *, min_s: float = 0.8) -> bool:
+    """Guard against ffmpeg exiting 0 while writing an empty file (older
+    builds do this on a filtergraph they can't run)."""
+    try:
+        if os.path.getsize(path) < 2048:
+            return False
+    except OSError:
+        return False
+    return _probe_duration(path) >= min_s
+
+
 def _prepare_real(
     src_path: str, out_path: str, *,
     start: float = 0.0, max_len: float = 0.0, loop_xfade: float = 0.0,
@@ -120,8 +131,8 @@ def _prepare_real(
         trim_cmd += ["-t", f"{max_len:.3f}"]
     trim_cmd += ["-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", stage]
     ok, err = _run(trim_cmd)
-    if not ok:
-        print(f"  FAIL trim/transcode: {err}")
+    if not ok or not _looks_like_audio(stage):
+        print(f"  FAIL trim/transcode: {err or 'empty output'}")
         return False
 
     # 2. Seamless-loop crossfade, if asked and the clip is long enough.
@@ -130,9 +141,13 @@ def _prepare_real(
         x = min(loop_xfade, max(0.0, dur / 2.0 - 0.1))
         if x > 0.05:
             tail = dur - x
+            # asplit is REQUIRED — feeding [0:a] into two chains only
+            # auto-splits on newer ffmpeg; older builds silently produce an
+            # empty file (exit 0). c1/c2=tri keeps constant power at the seam.
             fc = (
-                f"[0:a]atrim=0:{tail:.3f},asetpts=PTS-STARTPTS[b];"
-                f"[0:a]atrim={tail:.3f},asetpts=PTS-STARTPTS[t];"
+                f"[0:a]asplit=2[a0][a1];"
+                f"[a0]atrim=start=0:end={tail:.3f},asetpts=PTS-STARTPTS[b];"
+                f"[a1]atrim=start={tail:.3f},asetpts=PTS-STARTPTS[t];"
                 f"[t][b]acrossfade=d={x:.3f}:c1=tri:c2=tri[o]"
             )
             ok, err = _run([
@@ -140,13 +155,13 @@ def _prepare_real(
                 "-filter_complex", fc, "-map", "[o]",
                 "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", out_path,
             ])
-            if ok:
+            if ok and _looks_like_audio(out_path):
                 os.remove(stage)
                 return True
-            print(f"  warn loop-xfade failed, using un-looped clip: {err}")
+            print(f"  warn loop-xfade failed, using un-looped clip: {err or 'empty output'}")
 
     os.replace(stage, out_path)
-    return True
+    return _looks_like_audio(out_path)
 
 
 def _find_source(src_dir: str, name: str) -> str | None:
