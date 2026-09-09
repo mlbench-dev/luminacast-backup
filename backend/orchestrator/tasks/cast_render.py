@@ -1254,12 +1254,30 @@ async def _build_ambience_plan(
 
     # Resolve each block's scene environment (Block -> AvatarLook.environment).
     from models.block import Block
+    from models.cast import Cast
     from models.avatar_look import AvatarLook, DEFAULT_ENVIRONMENT
     from sqlalchemy import select as _sa_select
 
     block_env: dict[str, str] = {}
     try:
         async with factory() as _sess:
+            # Fallback for blocks with no explicit scene (avatar_look_id NULL —
+            # the common case when the cast never picked a "Cast scene"): the
+            # cast's avatar default look, mirroring the render's own look
+            # resolution (block.avatar_look_id -> avatar is_default). Without
+            # this every default-scene cast resolved to studio and got no bed.
+            default_env = DEFAULT_ENVIRONMENT
+            _cast = await _sess.get(Cast, cast_id)
+            if _cast is not None and getattr(_cast, "avatar_id", None):
+                _def_env = (await _sess.execute(
+                    _sa_select(AvatarLook.environment)
+                    .where(AvatarLook.avatar_id == _cast.avatar_id)
+                    .where(AvatarLook.is_default.is_(True))
+                    .limit(1)
+                )).scalars().first()
+                if _def_env:
+                    default_env = _def_env
+
             brows = (await _sess.execute(
                 _sa_select(Block.id, Block.avatar_look_id).where(
                     Block.id.in_(list(spans.keys()))
@@ -1275,9 +1293,7 @@ async def _build_ambience_plan(
                 )).all()
                 look_env = {lid: (env or DEFAULT_ENVIRONMENT) for lid, env in lrows}
             for bid, lid in brows:
-                block_env[bid] = (
-                    look_env.get(lid, DEFAULT_ENVIRONMENT) if lid else DEFAULT_ENVIRONMENT
-                )
+                block_env[bid] = look_env.get(lid, default_env) if lid else default_env
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
         logger.warning(
