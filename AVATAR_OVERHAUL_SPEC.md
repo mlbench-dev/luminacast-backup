@@ -61,6 +61,7 @@ progress_step = Column(String, nullable=True)  # Current processing step descrip
 progress_percent = Column(Float, default=0)  # 0-100 progress
 ```
 
+
 #### `backend/orchestrator/routers/avatar.py` — EXPAND ENDPOINTS
 1. Update `GenerateDigitalRequest` to accept all new fields
 2. Add `GET /api/avatar/list` to list all user avatars
