@@ -174,10 +174,19 @@ _VIDEO_PROMPTS = {
 }
 
 _KLING_MODELS = {
-    "pro": "fal-ai/kling-video/v1.5/pro/image-to-video",
-    "fast": "fal-ai/kling-video/v1.6/standard/image-to-video",
+    # Override per tier without a deploy — e.g. KLING_I2V_MODEL_PRO=
+    # fal-ai/kling-video/v2.5-turbo/pro/image-to-video for smoother motion.
+    # Roll back instantly if a new version rejects our arg shape.
+    "pro": os.getenv("KLING_I2V_MODEL_PRO", "").strip()
+        or "fal-ai/kling-video/v1.5/pro/image-to-video",
+    "fast": os.getenv("KLING_I2V_MODEL_FAST", "").strip()
+        or "fal-ai/kling-video/v1.6/standard/image-to-video",
 }
-_KLING_SUPPORTS_ASPECT_RATIO = {"pro"}
+# aspect_ratio is a v1.x arg; v2.x image-to-video derives it from the input
+# image. Only send it while the pinned model still accepts it.
+_KLING_SUPPORTS_ASPECT_RATIO = (
+    {"pro"} if "v1." in _KLING_MODELS["pro"] else set()
+)
 _KLING_CFG_SCALE = {"fast": 0.8}
 
 

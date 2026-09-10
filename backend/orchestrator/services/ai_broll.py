@@ -22,9 +22,11 @@ import httpx
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
-# Kling text-to-video on fal. Overridable so the model can be swapped (or
-# pointed at a cheaper tier — v1.6/standard/text-to-video) without a deploy.
-_DEFAULT_MODEL = "fal-ai/kling-video/v2.1/master/text-to-video"
+# Kling text-to-video on fal. v2.5-turbo/pro = smoother, less-warpy motion
+# than 2.1/1.6. Overridable (AI_BROLL_MODEL) so it can be swapped for a
+# cheaper tier — fal-ai/kling-video/v1.6/standard/text-to-video — or rolled
+# back without a deploy.
+_DEFAULT_MODEL = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 
 # Every current in-app layout composites the b-roll into a 9:16 frame (full,
 # or behind a corner avatar), so 9:16 is always right. Kept as a function so
@@ -128,6 +130,8 @@ async def generate_scene_broll_video(
     except Exception as e:  # noqa: BLE001 — any fal/network error → stock fallback
         raise AiBrollError(f"scene b-roll generation failed: {str(e)[:200]}") from e
 
+    # Kling 2.5-turbo/pro is priced per second of output (~$0.07/s).
     from services.cost_rates import COST_RATES
-    cost = COST_RATES.get("fal/kling_2.1_master_t2v", 0.28) * (2 if dur == "10" else 1)
+    per_s = COST_RATES.get("fal/kling_2.5_turbo_pro", 0.07)
+    cost = per_s * (10.0 if dur == "10" else 5.0)
     return public_url, cost

@@ -34,6 +34,25 @@ from services.cast_ffmpeg_composer import (
 )
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+# One gentle colour treatment on the FINAL composited picture — before
+# captions burn in — so the avatar bake, AI b-roll and Pexels stock (each
+# graded differently at source) read as one video instead of three clips
+# taped together. Deliberately subtle; over-grading looks worse than none.
+# Off by default. Tune the exact look with COMPOSE_COLOR_GRADE_FILTER (any
+# valid ffmpeg -vf chain) without a redeploy.
+_DEFAULT_COLOR_GRADE = "eq=contrast=1.045:saturation=1.06:gamma=0.985,colorbalance=rm=0.02:bm=-0.02"
+
+
+def color_grade_filter() -> str:
+    """The final-picture grade filter chain, or "" when disabled."""
+    if os.environ.get("COMPOSE_COLOR_GRADE_ENABLED", "").strip().lower() not in _TRUTHY:
+        return ""
+    override = os.environ.get("COMPOSE_COLOR_GRADE_FILTER", "").strip()
+    return override or _DEFAULT_COLOR_GRADE
+
+
 def _drawtext_color(value, default: str) -> str:
     """Convert a caption color to FFmpeg drawtext's accepted format.
 
@@ -1419,6 +1438,16 @@ def _run_ffmpeg_compose(req):
             overlay_elements, current_label
         )
         filter_parts.extend(overlay_parts)
+
+        # Unify the look across avatar bake / AI b-roll / Pexels stock (each
+        # graded differently at source) — one gentle pass on the whole
+        # picture, BEFORE captions burn in so the text stays untinted. Off
+        # unless COMPOSE_COLOR_GRADE_ENABLED; tune via COMPOSE_COLOR_GRADE_FILTER.
+        _grade = color_grade_filter()
+        if _grade:
+            filter_parts.append(f"{current_label}{_grade}[graded]")
+            current_label = "[graded]"
+            logger.info("compose %s: applied colour grade — %s", render_id, _grade)
 
         # Captions used to burn in as one plain .srt file with a single
         # HARDCODED force_style (DejaVu Sans, white, fixed size/position)
