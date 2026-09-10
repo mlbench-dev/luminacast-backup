@@ -4,8 +4,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/apiClient";
 
-type ModelKind = "image" | "video";
-type ModelInput = "text" | "image" | "text+image";
+type ModelKind = "image" | "video" | "talking_head";
+type ModelInput = "text" | "image" | "text+image" | "image+audio";
 
 interface PModel {
   id: string;
@@ -36,12 +36,14 @@ export function PlaygroundPage() {
   const [models, setModels] = useState<PModel[]>([]);
   const [prompt, setPrompt] = useState("");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState<"" | "image" | "audio">("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Record<string, RunResult>>({});
   const [running, setRunning] = useState(false);
   const pollers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
   const fileRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     api.get("/playground/models").then((r) => setModels(r.data.models || []));
@@ -52,9 +54,14 @@ export function PlaygroundPage() {
 
   const imageModels = models.filter((m) => m.kind === "image");
   const videoModels = models.filter((m) => m.kind === "video");
+  const talkingHeadModels = models.filter((m) => m.kind === "talking_head");
 
   const needsImage = (m: PModel) =>
-    m.input === "image" || (m.input === "text+image" && !m.image_optional);
+    m.input === "image" || m.input === "image+audio" ||
+    (m.input === "text+image" && !m.image_optional);
+  const needsAudio = (m: PModel) => m.input === "image+audio";
+  const blocked = (m: PModel) =>
+    (needsImage(m) && !imageUrl) || (needsAudio(m) && !audioUrl);
 
   const toggle = (id: string) =>
     setSelected((s) => {
@@ -67,7 +74,7 @@ export function PlaygroundPage() {
     setSelected((s) => {
       const n = new Set(s);
       models.filter((m) => m.kind === kind).forEach((m) => {
-        if (needsImage(m) && !imageUrl) return;
+        if (blocked(m)) return;
         n.add(m.id);
       });
       return n;
@@ -81,19 +88,19 @@ export function PlaygroundPage() {
     [models, selected],
   );
 
-  const onUpload = useCallback(async (f: File) => {
-    setUploading(true);
+  const onUpload = useCallback(async (f: File, kind: "image" | "audio") => {
+    setUploading(kind);
     try {
       const fd = new FormData();
       fd.append("file", f);
-      const r = await api.post("/playground/upload", fd, {
+      const r = await api.post(`/playground/upload?kind=${kind}`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      setImageUrl(r.data.url);
+      (kind === "image" ? setImageUrl : setAudioUrl)(r.data.url);
     } catch (e: any) {
       alert("Upload failed: " + (e?.response?.data?.detail || e.message));
     } finally {
-      setUploading(false);
+      setUploading("");
     }
   }, []);
 
@@ -134,7 +141,7 @@ export function PlaygroundPage() {
   }, []);
 
   const run = useCallback(async () => {
-    const chosen = models.filter((m) => selected.has(m.id));
+    const chosen = models.filter((m) => selected.has(m.id) && !blocked(m));
     if (!chosen.length) return;
     setRunning(true);
     // clear old pollers/results for the chosen set
@@ -159,6 +166,7 @@ export function PlaygroundPage() {
             model_id: m.id,
             prompt: prompt.trim() || undefined,
             image_url: imageUrl || undefined,
+            audio_url: audioUrl || undefined,
           });
           pollOne(m.id, r.data.status_url, r.data.response_url);
         } catch (e: any) {
@@ -170,7 +178,7 @@ export function PlaygroundPage() {
       }),
     );
     setRunning(false);
-  }, [models, selected, prompt, imageUrl, pollOne]);
+  }, [models, selected, prompt, imageUrl, audioUrl, pollOne]);
 
   const anyPending = Object.values(results).some(
     (r) => r.state === "queued" || r.state === "running",
@@ -201,19 +209,42 @@ export function PlaygroundPage() {
             type="file"
             accept="image/*"
             className="hidden"
-            onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
+            onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0], "image")}
           />
           <button
             onClick={() => fileRef.current?.click()}
-            disabled={uploading}
+            disabled={!!uploading}
             className="text-xs px-3 py-1.5 rounded-md bg-white/[0.06] hover:bg-white/[0.12] disabled:opacity-40"
           >
-            {uploading ? "Uploading…" : imageUrl ? "Replace image" : "Add source image (optional)"}
+            {uploading === "image" ? "Uploading…" : imageUrl ? "Replace image" : "Add source image"}
           </button>
           {imageUrl && (
             <div className="flex items-center gap-2">
               <img src={imageUrl} alt="" className="h-12 w-12 rounded object-cover border border-white/10" />
               <button onClick={() => setImageUrl(null)} className="text-[11px] text-white/40 hover:text-white/70">
+                remove
+              </button>
+            </div>
+          )}
+
+          <input
+            ref={audioRef}
+            type="file"
+            accept="audio/*"
+            className="hidden"
+            onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0], "audio")}
+          />
+          <button
+            onClick={() => audioRef.current?.click()}
+            disabled={!!uploading}
+            className="text-xs px-3 py-1.5 rounded-md bg-white/[0.06] hover:bg-white/[0.12] disabled:opacity-40"
+          >
+            {uploading === "audio" ? "Uploading…" : audioUrl ? "Replace audio" : "Add audio (for talking head)"}
+          </button>
+          {audioUrl && (
+            <div className="flex items-center gap-2">
+              <audio src={audioUrl} controls className="h-8 w-40" />
+              <button onClick={() => setAudioUrl(null)} className="text-[11px] text-white/40 hover:text-white/70">
                 remove
               </button>
             </div>
@@ -225,6 +256,7 @@ export function PlaygroundPage() {
       {[
         { kind: "image" as const, label: "Image models", list: imageModels },
         { kind: "video" as const, label: "Video models", list: videoModels },
+        { kind: "talking_head" as const, label: "Talking head (image + audio → lip-sync)", list: talkingHeadModels },
       ].map(({ kind, label, list }) => (
         <div key={kind} className="space-y-2">
           <div className="flex items-center gap-3">
@@ -235,7 +267,7 @@ export function PlaygroundPage() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {list.map((m) => {
-              const disabled = needsImage(m) && !imageUrl;
+              const disabled = blocked(m);
               return (
                 <label
                   key={m.id}
@@ -258,7 +290,12 @@ export function PlaygroundPage() {
                     <div className="text-xs font-medium truncate">{m.label}</div>
                     <div className="text-[10px] text-white/40">
                       {m.provider} · ~${m.est_cost_usd.toFixed(2)} · {m.input}
-                      {disabled && " · needs image"}
+                      {disabled &&
+                        (needsAudio(m) && !audioUrl
+                          ? needsImage(m) && !imageUrl
+                            ? " · needs image + audio"
+                            : " · needs audio"
+                          : " · needs image")}
                     </div>
                     <div className="text-[10px] text-white/30 leading-snug mt-0.5">{m.note}</div>
                   </div>
@@ -301,7 +338,7 @@ export function PlaygroundPage() {
                   </div>
                   <div className="aspect-[9/16] bg-black flex items-center justify-center">
                     {r.state === "done" && r.url ? (
-                      m.kind === "video" ? (
+                      m.kind !== "image" ? (
                         <video src={r.url} controls loop className="w-full h-full object-contain" />
                       ) : (
                         <img src={r.url} alt="" className="w-full h-full object-contain" />

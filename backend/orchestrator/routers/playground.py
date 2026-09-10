@@ -65,7 +65,13 @@ def _img_flux_dev(p, img):
 
 
 def _img_nbp(p, img):
-    return {"prompt": p, "aspect_ratio": "9:16", "resolution": "2K", "output_format": "jpeg"}
+    # NBP takes optional reference images. When one is uploaded, pass it —
+    # Gemini refuses far less when it has a concrete reference than on a bare
+    # text prompt (esp. brand / product / "promo" prompts).
+    a = {"prompt": p, "aspect_ratio": "9:16", "resolution": "2K", "output_format": "jpeg"}
+    if img:
+        a["image_urls"] = [img]
+    return a
 
 
 def _img_nbp_edit(p, img):
@@ -85,6 +91,22 @@ def _vid_kling_t2v(p, img):
 
 def _vid_kling_i2v(p, img):
     return {"prompt": p, "image_url": img, "duration": "5"}
+
+
+# talking-head builders take (prompt, image_url, audio_url)
+def _th_hallo(p, img, aud):
+    return {"source_image_url": img, "audio_url": aud}
+
+
+def _th_infinitetalk(p, img, aud):
+    a = {"image_url": img, "audio_url": aud}
+    if p:
+        a["prompt"] = p
+    return a
+
+
+def _th_sadtalker(p, img, aud):
+    return {"source_image_url": img, "driven_audio_url": aud}
 
 
 def _vid_veo(p, img):
@@ -133,6 +155,16 @@ _MODELS: list[dict] = [
     {"id": "veo3", "label": "Google Veo 3", "provider": "Google",
      "kind": "video", "input": "text+image", "image_optional": True, "endpoint": "fal-ai/veo3",
      "est_cost_usd": 2.50, "build": _vid_veo, "note": "Flagship. 8s, 9:16, native audio. Slow + pricey."},
+    # ── talking head (image + audio -> lip-synced video) ──
+    {"id": "hallo", "label": "Hallo — portrait lip-sync", "provider": "fal",
+     "kind": "talking_head", "input": "image+audio", "endpoint": "fal-ai/hallo",
+     "est_cost_usd": 0.15, "build": _th_hallo, "note": "The app's tier-3 talking-head fallback. Portrait only, minimal body motion."},
+    {"id": "infinitetalk", "label": "Wan InfiniteTalk", "provider": "fal",
+     "kind": "talking_head", "input": "image+audio", "endpoint": "fal-ai/infinitetalk",
+     "est_cost_usd": 0.50, "build": _th_infinitetalk, "note": "Same family as the app's primary talking-head bake (runs on WaveSpeed there). Upper-body motion."},
+    {"id": "sadtalker", "label": "SadTalker", "provider": "fal",
+     "kind": "talking_head", "input": "image+audio", "endpoint": "fal-ai/sadtalker",
+     "est_cost_usd": 0.10, "build": _th_sadtalker, "note": "Classic, cheap, fast. Lower fidelity — a quality floor reference."},
 ]
 
 _BY_ID = {m["id"]: m for m in _MODELS}
@@ -175,18 +207,30 @@ async def list_models(user: User = Depends(require_admin)):
     }
 
 
+_CT = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+}
+
+
 @router.post("/upload")
-async def upload_image(file: UploadFile = File(...), user: User = Depends(require_admin)):
+async def upload_asset(
+    file: UploadFile = File(...),
+    kind: str = "image",
+    user: User = Depends(require_admin),
+):
+    """Upload an image or audio clip for a playground run. ?kind=image|audio."""
     data = await file.read()
-    if len(data) > 20 * 1024 * 1024:
-        raise HTTPException(400, "Image too large (20 MB max)")
-    ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
-    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
-        ext = ".jpg"
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(400, "File too large (25 MB max)")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    allowed = (".mp3", ".wav", ".m4a", ".aac", ".ogg") if kind == "audio" else (".jpg", ".jpeg", ".png", ".webp")
+    if ext not in allowed:
+        ext = ".mp3" if kind == "audio" else ".jpg"
     key = f"playground/{user.id}/{uuid.uuid4().hex[:16]}{ext}"
     r2 = get_r2_storage_service()
-    ct = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/jpeg"
-    await r2.upload_bytes(data, key, ct)
+    await r2.upload_bytes(data, key, _CT.get(ext, "application/octet-stream"))
     return {"url": r2.get_public_url(key)}
 
 
@@ -194,6 +238,7 @@ class RunRequest(BaseModel):
     model_id: str
     prompt: Optional[str] = None
     image_url: Optional[str] = None
+    audio_url: Optional[str] = None
 
 
 @router.post("/run")
@@ -203,7 +248,11 @@ async def run_model(req: RunRequest, user: User = Depends(require_admin)):
         raise HTTPException(404, f"Unknown model {req.model_id}")
     prompt = (req.prompt or "").strip()
     img = (req.image_url or "").strip() or None
-    if m["input"] in ("text", "text+image") and not prompt:
+    aud = (req.audio_url or "").strip() or None
+    if m["input"] == "image+audio":
+        if not img or not aud:
+            raise HTTPException(400, "This model needs a face image AND an audio clip.")
+    elif m["input"] in ("text", "text+image") and not prompt:
         raise HTTPException(400, "This model needs a prompt.")
     # An image is required for: input="image", and input="text+image" on
     # image models (they EDIT a source) or Kling image-to-video. It's
@@ -214,7 +263,7 @@ async def run_model(req: RunRequest, user: User = Depends(require_admin)):
     if image_required and not img:
         raise HTTPException(400, "This model needs a source image.")
 
-    args = m["build"](prompt, img)
+    args = m["build"](prompt, img, aud) if m["input"] == "image+audio" else m["build"](prompt, img)
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(f"{_QUEUE_BASE}/{m['endpoint']}", headers=_auth(), json=args)
