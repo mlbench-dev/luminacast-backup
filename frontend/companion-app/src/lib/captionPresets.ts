@@ -326,6 +326,8 @@ export function presetPositionFraction(preset: CaptionPreset): number {
 			return 0.5;
 		case "bottom_center":
 		default:
-			return 0.78;
+			// Lifted from 0.78 — at 0.78 the rendered caption sits under the
+			// video player's control bar. 0.72 clears it while staying "lower third".
+			return 0.72;
 	}
 }

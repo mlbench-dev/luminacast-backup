@@ -1129,6 +1129,55 @@ async def _generate_look_async(
                         )
                         output_path = None
 
+                # Product-conditioned action frame (e.g. "avatar holds the
+                # product"): FLUX Kontext's image_prompt_url is a weak style
+                # hint and routinely hallucinates a generic stand-in prop
+                # (client complaint: end shot held the wrong graphics card,
+                # not the actual PC). Nano Banana Pro composites the EXACT
+                # reference object far better — give it the face + the product
+                # photo and force a faithful match. Flag-gated; falls through
+                # to FLUX on any failure.
+                if (
+                    output_path is None
+                    and use_product_ref
+                    and product_ref_url
+                    and look_type not in ("tryon", "body_motion")
+                ):
+                    try:
+                        from services.nano_banana import (
+                            nano_banana_pro_enabled, edit_image_run_async,
+                        )
+                        if nano_banana_pro_enabled():
+                            _nbp_prompt = (
+                                f"{full_prompt} "
+                                "The person is holding the EXACT product shown in the "
+                                "second reference image — match its shape, colour, "
+                                "materials, label text and proportions precisely. Do "
+                                "NOT substitute a generic or different product. Keep "
+                                "the same person, same face, same identity."
+                            )
+                            _nbp_url = await edit_image_run_async(
+                                _nbp_prompt, [face_url, product_ref_url],
+                                aspect_ratio="9:16",
+                            )
+                            output_path = os.path.join(tmpdir, "look.jpg")
+                            async with httpx.AsyncClient(timeout=90) as client:
+                                resp = await client.get(_nbp_url)
+                                resp.raise_for_status()
+                                with open(output_path, "wb") as f:
+                                    f.write(resp.content)
+                            logger.info(
+                                "Look %s: product-conditioned frame via Nano Banana Pro",
+                                look_id,
+                            )
+                    except Exception as _nbp_exc:
+                        sentry_sdk.capture_exception(_nbp_exc)
+                        logger.warning(
+                            "Look %s: NBP product frame failed (%s) — falling back to FLUX",
+                            look_id, _nbp_exc,
+                        )
+                        output_path = None
+
                 if output_path is None:
                     # Upload source image and run FLUX Kontext
                     if look_type == "body_motion":

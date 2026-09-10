@@ -573,7 +573,11 @@ def _resolve_caption_style(cap):
     (font / colors / stroke / box / x / y expressions).
     """
     font_path = _resolve_caption_font_file(cap.get("fontFamily") or "", 700)
-    font_size = int(cap.get("fontSize") or 42)
+    # Client feedback: captions read too small. Scale every caption up by
+    # CAPTION_FONT_SCALE (default 1.2 = +20%); set it to 1.0 to restore the
+    # authored size. Applies to existing casts too (render-time only).
+    _font_scale = _env_float_clamped("CAPTION_FONT_SCALE", 1.2, 0.5, 3.0)
+    font_size = max(1, int(round(int(cap.get("fontSize") or 44) * _font_scale)))
     font_color = _drawtext_color(cap.get("fontColor"), default="white")
     stroke_width = int(cap.get("strokeWidth") or 0)
     stroke_color = _drawtext_color(cap.get("strokeColor"), default="black")
@@ -592,14 +596,28 @@ def _resolve_caption_style(cap):
 
     # Vertical: positionY is a 0..1 fraction of canvas height from the top,
     # set by the caption preset (editorStarterMapping.ts presetPositionFraction).
-    # Falls back to a fixed bottom margin for legacy items.
+    # Falls back to a bottom margin for legacy items.
+    #
+    # Client feedback: bottom captions sit low enough that the video player's
+    # control bar covers them. Lift a provided fraction by CAPTION_Y_LIFT_FRAC
+    # (default 0.06 of canvas height); for the no-preset fallback, sit
+    # CAPTION_BOTTOM_MARGIN_FRAC up from the bottom (default 0.14 ≈ clears a
+    # standard control bar) instead of a fixed 40 px. Set both to their old
+    # values (0.0 / ~0.021) to restore prior placement.
+    _y_lift = _env_float_clamped("CAPTION_Y_LIFT_FRAC", 0.06, 0.0, 0.5)
+    _bottom_margin_frac = _env_float_clamped("CAPTION_BOTTOM_MARGIN_FRAC", 0.14, 0.0, 0.5)
     position_y = cap.get("positionY")
     if isinstance(position_y, (int, float)):
-        position_y_frac = max(0.0, min(1.0, float(position_y)))
+        _py = float(position_y)
+        # Only lift lower-third / bottom captions (>= 0.6) — those are the
+        # ones the player's control bar covers. Centre / top are left alone.
+        if _py >= 0.6:
+            _py = max(0.0, _py - _y_lift)
+        position_y_frac = max(0.0, min(1.0, _py))
         y_expr = f"(h-text_h)*{position_y_frac:.4f}"
     else:
         position_y_frac = None
-        y_expr = "h-text_h-40"
+        y_expr = f"h-text_h-(h*{_bottom_margin_frac:.4f})"
 
     box_args = ""
     if cap.get("ffmpegBoxEnabled"):

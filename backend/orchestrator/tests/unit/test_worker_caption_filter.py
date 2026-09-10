@@ -98,7 +98,10 @@ def test_caption_filter_options_survive_after_textfile(tmp_path):
     part = parts[0]
     assert ":fontsize=" in part
     assert ":fix_bounds=1:" in part
-    assert "x=(w-text_w)/2:y=h-text_h-40:" in part
+    # No preset positionY → bottom-margin fallback. Margin is now a fraction
+    # of canvas height (CAPTION_BOTTOM_MARGIN_FRAC, default 0.14) so it clears
+    # the video player's control bar, instead of a fixed 40 px.
+    assert "x=(w-text_w)/2:y=h-text_h-(h*0." in part
     assert "enable='between(t,4.750,10.800)'" in part
 
 

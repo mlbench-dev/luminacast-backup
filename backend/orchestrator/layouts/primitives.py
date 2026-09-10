@@ -83,7 +83,9 @@ LEGACY_LAYOUT_ALIASES: dict[str, str] = {
     "fullscreen": LayoutPrimitive.FULLSCREEN.value,
     "split_h": LayoutPrimitive.SPLIT_H.value,
     "pip_quarter_bl": LayoutPrimitive.PIP_QUARTER_BL.value,
-    "pip_quarter_br": LayoutPrimitive.PIP_QUARTER_BR.value,
+    # The talking head always rides bottom-LEFT so it never collides with the
+    # bottom-right product card. Any bottom-right request is snapped left.
+    "pip_quarter_br": LayoutPrimitive.PIP_QUARTER_BL.value,
     # legacy fullscreen
     "full": LayoutPrimitive.FULLSCREEN.value,
     "full_avatar": LayoutPrimitive.FULLSCREEN.value,
@@ -96,7 +98,7 @@ LEGACY_LAYOUT_ALIASES: dict[str, str] = {
     "pip_small": LayoutPrimitive.PIP_QUARTER_BL.value,
     "pip_medium": LayoutPrimitive.PIP_QUARTER_BL.value,
     "pip_small_bl": LayoutPrimitive.PIP_QUARTER_BL.value,
-    "pip_small_br": LayoutPrimitive.PIP_QUARTER_BR.value,
+    "pip_small_br": LayoutPrimitive.PIP_QUARTER_BL.value,  # snapped left — see above
     # preserved no-face state
     "hidden": HIDDEN,
 }
@@ -114,7 +116,10 @@ def coerce_to_primitive(value: object) -> str:
     a Sentry capture (never raises).
     """
     if isinstance(value, LayoutPrimitive):
-        return value.value
+        # Route through the alias table too so PIP_QUARTER_BR (enum) is snapped
+        # to bottom-left like its string form — the talking head always rides
+        # left, clear of the bottom-right product card.
+        return LEGACY_LAYOUT_ALIASES.get(value.value, value.value)
     if isinstance(value, str):
         key = value.strip().lower()
         mapped = LEGACY_LAYOUT_ALIASES.get(key)

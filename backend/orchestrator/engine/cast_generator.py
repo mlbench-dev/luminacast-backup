@@ -1129,7 +1129,12 @@ def _scene_is_product_display(scene: dict) -> bool:
     block_type = (scene.get("block_type") or "").strip().lower()
     content_role = (scene.get("content_role") or "").strip().lower()
     layout = coerce_to_primitive(scene.get("pip_layout"))
+    # Either corner counts — the talking head now always rides bottom-LEFT
+    # (kept clear of the bottom-right product card), so BL is the common case;
+    # BR stays here for any legacy scene. The corner isn't the signal anyway,
+    # the role/category is.
     is_product_layout = layout in (
+        LayoutPrimitive.PIP_QUARTER_BL.value,
         LayoutPrimitive.PIP_QUARTER_BR.value,
         LayoutPrimitive.SPLIT_H.value,
     )
@@ -1163,7 +1168,7 @@ def _is_product_cast(content_type: dict | None, products: list[dict] | None) -> 
 
 def _build_injected_product_scene(products: list[dict] | None) -> dict:
     """A product-display beat: the product clip fills the full canvas with the
-    avatar riding as a small bottom-right PIP bubble, instead of a 50/50
+    avatar riding as a small bottom-left PIP bubble, instead of a 50/50
     split — a split crops tightly enough that neither the avatar's mic nor
     much of their expression stays in frame. The stock_media_query lets
     auto_populate resolve a placeholder clip when no product asset is
@@ -1179,7 +1184,7 @@ def _build_injected_product_scene(products: list[dict] | None) -> dict:
         "block_type": "product",
         "category": "pip_talking_head",
         "content_role": "product",
-        "pip_layout": LayoutPrimitive.PIP_QUARTER_BR.value,
+        "pip_layout": LayoutPrimitive.PIP_QUARTER_BL.value,
         "mood": "energetic",
         "energy_level": "medium",
         "transition_in": "cut",
@@ -1197,7 +1202,7 @@ def _build_injected_product_scene(products: list[dict] | None) -> dict:
 def _build_injected_broll_scene(products: list[dict] | None) -> dict:
     """A non-speaking b-roll/demo beat cutting to descriptive footage. The
     footage fills the full canvas with the avatar riding as a small
-    bottom-right PIP bubble (instead of a 50/50 split) so the demo clip gets
+    bottom-left PIP bubble (instead of a 50/50 split) so the demo clip gets
     full-frame attention; the resolver fills the content from
     stock_media_url (placeholder OK)."""
     from layouts.primitives import LayoutPrimitive
@@ -1209,7 +1214,7 @@ def _build_injected_broll_scene(products: list[dict] | None) -> dict:
     return {
         "block_type": "product_demo",
         "category": "stock_video",
-        "pip_layout": LayoutPrimitive.PIP_QUARTER_BR.value,
+        "pip_layout": LayoutPrimitive.PIP_QUARTER_BL.value,
         "mood": "informative",
         "energy_level": "medium",
         "transition_in": "cut",

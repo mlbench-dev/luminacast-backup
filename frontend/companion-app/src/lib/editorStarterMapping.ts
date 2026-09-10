@@ -1396,7 +1396,9 @@ export function castToEditorStarterTimeline(
         rotation: 0,
         fontFamily: "Inter",
         fontStyle: { variant: "normal", weight: "700" },
-        fontSize: 42,
+        // Bumped 42 → 50: client feedback that captions read too small. The
+        // renderer also applies CAPTION_FONT_SCALE on top of this.
+        fontSize: 50,
         lineHeight: 1.2,
         letterSpacing: 0,
         align: "center",
