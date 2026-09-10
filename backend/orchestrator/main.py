@@ -479,6 +479,7 @@ from routers import admin_costs as admin_costs_router
 from routers import usage as usage_router
 from routers import teams as teams_router
 from routers import billing as billing_router
+from routers import playground as playground_router
 
 app.include_router(auth.router)
 app.include_router(clone_pipeline_router.router)
@@ -512,6 +513,7 @@ app.include_router(admin_costs_router.router)
 app.include_router(usage_router.router)
 app.include_router(teams_router.router)
 app.include_router(billing_router.router)
+app.include_router(playground_router.router)
 
 # User action audit log read endpoints.
 from api import history as history_api
