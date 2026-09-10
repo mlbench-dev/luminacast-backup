@@ -271,7 +271,7 @@ async def duplicate_cast_as(
         # the copy too — otherwise the duplicate silently falls back to the
         # (freshly re-fetched) Pexels stock. It replaces stock on qualifying
         # blocks with product-only photo/video; stock stays as the fallback.
-        if getattr(new_cast, "broll_media_source", "stock") == "ai_generated":
+        if str(getattr(new_cast, "broll_media_source", "stock") or "").startswith("ai_generated"):
             try:
                 from tasks.product_broll_tasks import generate_ai_broll_for_cast_task
                 generate_ai_broll_for_cast_task.delay(new_cast_id)

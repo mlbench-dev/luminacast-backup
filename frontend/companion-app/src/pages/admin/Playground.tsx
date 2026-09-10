@@ -31,6 +31,9 @@ interface RunResult {
 }
 
 const POLL_MS = 3000;
+// Stop polling a card after this long so one slow model (Hallo…) can't lock
+// the Run button forever. The fal job keeps running server-side.
+const MAX_POLL_S = 1200;
 
 export function PlaygroundPage() {
   const [models, setModels] = useState<PModel[]>([]);
@@ -104,9 +107,23 @@ export function PlaygroundPage() {
     }
   }, []);
 
-  const pollOne = useCallback((id: string, status_url: string, response_url: string) => {
+  const pollOne = useCallback((id: string, status_url: string, response_url: string, startedAt: number) => {
     const tick = async () => {
       try {
+        if ((Date.now() - startedAt) / 1000 > MAX_POLL_S) {
+          clearInterval(pollers.current[id]);
+          delete pollers.current[id];
+          setResults((prev) => ({
+            ...prev,
+            [id]: {
+              ...(prev[id] || {}),
+              state: "error",
+              error: `Stopped polling after ${Math.round(MAX_POLL_S / 60)} min — the job may still finish on fal; check there.`,
+              elapsed: MAX_POLL_S,
+            },
+          }));
+          return;
+        }
         const r = await api.post("/playground/poll", { status_url, response_url });
         const d = r.data;
         setResults((prev) => {
@@ -151,10 +168,11 @@ export function PlaygroundPage() {
         delete pollers.current[m.id];
       }
     });
+    const startedAt = Date.now();
     setResults((prev) => {
       const n = { ...prev };
       chosen.forEach((m) => {
-        n[m.id] = { state: "queued", startedAt: Date.now(), cost: m.est_cost_usd };
+        n[m.id] = { state: "queued", startedAt, cost: m.est_cost_usd };
       });
       return n;
     });
@@ -168,7 +186,7 @@ export function PlaygroundPage() {
             image_url: imageUrl || undefined,
             audio_url: audioUrl || undefined,
           });
-          pollOne(m.id, r.data.status_url, r.data.response_url);
+          pollOne(m.id, r.data.status_url, r.data.response_url, startedAt);
         } catch (e: any) {
           setResults((prev) => ({
             ...prev,

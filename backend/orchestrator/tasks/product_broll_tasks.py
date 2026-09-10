@@ -75,8 +75,13 @@ async def _generate_async(cast_id: str) -> dict:
         cast = await db.get(Cast, cast_id)
         if cast is None:
             return {"error": "cast_not_found", "generated": 0}
-        if getattr(cast, "broll_media_source", "stock") != "ai_generated":
+        from services.ai_broll_models import parse_broll_source, endpoint_for, cost_for
+        _is_ai, _broll_model_id = parse_broll_source(getattr(cast, "broll_media_source", "stock"))
+        if not _is_ai:
             return {"skipped": "not_ai_generated", "generated": 0}
+        _t2v_endpoint = endpoint_for(_broll_model_id, "t2v")
+        _i2v_endpoint = endpoint_for(_broll_model_id, "i2v")
+        logger.info("AI b-roll for cast %s: model=%s", cast_id, _broll_model_id)
         owner_id = cast.user_id
 
         # Cast primary product — the fallback when a b-roll block has no
@@ -149,6 +154,7 @@ async def _generate_async(cast_id: str) -> dict:
                         owner_id=owner_id,
                         aspect_ratio=broll_aspect_ratio(blk),
                         duration_seconds=5,
+                        model_endpoint=_t2v_endpoint,
                     )
                     blk.image_asset_id = None
                     blk.video_asset_id = None
@@ -166,9 +172,10 @@ async def _generate_async(cast_id: str) -> dict:
                         from services.usage_tracker import log_usage
                         await log_usage(
                             db, user_id=owner_id, event_type="ai_broll_scene",
-                            provider="fal_ai", provider_cost_usd=cost, quantity=1,
+                            provider="fal_ai",
+                            provider_cost_usd=cost_for(_broll_model_id), quantity=1,
                             quantity_unit="videos", resource_type="cast",
-                            resource_id=cast_id, provider_model="kling-2.1-master-t2v",
+                            resource_id=cast_id, provider_model=_t2v_endpoint,
                         )
                         await db.commit()
                     except Exception as _uexc:
@@ -216,6 +223,7 @@ async def _generate_async(cast_id: str) -> dict:
                             product, db, owner_id, style="product_showcase",
                             duration_seconds=5, quality="pro",
                             custom_prompt=prompt,
+                            model_endpoint=_i2v_endpoint,
                         )
                     else:
                         asset = await generate_ai_image_asset(

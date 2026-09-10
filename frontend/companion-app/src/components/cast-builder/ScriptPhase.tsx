@@ -441,7 +441,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     // manual refresh. Stops as soon as every b-roll block is done/failed.
     refetchInterval: (q) => {
       const c = q.state.data as any;
-      if (!c || c.broll_media_source !== "ai_generated") return false;
+      if (!c || !String(c.broll_media_source || "").startsWith("ai_generated")) return false;
       const anyGenerating = (c.blocks || []).some(
         (b: any) => b?.metadata?.ai_broll === "generating",
       );

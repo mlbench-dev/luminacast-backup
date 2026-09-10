@@ -73,6 +73,7 @@ async def generate_scene_broll_video(
     r2=None,
     aspect_ratio: str = "9:16",
     duration_seconds: int = 5,
+    model_endpoint: str | None = None,
 ) -> tuple[str, float]:
     """Generate a scene b-roll clip and upload it to R2.
 
@@ -94,7 +95,7 @@ async def generate_scene_broll_video(
         aspect_ratio = "9:16"
     dur = "10" if int(duration_seconds) >= 10 else "5"
     prompt = _clean_prompt(prompt_query)
-    model = _model()
+    model = (model_endpoint or "").strip() or _model()
 
     try:
         import asyncio

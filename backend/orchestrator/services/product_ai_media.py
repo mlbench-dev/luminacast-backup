@@ -198,6 +198,7 @@ async def generate_ai_video_asset(
     duration_seconds: int = 5,
     custom_prompt: str = "",
     quality: str = "pro",
+    model_endpoint: str | None = None,
 ) -> ProductAsset:
     """Generate a short product-only video via fal.ai Kling image-to-video
     and persist it as a new ``ProductAsset`` row tagged ``ai_generated_video``.
@@ -221,9 +222,18 @@ async def generate_ai_video_asset(
     )
 
     kling_tier = quality if quality in _KLING_MODELS else "pro"
-    kling_model = _KLING_MODELS[kling_tier]
+    # An explicit endpoint (from the cast's AI b-roll model picker) wins over
+    # the tier. Non-Kling endpoints (Veo) just get the shared arg subset;
+    # a rejected shape raises ProductAiMediaError and the caller keeps stock.
+    kling_model = (model_endpoint or "").strip() or _KLING_MODELS[kling_tier]
+    _is_kling_v1 = "kling" in kling_model and "/v1." in kling_model
+    _is_veo = "veo" in kling_model
     _model_parts = kling_model.split("/")
-    kling_model_label = f"kling_{_model_parts[2]}_{_model_parts[3]}"
+    kling_model_label = (
+        "veo_i2v" if _is_veo
+        else f"kling_{_model_parts[2]}_{_model_parts[3]}" if len(_model_parts) > 3
+        else kling_model
+    )
 
     try:
         import asyncio
@@ -234,11 +244,13 @@ async def generate_ai_video_asset(
             kling_args = {
                 "prompt": prompt,
                 "image_url": source_image_url,
-                "duration": str(duration_seconds),
+                "duration": ("8s" if _is_veo else str(duration_seconds)),
             }
-            if kling_tier in _KLING_SUPPORTS_ASPECT_RATIO:
+            # v2.x Kling i2v + Veo derive/accept aspect_ratio; v1.x Kling i2v
+            # took it via the SUPPORTS set. Send it for everything but v1.x.
+            if _is_veo or not _is_kling_v1:
                 kling_args["aspect_ratio"] = "9:16"
-            if kling_tier in _KLING_CFG_SCALE:
+            if not model_endpoint and kling_tier in _KLING_CFG_SCALE:
                 kling_args["cfg_scale"] = _KLING_CFG_SCALE[kling_tier]
             return fal_client.subscribe(kling_model, arguments=kling_args)
 

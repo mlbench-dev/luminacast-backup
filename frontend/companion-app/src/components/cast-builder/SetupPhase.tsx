@@ -61,6 +61,25 @@ const BROLL_SOURCE_OPTIONS = [
   },
 ] as const;
 
+// AI b-roll video model — best → worst (roughly most → least expensive).
+// Mirrors services/ai_broll_models.AI_BROLL_MODELS (ids must match).
+const AI_BROLL_MODEL_OPTIONS = [
+  { id: "veo3", label: "Google Veo 3", cost: "~$2.50 / clip", blurb: "Best — cinematic. Slow & pricey." },
+  { id: "veo3f", label: "Google Veo 3 — Fast", cost: "~$0.50 / clip", blurb: "Near-Veo, much cheaper." },
+  { id: "k25", label: "Kling 2.5 Turbo Pro", cost: "~$0.35 / clip", blurb: "Strong motion. Default." },
+  { id: "k21", label: "Kling 2.1 Master", cost: "~$0.35 / clip", blurb: "Good, older generation." },
+  { id: "k16", label: "Kling 1.6 Standard", cost: "~$0.20 / clip", blurb: "Budget — softer." },
+  { id: "k15", label: "Kling 1.5 Pro", cost: "~$0.25 / clip", blurb: "Oldest. Product-photo animation." },
+] as const;
+const DEFAULT_AI_BROLL_MODEL = "k25";
+
+const brollToggle = (v?: string | null) =>
+  (v || "").startsWith("ai_generated") ? "ai_generated" : "stock";
+const brollModelFromValue = (v?: string | null) => {
+  const s = (v || "").split(":")[1]?.trim();
+  return AI_BROLL_MODEL_OPTIONS.some((o) => o.id === s) ? (s as string) : DEFAULT_AI_BROLL_MODEL;
+};
+
 const PLATFORM_BY_LAYOUT: Record<string, { value: string; label: string }[]> = {
   "9:16": [
     { value: "tiktok", label: "TikTok" },
@@ -270,6 +289,10 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   // Either way the user can still override a specific block's visual in the
   // Script tab (VisualSourcePicker).
   const [brollMediaSource, setBrollMediaSource] = useState<"stock" | "ai_generated">("stock");
+  const [aiBrollModel, setAiBrollModel] = useState<string>(DEFAULT_AI_BROLL_MODEL);
+  // What actually gets persisted: "stock" or "ai_generated:<modelId>".
+  const brollMediaValue =
+    brollMediaSource === "ai_generated" ? `ai_generated:${aiBrollModel}` : "stock";
   const [musicTrackPickerOpen, setMusicTrackPickerOpen] = useState(false);
   const [pickedTrack, setPickedTrack] = useState<{ url: string; mood: string; name: string } | null>(null);
   const { data: castTemplates } = useQuery({
@@ -317,7 +340,10 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
       if (cast.production_level !== "standard") setAutoCast(false);
     }
     if (cast.music_track_choice) setMusicChoice(cast.music_track_choice);
-    if (cast.broll_media_source) setBrollMediaSource(cast.broll_media_source);
+    if (cast.broll_media_source) {
+      setBrollMediaSource(brollToggle(cast.broll_media_source));
+      setAiBrollModel(brollModelFromValue(cast.broll_media_source));
+    }
     if (cast.music_track_choice === "custom" && (cast as any).background_music_url) {
       const mood = (cast as any).background_music_mood || "";
       setPickedTrack({
@@ -335,7 +361,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
       productionLevel: (cast.production_level as string) || "standard",
       castType: cast.cast_type || "recorded",
       template: cast.template_id ?? null,
-      brollMediaSource: cast.broll_media_source || "stock",
+      brollMediaSource: brollToggle(cast.broll_media_source),
     });
   }, [cast]);
 
@@ -542,7 +568,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           target_platforms: targetPlatforms,
           default_avatar_look_id: selectedLookId || "",
           music_track_choice: musicChoice,
-          broll_media_source: brollMediaSource,
+          broll_media_source: brollMediaValue,
           // Render-only — safe to send on every Continue; the next render
           // picks it up. Never triggers a script rebuild.
           quality,
@@ -597,7 +623,7 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           ? { background_music_url: pickedTrack.url, background_music_mood: pickedTrack.mood || undefined }
           : {}),
         music_track_choice: musicChoice,
-        broll_media_source: brollMediaSource,
+        broll_media_source: brollMediaValue,
         // Stage-1 template. Omitted when null (Auto / let AI choose).
         template_id: selectedTemplate || undefined,
         // LIVE-only: user-uploaded b-roll clips to weave between voiceover takes.
@@ -1012,6 +1038,42 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
             );
           })}
         </div>
+
+        {brollMediaSource === "ai_generated" && (
+          <div className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5 space-y-1.5">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-white/45">
+              Video model
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {AI_BROLL_MODEL_OPTIONS.map((m) => {
+                const on = aiBrollModel === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setAiBrollModel(m.id)}
+                    aria-pressed={on}
+                    className={cn(
+                      "rounded-md border px-2.5 py-1.5 text-left transition-colors",
+                      on
+                        ? "border-accent bg-accent/10"
+                        : "border-white/10 bg-white/[0.02] hover:border-white/25"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={cn("text-[11px] font-semibold", on ? "text-white" : "text-white/80")}>
+                        {m.label}
+                      </span>
+                      <span className="text-[9px] text-white/35 shrink-0">{m.cost}</span>
+                    </div>
+                    <p className="text-[10px] leading-snug text-white/40">{m.blurb}</p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <p className="text-[10px] text-white/35">
           Default for product b-roll blocks — you can still override any single block in the Script step.
         </p>

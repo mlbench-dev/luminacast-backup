@@ -516,7 +516,7 @@ export interface Cast {
   /** Default visual source for stock_photo/stock_video blocks with a product
    *  attached and no per-block override. "stock" (Pexels, default) |
    *  "ai_generated" (product-only FLUX/Kling generation). */
-  broll_media_source?: "stock" | "ai_generated";
+  broll_media_source?: string; // "stock" | "ai_generated" | "ai_generated:<modelId>"
   default_avatar_look_id?: string | null;
   cast_type?: "recorded" | "live";
   template_id?: string | null;
@@ -550,7 +550,7 @@ export interface CastCreate {
   background_music_mood?: string;
   background_music_tags?: string[];
   /** Default visual source for stock_photo/stock_video blocks — see Cast. */
-  broll_media_source?: "stock" | "ai_generated";
+  broll_media_source?: string; // "stock" | "ai_generated" | "ai_generated:<modelId>"
   products?: ProductCreate[];
   blocks?: BlockCreate[];
 }

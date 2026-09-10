@@ -544,7 +544,7 @@ async def generate_outline(
     # so a cast built WITHOUT Auto Cast (which runs this plain endpoint) kept
     # showing Pexels stock even though the Setup picker was set to
     # "AI-generated from product" — the task was never queued.
-    if getattr(cast, "broll_media_source", "stock") == "ai_generated":
+    if str(getattr(cast, "broll_media_source", "stock") or "").startswith("ai_generated"):
         try:
             from tasks.product_broll_tasks import generate_ai_broll_for_cast_task
             generate_ai_broll_for_cast_task.delay(cast_id)
@@ -978,7 +978,7 @@ async def generate_smart_outline_endpoint(
     # blocks in the background — each Kling video call takes minutes, so this
     # can't run in-band. The Pexels asset from step 2 stays as the fallback
     # until (or if) this replaces it with Block.video_asset_id/image_asset_id.
-    if getattr(cast, "broll_media_source", "stock") == "ai_generated":
+    if str(getattr(cast, "broll_media_source", "stock") or "").startswith("ai_generated"):
         try:
             from tasks.product_broll_tasks import generate_ai_broll_for_cast_task
             generate_ai_broll_for_cast_task.delay(cast_id)
