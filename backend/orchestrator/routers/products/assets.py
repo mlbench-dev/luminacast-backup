@@ -9,7 +9,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, update as sa_update
 from pydantic import BaseModel
 import sentry_sdk
 from database import get_db
@@ -187,5 +187,16 @@ async def delete_asset(
         )
     except Exception as e:
         sentry_sdk.capture_exception(e)
+
+    # Detach any cast blocks that reference this asset (AI b-roll sets
+    # Block.video_asset_id / image_asset_id to a ProductAsset id). These are
+    # plain FKs with no ON DELETE, so deleting a referenced asset 500s with an
+    # IntegrityError — which the product page surfaced as "the X does nothing".
+    # Nulling the refs makes those blocks fall back to their stock clip.
+    for _col in ("video_asset_id", "image_asset_id"):
+        await db.execute(
+            sa_update(Block).where(getattr(Block, _col) == asset_id).values({_col: None})
+        )
+
     await db.delete(asset)
     await db.commit()

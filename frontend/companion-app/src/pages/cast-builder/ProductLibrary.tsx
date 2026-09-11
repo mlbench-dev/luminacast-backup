@@ -1676,7 +1676,14 @@ function ProductDetailPanel({ productId, onClose }: {
     mutationFn: (assetId: string) => productsApi.deleteAsset(productId, assetId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["product-detail", productId] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
       toast({ title: "Asset deleted" });
+    },
+    onError: (err: any) => {
+      toast({
+        title: err?.response?.data?.detail || "Couldn't delete asset",
+        variant: "destructive",
+      });
     },
   });
 
