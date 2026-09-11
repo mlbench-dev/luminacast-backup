@@ -4128,6 +4128,26 @@ async def _load_caption_overlays(
     return captions
 
 
+def _exc_summary(exc: BaseException) -> str:
+    """A never-blank, user-showable summary of ``exc``.
+
+    Bug: ``str(exc)`` is EMPTY for a large class of exceptions raised with
+    no message — a bare ``raise SomeError()``, a raw ``AssertionError``
+    from a bare ``assert x``, and several asyncio/subprocess errors all
+    stringify to "". Persisting that as ``CastRender.error_message`` left
+    a "failed" render with a genuinely blank reason: the "Why did it fail?"
+    popover showed the generic fallback text with an EMPTY hover-tooltip —
+    indistinguishable from a render that recorded no reason at all,
+    confirmed live on a real failed render. Prefixing the exception's own
+    class name guarantees a non-empty, at-least-somewhat-informative
+    result, and doubles as more text for the frontend's friendlyBlockError
+    substring matching (e.g. "TimeoutError", "RuntimeError") to key off of.
+    """
+    msg = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {msg}" if msg else name
+
+
 # max_retries=0: retries combined with task_acks_late=True create zombie
 # redelivery loops where a single failure spawns 4+ concurrent task
 # instances racing the same render row. If a render fails, fail it
@@ -4155,13 +4175,13 @@ def render_cast_task(self, render_id: str):
         logger.error(json.dumps({
             "service": "cast_render",
             "level": "error",
-            "message": f"Render failed: {exc}",
+            "message": f"Render failed: {_exc_summary(exc)}",
             "render_id": render_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }))
         loop2 = asyncio.new_event_loop()
         try:
-            loop2.run_until_complete(_mark_render_failed(render_id, str(exc)))
+            loop2.run_until_complete(_mark_render_failed(render_id, _exc_summary(exc)))
         finally:
             loop2.close()
         # No self.retry() — retries with task_acks_late=True spawn zombie
@@ -4179,7 +4199,19 @@ async def _mark_render_failed(render_id: str, error_msg: str):
         render = await session.get(CastRender, render_id)
         if render:
             render.status = CastRenderStatus.FAILED.value
-            render.error_message = error_msg[:1000]
+            # Bug: many exceptions raised with no message (e.g. a bare
+            # `raise SomeError()`, or certain asyncio/subprocess errors)
+            # stringify to "" — persisting that left error_message
+            # genuinely blank. The user-facing "Why the render failed"
+            # popover then showed a generic fallback with an EMPTY tooltip
+            # (nothing at all to inspect), indistinguishable from a render
+            # that never recorded a reason. render_cast_task's caller
+            # already builds a non-empty summary via _exc_summary(); this
+            # is a second, defensive guard so _mark_render_failed itself
+            # can never persist a blank reason regardless of caller.
+            render.error_message = (error_msg or "").strip()[:1000] or (
+                "Render failed with no error details recorded — please retry."
+            )
             await session.commit()
 
 
