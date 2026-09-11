@@ -432,41 +432,62 @@ Insert [sfx:NAME] markers at moments that benefit from audio punctuation.
 These play OVER the voice, NOT instead of it. The TTS engine strips the
 markers; a separate render step mixes the SFX in at the right timestamp.
 
-Available SFX:
-  [sfx:whoosh]         transition / scene change      0.5s
-  [sfx:pop]            item appearing / text popup    0.3s
-  [sfx:ding]           notification / achievement     0.5s
-  [sfx:cash_register]  price reveal / purchase        0.8s
-  [sfx:sparkle]        premium reveal / shimmer       0.7s
-  [sfx:record_scratch] pattern interrupt / “wait”     0.6s
-  [sfx:swoosh_up]      energy rising                  0.5s
-  [sfx:swoosh_down]    energy falling / before-state  0.5s
-  [sfx:notification]   social proof / @user buy       0.4s
-  [sfx:timer_tick]     countdown / urgency            0.3s
-  [sfx:click]          CTA / link tap                 0.2s
-  [sfx:drumroll]       reveal anticipation            1.2s
-  [sfx:applause]       celebration / social proof     1.5s
-  [sfx:camera_shutter] photo moment                   0.3s
-  [sfx:bass_drop]      major reveal                   0.5s
-  [sfx:coin]           savings / discount             0.4s
-  [sfx:success]        task complete / benefit OK     0.5s
+Every marker below is a CONDITION check against the words in THAT sentence —
+never a block-role default (e.g. "it's a hook, so it gets record_scratch").
+If the sentence doesn't meet the condition, don't use the marker — leave the
+line with no SFX rather than force one in.
+
+Available SFX (marker → condition that must be true IN THE SENTENCE):
+  [sfx:whoosh]         the sentence describes physical motion, or this is a scene/block-boundary cut   0.5s
+  [sfx:pop]            an item, number, or text visually appears/pops on screen right here             0.3s
+  [sfx:ding]           a notification, checkmark, or achievement is stated                              0.5s
+  [sfx:cash_register]  a specific price or purchase is stated in this line                               0.8s
+  [sfx:sparkle]        a premium/glossy reveal — the product's best angle, a shine, a "look at this"     0.7s
+  [sfx:record_scratch] the sentence itself contains a genuine REVERSAL, correction, or "wait, what?"
+                        surprise — something the viewer did NOT expect a beat ago. NOT for every hook
+                        or opening line — a flat statement (even an attention-grabbing one) does not
+                        qualify just because it's first in the block.                                    0.6s
+  [sfx:swoosh_up]      the line describes something increasing/improving (energy, results, quality)     0.5s
+  [sfx:swoosh_down]    the line describes a "before" state or something getting worse/less               0.5s
+  [sfx:notification]   a specific social-proof number or "just bought/reviewed" moment is stated         0.4s
+  [sfx:timer_tick]     a stated deadline, limited stock, or urgency phrase ("only 3 left", "ends today")  0.3s
+  [sfx:click]          a direct CTA phrase ("tap", "the link", "swipe up")                                0.2s
+  [sfx:drumroll]       the line is building anticipation immediately BEFORE a reveal, not the reveal      1.2s
+  [sfx:applause]       a celebration or satisfied-customer/success moment                                 1.5s
+  [sfx:camera_shutter] the line references a photo or before/after picture moment                         0.3s
+  [sfx:bass_drop]      THE single biggest reveal in the block — use once, only for that exact moment      0.5s
+  [sfx:coin]           a stated discount or savings amount                                                0.4s
+  [sfx:success]        a stated benefit/result is confirmed as achieved ("and it worked")                 0.5s
 
 RULES (SFX):
 - Max 2-3 SFX per 15-second block.
 - Place [sfx:NAME] BEFORE the word it accompanies.
 - NEVER stack two SFX back-to-back.
-- Common patterns:
-    Hook            "[sfx:record_scratch] Wait, did you say $7?"
-    Product reveal  "And THIS [sfx:sparkle] is what it looks like"
-    Price reveal    "[sfx:cash_register] All that for only $24.99"
-    Social proof    "[sfx:notification] 47 people just added to cart"
-    CTA             "Tap the link [sfx:click] right now"
-    Transition      "[sfx:whoosh]" alone, at block boundary
+- A plain, punchy opening statement with no reversal, price, or stat in it
+  gets NO marker at all. Do not reach for [sfx:record_scratch] or
+  [sfx:bass_drop] just because a line is the hook — only use them when the
+  sentence's own content matches their condition above.
+- Common patterns (the trigger is what the sentence SAYS, not its role):
+    Reversal/surprise  "[sfx:record_scratch] Wait, that's not what I ordered."
+    Product reveal     "And THIS [sfx:sparkle] is what it looks like"
+    Price reveal       "[sfx:cash_register] All that for only $24.99"
+    Social proof        "[sfx:notification] 47 people just added to cart"
+    CTA                 "Tap the link [sfx:click] right now"
+    Transition           "[sfx:whoosh]" alone, at block boundary
 
 GOOD EXAMPLE (SFX placement):
   "[sfx:record_scratch] Okay wait. This $7 cream [sfx:sparkle] just beat a
   $200 brand in every single test — I'm not even kidding.
   [sfx:cash_register] And right now it's 40% off."
+  (record_scratch is earned here: "okay wait" + a genuine claim reversal —
+  a cheap product beating an expensive one.)
+
+BAD EXAMPLE (do NOT do this):
+  "[sfx:record_scratch] Stop wearing hoodies that fall apart after three washes."
+  This is a flat statement with no reversal or surprise — it's just an
+  assertive opener. It should carry NO SFX marker (or [sfx:whoosh] at most
+  if the block cuts in from a transition) — never record_scratch just
+  because it's the first line.
 
 Do NOT insert [gesture:...] markers — InfiniteTalk handles gestures
 automatically from the audio + motion_prompt.

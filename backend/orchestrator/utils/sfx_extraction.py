@@ -17,6 +17,7 @@ Two steps, kept separate so each is unit-testable:
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 
@@ -80,11 +81,72 @@ def extract_sfx_markers(text: str) -> list[SfxMarker]:
     return markers
 
 
+def _normalize_word(w: str) -> str:
+    """Lowercase, strip everything but letters/digits — for comparing a
+    WRITTEN token against a SPOKEN/transcribed one (drops $, ., punctuation)."""
+    return re.sub(r"[^a-z0-9]", "", (w or "").lower())
+
+
+def _map_text_words_to_spoken(script_words: list[str], spoken_words: list[str]) -> list[int]:
+    """Map each index of ``script_words`` (the WRITTEN, whitespace-tokenized
+    script) to the best-matching index in ``spoken_words`` (WhisperX's
+    transcription of what was actually SAID).
+
+    Why this exists: a marker's ``word_index`` is counted against the written
+    text, but TTS speaks — and WhisperX transcribes — numbers/currency/
+    abbreviations as a DIFFERENT number of words than they're written as
+    (``"$24.99"`` -> five spoken words: "twenty four dollars ninety nine").
+    Every script with a price, percentage, or count near an SFX marker hits
+    this — which is exactly the case the SFX prompt's own example uses
+    (price reveals). Trusting the raw written-text index once the word counts
+    have diverged silently drags every marker after the divergence onto the
+    wrong spoken word, which is indistinguishable from "AI picked a random
+    sound effect" even though the marker NAME was chosen correctly.
+
+    Uses difflib's sequence matcher over normalized tokens (case/punctuation
+    stripped) so it tolerates insertions (one written token expanding to
+    several spoken words) and minor mishears, not just an exact 1:1 count.
+    """
+    if not script_words:
+        return []
+    tn = [_normalize_word(w) for w in script_words]
+    sn = [_normalize_word(w) for w in spoken_words]
+    sm = difflib.SequenceMatcher(None, tn, sn, autojunk=False)
+    mapping: list[int | None] = [None] * len(script_words)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                mapping[i1 + k] = j1 + k
+        elif tag == "replace":
+            span = list(range(j1, j2)) or ([j1] if j1 < len(sn) else [])
+            for k in range(i1, i2):
+                if not span:
+                    continue
+                rel = (k - i1) / max(i2 - i1, 1)
+                mapping[k] = span[min(int(rel * len(span)), len(span) - 1)]
+        elif tag == "delete":
+            # written word(s) with no spoken counterpart — anchor to the next
+            # spoken word so a marker just before/after still lands nearby.
+            anchor = j1 if j1 < len(sn) else (len(sn) - 1 if sn else None)
+            for k in range(i1, i2):
+                mapping[k] = anchor
+        # 'insert' = spoken words with nothing in the written text (filler,
+        # mishears) — doesn't map any script word, so nothing to fill here.
+    last = 0
+    for i, v in enumerate(mapping):
+        if v is None:
+            mapping[i] = last
+        else:
+            last = v
+    return mapping  # type: ignore[return-value]
+
+
 def align_sfx_to_words(
     markers: list[SfxMarker],
     caption_words: list[dict] | None,
     *,
     tts_duration_seconds: float | None = None,
+    script_words: list[str] | None = None,
 ) -> list[dict]:
     """Resolve each marker to an absolute ``start_s`` using word timestamps.
 
@@ -97,6 +159,15 @@ def align_sfx_to_words(
       * if there are no usable words at all (e.g. the TTS-fallback path produced
         none), distribute the markers evenly across ``tts_duration_seconds``.
 
+    ``script_words`` — the same clean, whitespace-tokenized word list
+    ``word_index`` was computed against (``utils.script_cleaning.
+    clean_script_tokens``) — is optional but should always be passed when the
+    caller has it. When the transcribed word count doesn't match it 1:1 (see
+    :func:`_map_text_words_to_spoken`), ``word_index`` is remapped from
+    written-text space into spoken/``caption_words`` space before indexing,
+    instead of being trusted as a raw position. Omitting it reproduces the
+    old (position-only) behavior.
+
     Returns ``[{name, start_s}, ...]`` in marker order. ``start_s`` is clamped
     to ``>= 0``.
     """
@@ -104,6 +175,7 @@ def align_sfx_to_words(
         return []
 
     timed = []
+    spoken_words: list[str] = []
     if caption_words:
         for w in caption_words:
             if not isinstance(w, dict):
@@ -114,6 +186,7 @@ def align_sfx_to_words(
             except (TypeError, ValueError):
                 continue
             timed.append((start, end))
+            spoken_words.append(str(w.get("word") or ""))
 
     if not timed:
         # No word timing — even-distribution fallback across the clip.
@@ -127,14 +200,28 @@ def align_sfx_to_words(
             for i, mk in enumerate(markers)
         ]
 
+    # Only remap when the counts actually diverge — the common case (no
+    # numbers/abbreviations near a marker) needs no correction, and skipping
+    # the diff there keeps behavior byte-identical to before this existed.
+    idx_map: list[int] | None = None
+    if script_words and len(script_words) != len(spoken_words):
+        idx_map = _map_text_words_to_spoken(script_words, spoken_words)
+
     last_end = timed[-1][1]
+    # The length a trailing marker's word_index is compared against: TEXT
+    # space (script_words) when we have it, else the old AUDIO-space
+    # (timed) — those two are equal whenever the counts already match, so
+    # this is a no-op change for every script without a divergence.
+    text_len = len(script_words) if script_words else len(timed)
     out: list[dict] = []
     for mk in markers:
-        if mk.word_index < len(timed):
-            start_s = timed[mk.word_index][0]
-        else:
-            # Marker after the last spoken word — anchor to where speech ends.
+        if mk.word_index >= text_len:
             start_s = last_end
+        else:
+            resolved = mk.word_index
+            if idx_map is not None and mk.word_index < len(idx_map):
+                resolved = idx_map[mk.word_index]
+            start_s = timed[resolved][0] if resolved < len(timed) else last_end
         out.append({"name": mk.name, "start_s": round(max(start_s, 0.0), 3)})
     return out
 
@@ -165,7 +252,14 @@ def resolve_sfx_for_script(
         {"name": m.name, "char_offset": m.char_offset, "word_index": m.word_index}
         for m in markers
     ]
+    # Same word list word_index was counted against — lets align_sfx_to_words
+    # detect + correct for numbers/currency/abbreviations being SPOKEN as a
+    # different word count than they're WRITTEN (see _map_text_words_to_spoken).
+    from utils.script_cleaning import clean_script_tokens
+    script_words = clean_script_tokens(script_text or "")
     timings_json = align_sfx_to_words(
-        markers, caption_words, tts_duration_seconds=tts_duration_seconds
+        markers, caption_words,
+        tts_duration_seconds=tts_duration_seconds,
+        script_words=script_words,
     )
     return markers_json, timings_json

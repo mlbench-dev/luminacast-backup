@@ -976,14 +976,23 @@ async def _generate_tts_only(cast_id: str, user_id: str, force: bool = False):
                         continue
                     try:
                         from utils.sfx_extraction import SfxMarker, align_sfx_to_words
+                        from utils.script_cleaning import clean_script_tokens
                         markers = [
                             SfxMarker(name=m["name"], char_offset=m["char_offset"], word_index=m["word_index"])
                             for m in variant.sfx_markers
                         ]
+                        # script_words: the same word list word_index was
+                        # counted against. Lets align_sfx_to_words detect and
+                        # correct for numbers/currency ("$24.99") being SPOKEN
+                        # (and transcribed) as a different word count than
+                        # they're WRITTEN — otherwise every marker after one
+                        # of those silently lands on the wrong word ("SFX
+                        # doesn't match the script/scene").
                         variant.sfx_timings = align_sfx_to_words(
                             markers,
                             variant.caption_words,
                             tts_duration_seconds=variant.tts_duration_seconds,
+                            script_words=clean_script_tokens(variant.script_text or ""),
                         ) or None
                     except Exception as e:
                         sentry_sdk.capture_exception(e)

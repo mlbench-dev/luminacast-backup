@@ -57,17 +57,16 @@ async def _apply_product_overlays_to_variant(
     effects = cast.effects_config or {}
     scene_objects = list(effects.get("scene_objects", []))
 
-    # Legacy migration: build scene_objects from old product_overlay config
-    if not scene_objects and effects.get("product_overlay", {}).get("enabled") and block and block.product_id:
-        scene_objects = [{
-            "kind": "product",
-            "block_ids": [],
-            "product": {"product_id": block.product_id},
-            "x": 0.7, "y": 0.7,
-            "width": effects.get("product_overlay", {}).get("size", 0.25),
-        }]
-        for ov in effects.get("overlays", []):
-            scene_objects.append(ov)
+    # NOTE: the two legacy auto-synthesis fallbacks that used to live here
+    # (build a "product" scene_object from `product_overlay.enabled`, and —
+    # separately — synthesize one from any block.product_id with no explicit
+    # scene_objects at all) were removed per client request: they always
+    # defaulted to x=0.7/y=0.7 (bottom-right), burning a small product image
+    # onto every product-attached block whether or not anyone asked for it.
+    # Nothing in the current editor UI ever writes `scene_objects` or
+    # `product_overlay`, so this only ever fired the bottom-right default.
+    # Only genuinely explicit `scene_objects` entries (still supported, for
+    # any cast that has them stored) produce an overlay now.
 
     # Filter to products that apply to this block
     product_objs = [
@@ -75,14 +74,6 @@ async def _apply_product_overlays_to_variant(
         if o.get("kind") == "product"
         and (not o.get("block_ids") or block.id in o.get("block_ids", []))
     ]
-
-    # If no explicit scene_objects for this block but block has product_id, synthesize one
-    if not product_objs and block and block.product_id:
-        product_objs = [{
-            "product": {"product_id": block.product_id},
-            "x": 0.7, "y": 0.7,
-            "width": effects.get("product_overlay", {}).get("size", 0.25),
-        }]
 
     for pobj in product_objs:
         pid = (pobj.get("product") or {}).get("product_id") or (block.product_id if block else None)
@@ -289,16 +280,12 @@ async def runpod_infinitetalk_webhook(request: Request):
                     scene_objects = effects.get("scene_objects", [])
                     avatar_fit = effects.get("avatar_fit", {}).get("mode", "cover")
 
-                    # Migrate legacy: if no scene_objects, build from old overlays + product_overlay
+                    # Migrate legacy: if no scene_objects, carry over any real
+                    # text/sticker overlays. The old `product_overlay.enabled`
+                    # auto-injection (always bottom-right, x=0.7/y=0.7) was
+                    # removed per client request — see
+                    # _apply_product_overlays_to_variant for the full note.
                     if not scene_objects:
-                        if effects.get("product_overlay", {}).get("enabled") and block and block.product_id:
-                            scene_objects.append({
-                                "kind": "product",
-                                "block_ids": [],
-                                "product": {"product_id": block.product_id},
-                                "x": 0.7, "y": 0.7,
-                                "width": effects.get("product_overlay", {}).get("size", 0.25),
-                            })
                         for ov in effects.get("overlays", []):
                             scene_objects.append(ov)
 
@@ -449,10 +436,11 @@ async def runpod_infinitetalk_webhook(request: Request):
                     scene_objs_url = eff_url.get("scene_objects", [])
                     avatar_fit_url = eff_url.get("avatar_fit", {}).get("mode", "cover")
 
-                    # Legacy migration
+                    # Legacy migration: carry over any real text/sticker
+                    # overlays only. The old `product_overlay.enabled`
+                    # auto-injection (always bottom-right) was removed per
+                    # client request — see _apply_product_overlays_to_variant.
                     if not scene_objs_url:
-                        if eff_url.get("product_overlay", {}).get("enabled") and block and block.product_id:
-                            scene_objs_url.append({"kind": "product", "block_ids": [], "product": {"product_id": block.product_id}, "x": 0.7, "y": 0.7, "width": eff_url.get("product_overlay", {}).get("size", 0.25)})
                         for ov in eff_url.get("overlays", []):
                             scene_objs_url.append(ov)
 

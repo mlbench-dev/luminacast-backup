@@ -1062,35 +1062,32 @@ export function castToEditorStarterTimeline(
       }
     }
 
-    // Product image for this block. Two-stage resolution + two render modes.
+    // Product image for this block.
     //
     // Source-of-truth order for `prod`:
     //   1. Block-level product_id (the user explicitly attached this product
     //      to this block).
     //   2. Round-robin from cast.products (the user attached products at the
     //      cast level but never picked which goes on which block).
-    // Without the fallback, blocks with no product_id render with NO product
-    // overlay — which is what the user reported: products attached via
-    // cast_products but never visible in the final video.
     //
-    // Render modes (chosen below):
-    //   1. CAROUSEL — when block.metadata.product_carousel is true AND the
-    //      attached product has 2+ assets, emit a sequence of full-canvas
-    //      items that the FFmpeg composer chains with xfade. Each item
-    //      carries metadata.carousel_group_id (== block_id) + index +
-    //      transition + total_count so the composer can reassemble them.
-    //   2. STATIC OVERLAY (default) — single 30%-of-canvas product chip in
-    //      the bottom-right corner with the cover image. Pre-existing
-    //      behaviour, preserved for blocks without product_carousel set.
+    // Render mode: CAROUSEL ONLY — when block.metadata.product_carousel is
+    // true AND the attached product has 2+ assets, emit a sequence of
+    // full-canvas items that the FFmpeg composer chains with xfade. Each
+    // item carries metadata.carousel_group_id (== block_id) + index +
+    // transition + total_count so the composer can reassemble them.
     //
-    // CRITICAL: when carousel mode is on, we SKIP the static overlay entirely
-    // — otherwise both layers render simultaneously.
+    // The small bottom-right "product chip" overlay that used to render by
+    // default on every product-attached block was removed per client
+    // request — it looked redundant next to the actual product visuals
+    // (avatar-in-hand shots, product_demo blocks, b-roll) and cluttered the
+    // frame. Blocks without product_carousel set now render with no extra
+    // product overlay at all; the product still appears wherever it's the
+    // block's actual visual content.
     let prod = block.product_id ? productMap.get(block.product_id) : undefined;
     if (!prod && castProducts.length > 0) {
       prod = castProducts[blockProductCursor % castProducts.length];
       blockProductCursor += 1;
     }
-    const prodCoverUrl = prod?.cover_image_url || (prod?.cover_image_key ? cdnUrl(prod.cover_image_key) : "");
     const blockMeta = ((block as any).metadata || {}) as {
       product_carousel?: boolean;
       carousel_speed_seconds?: number;
@@ -1242,62 +1239,10 @@ export function castToEditorStarterTimeline(
         // matches the existing static-overlay layer order.
         productTrackItemIds.push(carouselItemId);
       }
-    } else if (prod && prodCoverUrl) {
-      // Static overlay — pre-existing behaviour, preserved verbatim. Skipped
-      // entirely when carouselActive so we don't double-render.
-      const prodItemId = `prod_${block.id}`;
-      const prodAssetId = `asset_prod_${block.id}`;
-      const prodW = Math.round(canvas.width * 0.3);
-      const prodH = Math.round(canvas.height * 0.3);
-      const prodAsset: ImageAsset = {
-        type: "image",
-        id: prodAssetId,
-        filename: prod.name || "Product",
-        size: 0,
-        remoteUrl: prodCoverUrl,
-        remoteFileKey: null,
-        mimeType: "image/jpeg",
-        width: prodW,
-        height: prodH,
-      };
-      assets[prodAssetId] = prodAsset;
-
-      const prodItem: ImageItem = {
-        type: "image",
-        id: prodItemId,
-        assetId: prodAssetId,
-        from: secondsToFrames(start, fps),
-        durationInFrames: durFrames,
-        top: canvas.height - prodH - 20,
-        left: canvas.width - prodW - 20,
-        width: prodW,
-        height: prodH,
-        opacity: 1,
-        isDraggingInTimeline: false,
-        keepAspectRatio: true,
-        fadeInDurationInSeconds: 0,
-        fadeOutDurationInSeconds: 0,
-        borderRadius: 8,
-        rotation: 0,
-        cropLeft: 0,
-        cropTop: 0,
-        cropRight: 0,
-        cropBottom: 0,
-        metadata: {
-          block_id: block.id,
-          track_type: "product",
-          // Products always carry the parent block's category color so the
-          // chip on the timeline visually groups with its block.
-          category_color: categoryHex,
-          // The chip box is canvas-aspect (0.3w x 0.3h); a product photo of
-          // any other shape must fit inside it, not stretch. applyAspectFit()
-          // then shrinks the chip to the photo's real aspect ratio.
-          fit: "contain" as const,
-        },
-      };
-      items[prodItemId] = prodItem;
-      productTrackItemIds.push(prodItemId);
     }
+    // else: no product_carousel set on this block -> no product overlay is
+    // emitted at all (the bottom-right static chip was removed; see the
+    // comment above).
 
     // ── Caption items from word timestamps ──
     const rawCaptionWords = variant?.caption_words as Array<{word: string; start: number; end: number; score?: number}> | undefined;

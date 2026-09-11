@@ -45,6 +45,14 @@ def _mark_variant_audio_stale(variant: Variant, cast: Cast | None) -> None:
     the staleness atomic with the script_text update. After commit,
     invoke ``_enqueue_tts_regen(cast_id, user_id)`` to kick off
     regeneration.
+
+    Also clears ``sfx_timings`` — those are absolute-second offsets resolved
+    against THIS take's word timestamps (see utils/sfx_extraction). Leaving
+    them in place after the audio changes fires each [sfx:NAME] at whatever
+    now happens to be at that old timestamp in the new take — the "SFX
+    doesn't match the scene/audio" bug. ``sfx_markers`` (text-relative, not
+    audio-relative) survives; it's regenerated from the new script text
+    separately and re-aligned once fresh word timestamps exist.
     """
     variant.tts_r2_key = ""
     variant.tts_duration_seconds = 0
@@ -52,6 +60,7 @@ def _mark_variant_audio_stale(variant: Variant, cast: Cast | None) -> None:
     variant.caption_words = None
     variant.caption_segments = None
     variant.word_timestamps = None
+    variant.sfx_timings = None
     variant.status = VariantStatus.PENDING
     if cast is not None:
         try:

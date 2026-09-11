@@ -175,6 +175,44 @@ class EditorCaptionRequest(BaseModel):
     """
     audio_segments: List[dict]
 
+
+def _realign_sfx(variant) -> None:
+    """Re-resolve ``variant.sfx_timings`` against whatever ``caption_words``
+    were just (re)computed.
+
+    ``sfx_timings`` are absolute-second offsets resolved against ONE take's
+    word timestamps (utils.sfx_extraction.align_sfx_to_words). Whenever this
+    endpoint recomputes captions for a variant — because its TTS audio was
+    regenerated — any previously-resolved timings belong to the audio that no
+    longer exists; left alone, each [sfx:NAME] fires at whatever now happens
+    to sit at that stale timestamp in the new take (the "SFX doesn't match
+    the scene/audio" bug). ``sfx_markers`` (word-relative, not time-relative)
+    is untouched by an audio change, so re-resolving from it is safe here.
+    """
+    if not getattr(variant, "sfx_markers", None):
+        variant.sfx_timings = None
+        return
+    try:
+        from utils.sfx_extraction import SfxMarker, align_sfx_to_words
+        from utils.script_cleaning import clean_script_tokens
+        markers = [
+            SfxMarker(name=m["name"], char_offset=m["char_offset"], word_index=m["word_index"])
+            for m in variant.sfx_markers
+        ]
+        # script_words lets align_sfx_to_words correct for numbers/currency
+        # being spoken (and transcribed) as a different word count than
+        # they're written — see utils/sfx_extraction._map_text_words_to_spoken.
+        variant.sfx_timings = align_sfx_to_words(
+            markers,
+            variant.caption_words,
+            tts_duration_seconds=variant.tts_duration_seconds,
+            script_words=clean_script_tokens(variant.script_text or ""),
+        ) or None
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        variant.sfx_timings = None
+
+
 @router.post("/{cast_id}/generate-captions")
 async def generate_captions(
     cast_id: str,
@@ -256,6 +294,7 @@ async def generate_captions(
                         "end": duration,
                         "text": clean_text,
                     }]
+                    _realign_sfx(variant)
                     results.append({
                         "block_id": block.id,
                         "variant_id": variant.id,
@@ -271,6 +310,7 @@ async def generate_captions(
             else:
                 variant.caption_words = outcome.get("words", [])
                 variant.caption_segments = outcome.get("segments", [])
+                _realign_sfx(variant)
                 results.append({
                     "block_id": block.id,
                     "variant_id": variant.id,

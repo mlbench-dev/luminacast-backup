@@ -3538,6 +3538,13 @@ async def _ensure_fresh_tts_for_block(
             variant.caption_words = None
             variant.caption_segments = None
             variant.word_timestamps = None
+            # This is a brand-new take — any sfx_timings resolved against the
+            # OLD audio's word positions no longer mean anything against this
+            # one. Drop them rather than fire [sfx:NAME] at whatever now
+            # happens to sit at that stale timestamp (the SFX/scene mismatch
+            # bug). Re-resolved next time captions are (re)aligned for this
+            # variant — see routers/casts/tts_captions.py.
+            variant.sfx_timings = None
             await session.commit()
 
             new_url = r2.get_public_url(new_key) if new_key else snapshot_audio_url
