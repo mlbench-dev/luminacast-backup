@@ -2632,6 +2632,34 @@ async def _match_audio_to_video_duration(
         return video_bytes
 
 
+def _block_is_pip_source(timeline: dict, block_id: str) -> bool:
+    """True when ``block_id``'s bonded V1 element is a PIP/corner-window
+    avatar (``metadata.render_mode == "pip"``) rather than a fullscreen one.
+
+    Used to force plain cover-crop (never contain+blur) when conforming
+    this block's bake: a PIP clip is only ever a SOURCE the compositor
+    crops down further into a small corner window (see
+    ``worker_ffmpeg_compose.py``'s PIP overlay step) — it is never the
+    final on-screen content itself, so the "don't crop, pad with blur"
+    treatment that's correct for a FULLSCREEN mismatched-aspect bake is
+    actively wrong here: it shrinks the face into the middle of a
+    blurred, canvas-sized frame, which the PIP step then cover-crops a
+    SECOND time down to a tiny box — cropping into the blurred padding
+    instead of the face, so the talking head renders as a washed-out
+    sliver (or effectively invisible) in its own corner window.
+    """
+    for track in (timeline or {}).get("tracks") or []:
+        if not isinstance(track, dict):
+            continue
+        for el in track.get("elements") or []:
+            if not isinstance(el, dict):
+                continue
+            meta = el.get("metadata") or {}
+            if meta.get("block_id") == block_id and meta.get("bonded"):
+                return meta.get("render_mode") == "pip"
+    return False
+
+
 async def _normalize_for_canvas(
     *,
     video_bytes: bytes,
@@ -2688,6 +2716,11 @@ async def _normalize_for_canvas(
             block_id=block_id,
             render_id=render_id,
             extend_to_slot=False,
+            # A PIP block's bake is a SOURCE for the compositor's own
+            # further crop-down into a small corner window, never the
+            # final visual — always cover-crop it here regardless of
+            # aspect divergence. See _block_is_pip_source's docstring.
+            force_cover=_block_is_pip_source(timeline, block_id),
         )
         # Trim-to-slot lives in its own module (kept async for symmetry
         # with the old extension call site / future provider hooks).

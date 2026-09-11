@@ -118,6 +118,7 @@ def normalize_baked_block(
     block_id: str,
     render_id: str,
     extend_to_slot: bool = False,
+    force_cover: bool = False,
 ) -> bytes:
     """Conform a freshly-baked block clip to the cast canvas.
 
@@ -127,6 +128,20 @@ def normalize_baked_block(
     filled — no letterbox / pillarbox bars regardless of input aspect.
     Then force constant fps to ``target_fps`` and re-encode H.264 yuv420p
     + AAC stereo 48 kHz so every block has byte-compatible streams.
+
+    When the input and target shapes diverge sharply (see
+    ``services.aspect_conform``), this normally switches to a contain-fit +
+    blurred backdrop instead of cropping — correct when THIS clip is the
+    final on-screen content. ``force_cover=True`` skips that and always
+    uses plain cover-crop regardless of divergence: pass it for a block
+    whose bake is a SOURCE for a further downstream crop (a PIP corner
+    window), not the final visual itself. Blurring/padding a clip that's
+    about to be cover-cropped down into a small PIP box a second time just
+    shrinks the actual face further inside that box and crops into the
+    blurred padding instead of the face — worse than the plain cover-crop
+    it's meant to replace. (Regression: a PIP avatar started rendering as a
+    washed-out/near-invisible sliver once contain-blur unconditionally
+    applied to every diverging-shape bake, PIP or not.)
 
     Conform-only (Phase 1): this function NEVER changes the clip's
     duration. Output duration == input duration. It does not pad
@@ -225,6 +240,12 @@ def normalize_baked_block(
         # the surplus that head-trim needs. So the output keeps the input's
         # own duration (snapped to a whole frame at target_fps).
         from services.aspect_conform import build_conform_filter
+        _conform_kwargs = {}
+        if force_cover:
+            # threshold=0.0 makes shapes_diverge() always False (its ratio
+            # is never negative) — i.e. always take the plain cover-crop
+            # branch, regardless of how far src/target diverge.
+            _conform_kwargs["threshold"] = 0.0
         v_prep = build_conform_filter(
             in_label="0:v",
             out_label="vprep",
@@ -233,6 +254,7 @@ def normalize_baked_block(
             src_w=in_w,
             src_h=in_h,
             extra_pre=f"fps={target_fps},",
+            **_conform_kwargs,
         )
         # Preserve the bake's own length. Snap to a whole frame so concat
         # downstream never lands mid-frame. ``-t`` is set to the bake
