@@ -34,14 +34,28 @@ export type ItemMetadata = {
   duration_mode?: "crop" | "stretch" | "keep";
   /**
    * How a mismatched-aspect image/video fills its box.
-   *  - "cover"   (default when absent): fill the box, crop the overflow —
-   *              right for background / b-roll where letterbox bars are wrong.
-   *  - "contain": fit the whole asset inside the box, centred — right for
-   *              product shots where cropping the product is a quality bug.
+   *  - "cover"       (default when absent): fill the box, crop the overflow —
+   *                  right only when the source is already close to the
+   *                  box's own shape (a little edge trim is invisible).
+   *  - "contain":     fit the whole asset inside the box, centred, letting
+   *                  whatever's BEHIND it show through the margin — right
+   *                  for product shots, and for b-roll cutaways layered on
+   *                  top of a still-visible avatar clip.
+   *  - "contain-blur": fit the whole asset inside the box, centred, and
+   *                  fill the margin with a blurred, cover-fit copy of the
+   *                  SAME source instead of exposing whatever's behind —
+   *                  right for FULL-CANVAS primary content (stock/generated
+   *                  b-roll, a voiceover block's visual) where nothing
+   *                  meaningful sits behind it, so "contain" alone would
+   *                  show a black/empty gap. Mirrors services.aspect_conform
+   *                  on the render backend, so the preview matches what
+   *                  actually renders instead of looking MORE zoomed-in
+   *                  than the real output.
    * Read by croppable-layer.ts for the preview, carried through
-   * editorStarterToLuminacastSnapshot() as props.fit for the renderer.
+   * editorStarterToLuminacastSnapshot() as props.fit for the renderer
+   * ("contain-blur" collapses to "contain" there — see that mapping).
    */
-  fit?: "cover" | "contain";
+  fit?: "cover" | "contain" | "contain-blur";
   /**
    * Set by ArrangePhase's applyAspectFit() pass once this item's
    * width/height/left/top have been re-fitted to the asset's real

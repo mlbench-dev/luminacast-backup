@@ -39,9 +39,19 @@ export const useCroppableLayer = ({
 		throw new Error('Crop not implemented for this item type');
 	}
 
-	// "contain" items (product shots) fit the whole asset inside the box so
-	// nothing is cropped; everything else covers the box (b-roll, avatar).
-	const objectFit = item.metadata?.fit === 'contain' ? 'contain' : 'cover';
+	// "contain" items (product shots, b-roll cutaways with something behind
+	// them) fit the whole asset inside the box so nothing is cropped.
+	// "contain-blur" is for FULL-CANVAS primary content (stock/generated
+	// b-roll, voiceover visuals) where there's nothing meaningful behind the
+	// item — contain-fit the subject (nothing cropped) and fill the margin
+	// with a blurred, cover-fit copy of the SAME source instead of a hard
+	// black/transparent gap. Mirrors services.aspect_conform on the render
+	// backend, so the preview matches what actually gets rendered instead of
+	// showing a MORE zoomed-in crop than the final video will have.
+	// Everything else covers the box (avatar, PIP corners).
+	const fitMeta = item.metadata?.fit;
+	const objectFit = fitMeta === 'contain' || fitMeta === 'contain-blur' ? 'contain' : 'cover';
+	const showBlurBackdrop = fitMeta === 'contain-blur';
 
 	const innerStyle: React.CSSProperties = useMemo(() => {
 		return {
@@ -54,6 +64,23 @@ export const useCroppableLayer = ({
 			maxWidth: 'unset',
 		};
 	}, [crop.cropLeft, crop.cropTop, item.height, item.width, cropBackground, objectFit]);
+
+	// Backdrop: same box/position as innerStyle but object-fit: cover +
+	// blurred + dimmed, scaled up slightly so the blurred edge (where the
+	// browser samples outside the frame) never peeks in at the box edge.
+	// Rendered BEHIND the real (contain-fit) element — see VideoLayer /
+	// ImageLayer, which render this style on a duplicate of the same
+	// source when showBlurBackdrop is true.
+	const backdropStyle: React.CSSProperties | undefined = useMemo(() => {
+		if (!showBlurBackdrop) return undefined;
+		return {
+			...innerStyle,
+			objectFit: 'cover',
+			filter: 'blur(24px) brightness(0.75)',
+			transform: 'scale(1.12)',
+			transformOrigin: 'center',
+		};
+	}, [showBlurBackdrop, innerStyle]);
 
 	const outerStyle: React.CSSProperties = useMemo(() => {
 		return {
@@ -88,6 +115,7 @@ export const useCroppableLayer = ({
 		return {
 			innerStyle,
 			outerStyle,
+			backdropStyle,
 		};
-	}, [innerStyle, outerStyle]);
+	}, [innerStyle, outerStyle, backdropStyle]);
 };

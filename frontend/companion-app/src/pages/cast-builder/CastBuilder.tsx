@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, AlertCircle, RefreshCw, ArrowLeft, Trash2, Rocket, MoreVertical, Copy, ChevronLeft, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, AlertCircle, RefreshCw, ArrowLeft, Trash2, Rocket, MoreVertical, Copy, ChevronLeft, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { castsApi, billingApi } from "@/lib/api";
 import { CastStatus, type Cast } from "@/lib/types";
@@ -21,6 +21,7 @@ const ArrangePhase = lazy(() =>
 import { ReadyPhase } from "@/components/cast-builder/ReadyPhase";
 import { VersionPicker } from "@/components/cast-builder/VersionPicker";
 import { RenderStatusPill } from "@/components/cast-builder/RenderStatusPill";
+import { RenderFailedButton } from "@/components/cast-builder/RenderFailedButton";
 import { RendersCollection, type RendersCollectionHandle } from "@/components/cast-builder/RendersCollection";
 import { confirmAction } from "@/lib/swal";
 
@@ -671,14 +672,10 @@ export function CastBuilderPage() {
                       Render Ready
                     </Button>
                   ) : renderStatus.status === "failed" ? (
-                    <Button
-                      onClick={handleFinalizeClick}
-                      className="bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30"
-                      data-testid="finalize-render-btn"
-                    >
-                      <XCircle className="w-4 h-4 mr-2" />
-                      Render Failed — Retry
-                    </Button>
+                    <RenderFailedButton
+                      errorMessage={renderStatus.errorMessage}
+                      onRetry={handleFinalizeClick}
+                    />
                   ) : (
                     <Button
                       onClick={handleFinalizeClick}

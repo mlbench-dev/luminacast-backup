@@ -130,6 +130,21 @@ function framesToSeconds(frames: number, fps: number): number {
   return frames / fps;
 }
 
+/**
+ * Maps an item's editor-only `metadata.fit` to the `props.fit` value sent
+ * to the render backend. "contain-blur" (blurred-backdrop preview fill —
+ * see croppable-layer.ts) has no backend equivalent: the render pipeline's
+ * actual aspect handling lives in services.aspect_conform / voiceover_broll
+ * (contain-fit + blurred backdrop is already applied there independently of
+ * this prop), while the couple of overlay-compositing call sites that DO
+ * read props.fit only understand "contain" | "cover" — collapsing to
+ * "contain" there is always safe (never crops, never stretches) even on a
+ * path this value doesn't end up mattering for.
+ */
+function renderFitFor(metaFit: "cover" | "contain" | "contain-blur" | undefined): "cover" | "contain" {
+  return metaFit === "contain" || metaFit === "contain-blur" ? "contain" : "cover";
+}
+
 // ─── F.5.1 castToEditorStarterTimeline ──────────────────────────
 
 export interface CastToEditorOptions {
@@ -891,6 +906,13 @@ export function castToEditorStarterTimeline(
               category_color: categoryHex,
               parallel_kind: "video",
               parallel_source: pm.source || "pexels",
+              // Was unset -> defaulted to "cover" (crop-zoom) in preview
+              // for ANY mismatched-aspect stock clip. A speaking block has
+              // the avatar still visible underneath during the cutaway, so
+              // "contain" (letterbox reveals it) is fine; anything else
+              // (voiceover / pip) has nothing meaningful behind the b-roll,
+              // so it gets the blurred-backdrop fill instead of a bare gap.
+              fit: isSpeakingBlock ? "contain" : "contain-blur",
             },
           };
           items[pmItemId] = pmItem;
@@ -936,6 +958,7 @@ export function castToEditorStarterTimeline(
               category_color: categoryHex,
               parallel_kind: "photo",
               parallel_source: pm.source || "pexels",
+              fit: isSpeakingBlock ? "contain" : "contain-blur",
             },
           };
           items[pmItemId] = pmItem;
@@ -1012,6 +1035,11 @@ export function castToEditorStarterTimeline(
             track_type: "stock_media",
             category_color: categoryHex,
             stock_kind: "video",
+            // This clip IS the block's entire visual (stock_video /
+            // generated_video categories have no avatar) — nothing sits
+            // behind it, so a plain "contain" would show an empty gap on a
+            // mismatched-aspect clip. Blurred backdrop instead.
+            fit: "contain-blur",
           },
         };
         items[sItemId] = sItem;
@@ -1055,6 +1083,7 @@ export function castToEditorStarterTimeline(
             track_type: "stock_media",
             category_color: categoryHex,
             stock_kind: "photo",
+            fit: "contain-blur",
           },
         };
         items[sItemId] = sItem;
@@ -1760,7 +1789,7 @@ export function editorStarterToLuminacastSnapshot(undoableState: UndoableState):
         // How the renderer should fit a mismatched-aspect asset into its
         // box: "contain" (fit + pad — product shots) vs "cover" (fill +
         // crop — the default for b-roll / backgrounds).
-        props.fit = item.metadata?.fit ?? "cover";
+        props.fit = renderFitFor(item.metadata?.fit);
       }
 
       if (item.type === "video") {
@@ -1777,7 +1806,7 @@ export function editorStarterToLuminacastSnapshot(undoableState: UndoableState):
         props.cropTop = vi.cropTop ?? 0;
         props.cropRight = vi.cropRight ?? 0;
         props.cropBottom = vi.cropBottom ?? 0;
-        props.fit = item.metadata?.fit ?? "cover";
+        props.fit = renderFitFor(item.metadata?.fit);
       }
 
       if (item.type === "audio") {

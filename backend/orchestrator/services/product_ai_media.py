@@ -199,6 +199,7 @@ async def generate_ai_video_asset(
     custom_prompt: str = "",
     quality: str = "pro",
     model_endpoint: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> ProductAsset:
     """Generate a short product-only video via fal.ai Kling image-to-video
     and persist it as a new ``ProductAsset`` row tagged ``ai_generated_video``.
@@ -248,8 +249,14 @@ async def generate_ai_video_asset(
             }
             # v2.x Kling i2v + Veo derive/accept aspect_ratio; v1.x Kling i2v
             # took it via the SUPPORTS set. Send it for everything but v1.x.
+            # Was hardcoded "9:16" — generated a portrait clip even for a
+            # horizontal cast, then the compositor force-cropped it into the
+            # 16:9 canvas (the "heavily zoomed in" bug). Now takes the
+            # caller's aspect_ratio (product_broll_tasks derives it from the
+            # cast's own output_format); default stays "9:16" for the
+            # standalone Product Library caller, which has no cast context.
             if _is_veo or not _is_kling_v1:
-                kling_args["aspect_ratio"] = "9:16"
+                kling_args["aspect_ratio"] = aspect_ratio
             if not model_endpoint and kling_tier in _KLING_CFG_SCALE:
                 kling_args["cfg_scale"] = _KLING_CFG_SCALE[kling_tier]
             return fal_client.subscribe(kling_model, arguments=kling_args)

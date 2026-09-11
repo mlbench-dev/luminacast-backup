@@ -28,9 +28,6 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # back without a deploy.
 _DEFAULT_MODEL = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 
-# Every current in-app layout composites the b-roll into a 9:16 frame (full,
-# or behind a corner avatar), so 9:16 is always right. Kept as a function so
-# adding a landscape/split layout later is a one-line change.
 _VALID_ASPECT = {"9:16", "16:9", "1:1"}
 
 
@@ -46,12 +43,30 @@ def _model() -> str:
     return os.getenv("AI_BROLL_MODEL", "").strip() or _DEFAULT_MODEL
 
 
-def broll_aspect_ratio(block) -> str:
-    """Aspect ratio for a block's b-roll. All shipping layouts fill a 9:16
-    frame; this is the single place to branch if that changes."""
+def broll_aspect_ratio(block, cast=None) -> str:
+    """Aspect ratio for a block's b-roll.
+
+    Bug: this used to always return "9:16" — every layout used to be
+    portrait, so that was fine, but once "Horizontal" casts shipped it meant
+    AI b-roll was generated portrait and then force-cropped into a 16:9
+    canvas (the "horizontal video is heavily zoomed in" report). Now derives
+    from the cast's own ``output_format`` when the caller has one — that's
+    always the actual shape the clip will be composited into. ``block`` is
+    accepted for a future per-block override (e.g. a split-screen layout)
+    but isn't read today; kept in the signature so call sites don't need to
+    change again when that lands.
+
+    ``AI_BROLL_ASPECT_RATIO`` env override still wins over everything —
+    useful for forcing one shape during testing — and the hardcoded "9:16"
+    fallback only applies when neither the cast nor the env var says
+    anything valid.
+    """
     raw = os.getenv("AI_BROLL_ASPECT_RATIO", "").strip()
     if raw in _VALID_ASPECT:
         return raw
+    cast_fmt = (getattr(cast, "output_format", None) or "").strip()
+    if cast_fmt in _VALID_ASPECT:
+        return cast_fmt
     return "9:16"
 
 

@@ -1720,6 +1720,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                               castId={cast.id}
                               block={block}
                               scriptText={rawText}
+                              outputFormat={cast.output_format}
                               onUpdated={() => {
                                 queryClient.invalidateQueries({ queryKey: ["cast", cast.id] });
                               }}

@@ -26,15 +26,31 @@ import { toast } from "@/hooks/useToast";
  * Clicking "Add visual" opens a Pexels search modal. Selecting a result
  * appends it to `block.parallel_media` and persists via PUT /blocks/{id}.
  */
+// Pexels' orientation param, derived from the cast's own output format.
+// Was hardcoded to "portrait" always — fine while every cast was 9:16, but
+// once "Horizontal" casts shipped it meant every b-roll search still
+// fetched PORTRAIT footage for a LANDSCAPE canvas, which then had to be
+// force-cropped (zoomed) to fill the frame. Search for the shape the video
+// will actually be composited into instead.
+function pexelsOrientationForFormat(outputFormat?: string | null): "portrait" | "landscape" | "square" {
+  if (outputFormat === "16:9") return "landscape";
+  if (outputFormat === "1:1" || outputFormat === "4:5") return "square";
+  return "portrait";
+}
+
 export function ParallelMediaPicker({
   castId,
   block,
   scriptText,
+  outputFormat,
   onUpdated,
 }: {
   castId: string;
   block: Block;
   scriptText: string;
+  /** The cast's output_format ("9:16" | "16:9" | "1:1" | ...) — drives
+   * which orientation of stock footage the Pexels search fetches. */
+  outputFormat?: string | null;
   onUpdated: (block: Block) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -209,6 +225,7 @@ export function ParallelMediaPicker({
           // Pexels relevance and length. Script-derived fallback only
           // kicks in for legacy blocks that pre-date Smart Cast.
           initialQuery={aiQuery || defaultQueryFromScript(scriptText)}
+          orientation={pexelsOrientationForFormat(outputFormat)}
           onClose={() => setPickerOpen(false)}
           onPick={addItem}
         />
@@ -261,10 +278,12 @@ interface PexelsResult {
 
 function PexelsPickerModal({
   initialQuery,
+  orientation,
   onClose,
   onPick,
 }: {
   initialQuery: string;
+  orientation: "portrait" | "landscape" | "square";
   onClose: () => void;
   onPick: (item: ParallelMediaItem) => void;
 }) {
@@ -284,8 +303,10 @@ function PexelsPickerModal({
     try {
       const path = tab === "video" ? "/stock-media/videos" : "/stock-media/photos";
       const params: Record<string, any> = { q: query.trim(), per_page: 24 };
-      // Vertical b-roll over a portrait avatar block.
-      params.orientation = "portrait";
+      // Match the cast's actual output shape — was hardcoded "portrait",
+      // which fetched vertical footage even for a horizontal cast canvas
+      // (then force-cropped/zoomed to fill the wide frame downstream).
+      params.orientation = orientation;
       const { data } = await api.get(path, { params });
       const rq = (data?.resolved_query || "").trim();
       setResolvedQuery(rq && rq.toLowerCase() !== query.trim().toLowerCase() ? rq : null);
@@ -312,7 +333,7 @@ function PexelsPickerModal({
     } finally {
       setLoading(false);
     }
-  }, [query, tab]);
+  }, [query, tab, orientation]);
 
   // Auto-search on open if we have a default query.
   useEffect(() => {

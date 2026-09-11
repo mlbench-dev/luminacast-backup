@@ -152,7 +152,7 @@ async def _generate_async(cast_id: str) -> dict:
                     url, cost = await generate_scene_broll_video(
                         prompt_query=(blk.stock_media_query or "").strip(),
                         owner_id=owner_id,
-                        aspect_ratio=broll_aspect_ratio(blk),
+                        aspect_ratio=broll_aspect_ratio(blk, cast),
                         duration_seconds=5,
                         model_endpoint=_t2v_endpoint,
                     )
@@ -219,11 +219,13 @@ async def _generate_async(cast_id: str) -> dict:
                     reused += 1
                 else:
                     if kind == "video":
+                        from services.ai_broll import broll_aspect_ratio
                         asset = await generate_ai_video_asset(
                             product, db, owner_id, style="product_showcase",
                             duration_seconds=5, quality="pro",
                             custom_prompt=prompt,
                             model_endpoint=_i2v_endpoint,
+                            aspect_ratio=broll_aspect_ratio(blk, cast),
                         )
                     else:
                         asset = await generate_ai_image_asset(

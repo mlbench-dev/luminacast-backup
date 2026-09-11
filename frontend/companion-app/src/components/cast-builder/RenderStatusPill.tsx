@@ -113,7 +113,12 @@ function ProviderChip({ provider }: { provider: string | null }) {
 // tier fallback chains) — useful for us, meaningless and alarming for a
 // user. Map the common cases to a short, plain-language line; the raw text
 // is still available via the row's title tooltip for support/debugging.
-function friendlyBlockError(raw: string | null | undefined): string {
+// Exported: the same mapping applies to a whole render's error_message
+// (CastRender.error_message), not just a single block's — see
+// RenderFailedButton in CastBuilder.tsx, which shows the render-level
+// reason once the pill's own dropdown (only visible while rendering) is
+// gone.
+export function friendlyBlockError(raw: string | null | undefined): string {
   if (!raw) return "Something went wrong — try again.";
   if (raw.includes("ClipValidationError")) {
     return "The generated clip didn't pass quality checks — try again.";

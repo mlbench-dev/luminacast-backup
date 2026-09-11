@@ -44,7 +44,7 @@ const ImageItemUnmemoized: React.FC<{
 		item.fadeOutDurationInSeconds,
 	]);
 
-	const {innerStyle, outerStyle} = useCroppableLayer({
+	const {innerStyle, outerStyle, backdropStyle} = useCroppableLayer({
 		item,
 		rotation: item.rotation,
 		opacity,
@@ -57,6 +57,14 @@ const ImageItemUnmemoized: React.FC<{
 	return (
 		<div style={outerStyle}>
 			<RequireCachedAsset asset={asset}>
+				{backdropStyle && (
+					<Img
+						crossOrigin="anonymous"
+						style={backdropStyle}
+						src={src}
+						aria-hidden
+					/>
+				)}
 				<Img
 					crossOrigin="anonymous"
 					// pauseWhenLoading (disabled for CDN latency)

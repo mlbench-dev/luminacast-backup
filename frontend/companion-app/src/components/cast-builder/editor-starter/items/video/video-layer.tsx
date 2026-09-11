@@ -70,7 +70,7 @@ export const VideoLayer = ({
 		item.fadeOutDurationInSeconds,
 	]);
 
-	const {innerStyle, outerStyle} = useCroppableLayer({
+	const {innerStyle, outerStyle, backdropStyle} = useCroppableLayer({
 		item,
 		rotation: item.rotation,
 		opacity,
@@ -84,6 +84,17 @@ export const VideoLayer = ({
 		return (
 			<div style={outerStyle}>
 				<RequireCachedAsset asset={asset}>
+					{backdropStyle && (
+						<Video
+							volume={0}
+							trimBefore={startFrom}
+							src={src}
+							style={backdropStyle}
+							muted
+							playbackRate={item.playbackRate}
+							aria-hidden
+						/>
+					)}
 					<Video
 						volume={volume}
 						trimBefore={startFrom}
@@ -100,6 +111,18 @@ export const VideoLayer = ({
 	return (
 		<div style={outerStyle}>
 			<RequireCachedAsset asset={asset}>
+				{backdropStyle && (
+					<OffthreadVideo
+						volume={0}
+						trimBefore={startFrom}
+						src={src}
+						style={backdropStyle}
+						muted
+						playbackRate={item.playbackRate}
+						crossOrigin="anonymous"
+						aria-hidden
+					/>
+				)}
 				<OffthreadVideo
 					volume={volume}
 					trimBefore={startFrom}

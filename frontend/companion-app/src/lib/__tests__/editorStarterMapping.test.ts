@@ -196,6 +196,84 @@ describe("castToEditorStarterTimeline", () => {
     expect(pipTrack.items).not.toContain("v1_b_002");
   });
 
+  it("marks a speaking block's b-roll cutaway 'contain' (avatar still visible behind it)", () => {
+    // Bug: b-roll items carried no `fit` metadata at all, so the preview
+    // (and, via props.fit, the renderer) defaulted to "cover" — a
+    // mismatched-aspect clip (e.g. portrait stock footage on a horizontal
+    // cast) got force-cropped/zoomed to fill the box.
+    const castWithSpeakingBroll: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          category: "avatar_speaking",
+          parallel_media: [
+            { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 2 },
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+    const { state } = castToEditorStarterTimeline(castWithSpeakingBroll, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    const brollItem = Object.values(state.items).find(
+      (it) => it.metadata?.track_type === "parallel_media",
+    );
+    expect(brollItem).toBeDefined();
+    expect(brollItem?.metadata?.fit).toBe("contain");
+  });
+
+  it("marks a PIP block's b-roll background 'contain-blur' (nothing else behind it)", () => {
+    const castWithPipBroll: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          category: "pip_talking_head",
+          parallel_media: [
+            { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 3 },
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+    const { state } = castToEditorStarterTimeline(castWithPipBroll, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    const brollItem = Object.values(state.items).find(
+      (it) => it.metadata?.track_type === "parallel_media",
+    );
+    expect(brollItem).toBeDefined();
+    expect(brollItem?.metadata?.fit).toBe("contain-blur");
+  });
+
+  it("marks a pure stock_video block's clip 'contain-blur' (the clip IS the whole visual)", () => {
+    const castWithStockVideo: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          category: "stock_video",
+          stock_media_url: "https://x/stock.mp4",
+          stock_media_kind: "video",
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+    const { state } = castToEditorStarterTimeline(castWithStockVideo, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    const stockItem = Object.values(state.items).find(
+      (it) => it.metadata?.track_type === "stock_media",
+    );
+    expect(stockItem).toBeDefined();
+    expect(stockItem?.metadata?.fit).toBe("contain-blur");
+  });
+
   it("never lays b-roll over an action block (its own clip is the visual)", () => {
     const castWithAction: Cast = {
       ...FIXTURE_CAST,
@@ -413,6 +491,43 @@ describe("editorStarterToLuminacastSnapshot", () => {
     expect(snapshot.tracks).toHaveLength(2);
     expect(snapshot.tracks[0].type).toBe("video");
     expect(snapshot.tracks[1].type).toBe("audio");
+  });
+
+  it("collapses 'contain-blur' to 'contain' in the renderer payload (no backend equivalent)", () => {
+    // The render backend has no blurred-backdrop concept — that's applied
+    // independently in services.aspect_conform / voiceover_broll. Sending
+    // "contain-blur" as props.fit to any backend consumer that only knows
+    // "contain" | "cover" must never fall through to an unguarded default.
+    const castWithPipBroll: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          category: "pip_talking_head",
+          parallel_media: [
+            { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 3 },
+          ],
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+    const { state } = castToEditorStarterTimeline(castWithPipBroll, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    // Preview-side metadata keeps the richer value...
+    const brollItem = Object.values(state.items).find(
+      (it) => it.metadata?.track_type === "parallel_media",
+    );
+    expect(brollItem?.metadata?.fit).toBe("contain-blur");
+
+    // ...but the exported renderer payload only ever sees "contain".
+    const snapshot = editorStarterToLuminacastSnapshot(state);
+    const brollEl = snapshot.tracks
+      .flatMap((t) => t.elements)
+      .find((el) => el.metadata?.track_type === "parallel_media");
+    expect(brollEl).toBeDefined();
+    expect((brollEl!.props as any).fit).toBe("contain");
   });
 
   it("converts frames to seconds correctly", () => {
