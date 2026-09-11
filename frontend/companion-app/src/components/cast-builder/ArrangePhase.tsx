@@ -19,6 +19,7 @@ import {
   editorStarterToLuminacastSnapshot,
   computeBlockRegions,
   getCanvasSize,
+  needsAspectFitRebuild,
 } from "@/lib/editorStarterMapping";
 import type { UndoableState } from "@/components/cast-builder/editor-starter/state/types";
 import { applyAspectFit } from "@/lib/aspectFit";
@@ -338,13 +339,29 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
               savedCanvasH != null &&
               (savedCanvasW !== expectedCanvas.width || savedCanvasH !== expectedCanvas.height);
 
-            if (allCurrentInSaved && currentBlocks.length > 0 && staleBlocks.length === 0 && !orientationStale) {
+            // A saved state can have the RIGHT canvas size (e.g. a cast
+            // forked to horizontal already got a correct 1920x1080 canvas)
+            // while its ITEMS still predate the "don't zoom mismatched-
+            // aspect video" fit fix — orientationStale alone doesn't catch
+            // that, so a cast whose editor state was saved before the fix
+            // kept restoring the old zoomed items forever, even after the
+            // fix shipped. See needsAspectFitRebuild's own docstring.
+            const fitMetadataStale = needsAspectFitRebuild(
+              savedTimeline.editor_state as UndoableState,
+            );
+
+            if (
+              allCurrentInSaved && currentBlocks.length > 0 &&
+              staleBlocks.length === 0 && !orientationStale && !fitMetadataStale
+            ) {
               restoredState = savedTimeline.editor_state as UndoableState;
               console.log("RESTORED saved editor state:", {
                 savedItemCount: Object.keys(items).length,
                 currentBlockCount: currentBlocks.length,
                 savedAt: savedTimeline.saved_at,
               });
+            } else if (fitMetadataStale) {
+              console.log("Saved editor state predates the aspect-fit fix — rebuilding fresh.");
             } else if (orientationStale) {
               console.log("Saved editor state canvas size doesn't match current output_format — rebuilding fresh.", {
                 savedCanvasW, savedCanvasH, expectedCanvas, outputFormat: freshCast.output_format,

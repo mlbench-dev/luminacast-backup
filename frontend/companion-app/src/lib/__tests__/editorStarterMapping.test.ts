@@ -3,6 +3,7 @@ import {
   castToEditorStarterTimeline,
   editorStarterToLuminacastSnapshot,
   computeBlockRegions,
+  needsAspectFitRebuild,
   type LuminacastSnapshot,
 } from "../editorStarterMapping";
 import type { Cast } from "../types";
@@ -428,6 +429,55 @@ describe("castToEditorStarterTimeline", () => {
     expect(v1.type).toBe("video");
   });
 
+  it("marks a fullscreen avatar 'contain-blur' — its own clip/photo is always portrait", () => {
+    // Bug: the avatar's V1 item carried no `fit` at all, so a portrait
+    // avatar clip (or, before a render, its reference photo — always
+    // portrait) got force-cropped/zoomed to cover a horizontal canvas.
+    // Covers both the placeholder-image case (no render yet) and the
+    // rendered-video case.
+    const { state: imageState } = castToEditorStarterTimeline(FIXTURE_CAST, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    expect(imageState.items["v1_b_001"].metadata?.fit).toBe("contain-blur");
+
+    const castWithVideo: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          variants: [
+            {
+              ...FIXTURE_CAST.blocks![0].variants![0],
+              video_key: "casts/cast_test_1/video/b_001.mp4",
+            },
+          ],
+        },
+      ],
+    };
+    const { state: videoState } = castToEditorStarterTimeline(castWithVideo, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    expect(videoState.items["v1_b_001"].metadata?.fit).toBe("contain-blur");
+  });
+
+  it("leaves a PIP corner avatar on the default 'cover' fit (the box is meant to be filled)", () => {
+    const castWithPip: Cast = {
+      ...FIXTURE_CAST,
+      blocks: [
+        {
+          ...FIXTURE_CAST.blocks![0],
+          category: "pip_talking_head",
+        } as any,
+        FIXTURE_CAST.blocks![1],
+        FIXTURE_CAST.blocks![2],
+      ],
+    };
+    const { state } = castToEditorStarterTimeline(castWithPip, {
+      avatarFaceKey: AVATAR_FACE_KEY,
+    });
+    expect(state.items["v1_b_001"].metadata?.fit).toBeUndefined();
+  });
+
   it("creates assets for each item", () => {
     const { state } = castToEditorStarterTimeline(FIXTURE_CAST, {
       avatarFaceKey: AVATAR_FACE_KEY,
@@ -675,6 +725,75 @@ describe("computeBlockRegions", () => {
     expect(regions[0].end_s).toBe(4.5);
     expect(regions[1].block_id).toBe("b_002");
     expect(regions[2].block_id).toBe("b_003");
+  });
+});
+
+describe("needsAspectFitRebuild", () => {
+  // Bug: ArrangePhase restores a cast's last-saved editor state verbatim
+  // whenever it still "looks current" (same block ids, plausible durations,
+  // matching canvas size) — a saved state that predates the fit-metadata
+  // fix looked current by every one of those checks (a horizontal fork
+  // already had the right 1920x1080 canvas; only its ITEMS lacked `fit`),
+  // so it kept restoring the old zoomed items forever even after the fix
+  // shipped and was redeployed.
+
+  it("flags a saved state whose b-roll item has no fit metadata at all", () => {
+    const staleState = {
+      items: {
+        pm_b_001_0: {
+          metadata: { track_type: "parallel_media" },
+        },
+      },
+    } as any;
+    expect(needsAspectFitRebuild(staleState)).toBe(true);
+  });
+
+  it("flags a saved state whose fullscreen avatar item has no fit metadata", () => {
+    const staleState = {
+      items: {
+        v1_b_001: {
+          metadata: { track_type: "video_face", render_mode: "full" },
+        },
+      },
+    } as any;
+    expect(needsAspectFitRebuild(staleState)).toBe(true);
+  });
+
+  it("does NOT flag a PIP avatar item missing fit (it's meant to stay 'cover')", () => {
+    const currentState = {
+      items: {
+        v1_b_001: {
+          metadata: { track_type: "video_face", render_mode: "pip" },
+        },
+      },
+    } as any;
+    expect(needsAspectFitRebuild(currentState)).toBe(false);
+  });
+
+  it("does NOT flag a fresh state where every stamped item already carries fit", () => {
+    const { state } = castToEditorStarterTimeline(
+      {
+        ...FIXTURE_CAST,
+        blocks: [
+          {
+            ...FIXTURE_CAST.blocks![0],
+            category: "avatar_speaking",
+            parallel_media: [
+              { kind: "video", url: "https://x/broll.mp4", start_offset_s: 0, duration_s: 2 },
+            ],
+          } as any,
+          FIXTURE_CAST.blocks![1],
+          FIXTURE_CAST.blocks![2],
+        ],
+      },
+      { avatarFaceKey: AVATAR_FACE_KEY },
+    );
+    expect(needsAspectFitRebuild(state)).toBe(false);
+  });
+
+  it("handles a missing/empty items map without throwing", () => {
+    expect(needsAspectFitRebuild({ items: {} } as any)).toBe(false);
+    expect(needsAspectFitRebuild({} as any)).toBe(false);
   });
 });
 

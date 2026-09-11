@@ -314,6 +314,10 @@ export function castToEditorStarterTimeline(
                 : phIsMotion
                   ? "motion"
                   : "full",
+          // Same portrait-reference-photo-on-a-fullscreen-box issue as the
+          // main V1 item below — this "no audio yet" placeholder is full
+          // canvas too.
+          ...(phIsPip ? {} : { fit: "contain-blur" as const }),
         },
       };
       items[phItemId] = phItem;
@@ -588,6 +592,13 @@ export function castToEditorStarterTimeline(
             ...(isPipFromMeta
               ? { feather: 12, drop_shadow: { blur: 10, alpha: 0.5 } }
               : {}),
+            // Fullscreen avatar box = the whole canvas. The avatar's own
+            // baked clip (or, before a render, its reference photo) is
+            // authored PORTRAIT regardless of the cast's output format —
+            // on a horizontal cast that got force-cropped/zoomed to cover
+            // the wide box (the reported bug). A PIP corner box is small
+            // and MEANT to be filled edge-to-edge, so it keeps "cover".
+            ...(isAnyPip ? {} : { fit: "contain-blur" as const }),
           },
         };
         items[snapshotItemId] = videoItem;
@@ -652,6 +663,11 @@ export function castToEditorStarterTimeline(
             ...(isPipFromMeta
               ? { feather: 12, drop_shadow: { blur: 10, alpha: 0.5 } }
               : {}),
+            // This is always the avatar's PORTRAIT reference photo (no
+            // render has happened yet) — on a horizontal cast it would
+            // otherwise cover-crop/zoom into the wide box every time, not
+            // just before the first render. See the video branch above.
+            ...(isAnyPip ? {} : { fit: "contain-blur" as const }),
             // This block's real avatar video hasn't been generated yet (that
             // only happens at Finalize & Render) — we're standing in with a
             // static face photo so captions/overlays/timing can still be
@@ -1619,6 +1635,43 @@ export function castToEditorStarterTimeline(
   };
 
   return { state, blockRegions: regions };
+}
+
+/**
+ * True when a PREVIOUSLY-SAVED editor state predates the aspect-ratio `fit`
+ * fix and should be discarded in favour of a fresh rebuild, instead of being
+ * restored as-is.
+ *
+ * Bug: ArrangePhase restores a cast's last-saved `editor_state` verbatim
+ * whenever its block ids / durations / canvas size still look current — so a
+ * cast whose editor state was saved BEFORE this fit-metadata fix shipped
+ * kept showing the old zoomed/cropped items forever, even after the mapping
+ * code that builds FRESH state was fixed and redeployed: canvas size alone
+ * doesn't change just because this fix landed (a horizontal cast forked
+ * before the fix already had the right 1920x1080 canvas — only the ITEMS
+ * inside it were missing `fit`), so the existing staleness checks never
+ * caught it.
+ *
+ * `parallel_media` and `stock_media` items always carry an explicit `fit`
+ * as of this fix (never omitted) — so any such item missing `fit` is an
+ * unambiguous "this state predates the fix" signal. Fullscreen (non-PIP)
+ * avatar items do too; PIP avatar items intentionally omit `fit` (they're
+ * meant to stay "cover"), so those are excluded to avoid false positives.
+ */
+export function needsAspectFitRebuild(state: Pick<UndoableState, "items">): boolean {
+  for (const item of Object.values(state.items || {})) {
+    const meta = (item as EditorStarterItem).metadata as (ItemMetadata & { render_mode?: string }) | undefined;
+    if (!meta) continue;
+    const trackType = meta.track_type;
+    const isAlwaysStamped =
+      trackType === "parallel_media" ||
+      trackType === "stock_media" ||
+      (trackType === "video_face" && meta.render_mode !== "pip");
+    if (isAlwaysStamped && meta.fit === undefined) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ─── F.5.2 editorStarterToLuminacastSnapshot ──────────────────────
