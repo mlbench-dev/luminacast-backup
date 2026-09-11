@@ -202,6 +202,18 @@ def normalize_baked_block(
         # fully fills the canvas — landscape sources brought into a
         # portrait canvas lose left/right edges instead of getting black
         # letterbox bars top/bottom.
+        #
+        # BUT when the source and canvas shapes diverge sharply (a
+        # PORTRAIT avatar/product bake landing in a HORIZONTAL cast canvas,
+        # or vice versa — every avatar/product image is authored portrait
+        # regardless of the cast's chosen format), a cover-crop has to blow
+        # the image up ~1.8x and throw away most of one dimension to fill
+        # the frame — the "horizontal video is heavily zoomed in" bug.
+        # build_conform_filter swaps to a contain-fit + blurred, edge-
+        # extended backdrop in that case: nothing is cropped and there's no
+        # hard black bar, only in the common case (shapes already close) is
+        # this identical to the previous cover-crop-only behaviour.
+        #
         # setsar=1 normalises pixel-aspect-ratio in case the source comes
         # back with non-square pixels (some upstream responses do).
         #
@@ -212,11 +224,15 @@ def normalize_baked_block(
         # the overshot motion bake; capping the duration here would destroy
         # the surplus that head-trim needs. So the output keeps the input's
         # own duration (snapped to a whole frame at target_fps).
-        v_prep = (
-            f"[0:v]fps={target_fps},"
-            f"scale={target_width}:{target_height}:force_original_aspect_ratio=increase,"
-            f"crop={target_width}:{target_height},"
-            f"setsar=1[vprep]"
+        from services.aspect_conform import build_conform_filter
+        v_prep = build_conform_filter(
+            in_label="0:v",
+            out_label="vprep",
+            target_w=target_width,
+            target_h=target_height,
+            src_w=in_w,
+            src_h=in_h,
+            extra_pre=f"fps={target_fps},",
         )
         # Preserve the bake's own length. Snap to a whole frame so concat
         # downstream never lands mid-frame. ``-t`` is set to the bake

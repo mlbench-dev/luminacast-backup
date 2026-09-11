@@ -120,7 +120,7 @@ export function ParallelMediaPicker({
               : aiBroll === "failed"
               ? "Couldn't generate an AI clip — using stock for now."
               : aiSuggestedItem
-              ? "AI picked the visual below — swap it or add more."
+              ? "AI picked the visual below — hover it to remove, or add more."
               : aiQuery
               ? "Search ran with the AI tag above — add what fits the moment."
               : "Stock photos / videos that play on top of the voice. Avatar audio keeps running underneath."}

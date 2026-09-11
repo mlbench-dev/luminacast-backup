@@ -5140,6 +5140,64 @@ async def _render_async(task, render_id: str):
         motion_prompt = v1_meta.get("motion_prompt") \
                         or "A person talking naturally to the camera"
 
+        # "Horizontal video heavily zoomed in" root-cause fix: every avatar
+        # reference photo is authored/generated PORTRAIT-only regardless of
+        # the cast's output format. When the canvas is landscape (or
+        # square), handing that portrait photo to the I2V/talking-head
+        # provider as-is forces IT to crop internally to fill the requested
+        # frame — pixels it throws away can never be recovered by a
+        # downstream compositor fix. Conform the reference photo to the
+        # cast's actual canvas shape here, before it's sent: cheap
+        # cover-crop when the shapes are already close (unchanged
+        # behaviour), contain-fit + blurred backdrop (nothing cropped, no
+        # black bar) when they diverge — e.g. a 9:16 photo for a 16:9
+        # canvas. Cached in R2 by (source url, target shape) so repeat
+        # blocks/renders for the same avatar don't re-transform. Every
+        # consumer of face_ref_url downstream (HOSTKEY, cloud dispatcher,
+        # sync-lipsync refine) reads it out of this same pending_jobs tuple,
+        # so fixing it once here covers all of them.
+        if face_ref_url:
+            try:
+                _cf_w, _cf_h, _ = _canvas_dims_for_render(timeline)
+                if _cf_w > 0 and _cf_h > 0:
+                    async with httpx.AsyncClient(timeout=30.0) as _cf_http:
+                        _cf_resp = await _cf_http.get(face_ref_url)
+                        _cf_resp.raise_for_status()
+                        _cf_src_bytes = _cf_resp.content
+                    from PIL import Image as _CfImage
+                    import io as _cf_io
+                    with _CfImage.open(_cf_io.BytesIO(_cf_src_bytes)) as _cf_probe:
+                        _cf_src_w, _cf_src_h = _cf_probe.size
+                    from services.aspect_conform import shapes_diverge
+                    if shapes_diverge(_cf_src_w, _cf_src_h, _cf_w, _cf_h):
+                        import hashlib as _cf_hashlib
+                        _cf_hash = _cf_hashlib.sha256(
+                            face_ref_url.encode("utf-8")
+                        ).hexdigest()[:20]
+                        _cf_key = f"cache/aspect_conform/{_cf_hash}_{_cf_w}x{_cf_h}.jpg"
+                        if not await r2.key_exists(_cf_key):
+                            from services.aspect_conform import conform_image_bytes
+                            _cf_out = await asyncio.to_thread(
+                                conform_image_bytes, _cf_src_bytes, _cf_w, _cf_h,
+                            )
+                            await r2.upload_bytes(
+                                _cf_out, _cf_key, content_type="image/jpeg",
+                                cache_control="public, max-age=31536000, immutable",
+                            )
+                        face_ref_url = r2.get_public_url(_cf_key)
+                        logger.info(
+                            "Block %s: conformed avatar reference %dx%d -> "
+                            "canvas %dx%d (was diverging shape)",
+                            block_id, _cf_src_w, _cf_src_h, _cf_w, _cf_h,
+                        )
+            except Exception as _cf_exc:
+                sentry_sdk.capture_exception(_cf_exc)
+                logger.warning(
+                    "Block %s: face_ref aspect-conform failed (%s); using "
+                    "original reference photo",
+                    block_id, _cf_exc,
+                )
+
         pending_jobs.append((idx, block_id, v1_element, a1_element, baked_key, duration_s,
                              face_ref_url, audio_url, motion_prompt))
 

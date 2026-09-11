@@ -24,12 +24,15 @@ no hardcoded render timeouts (RULES.md §"no hardcoded render/audio timeouts").
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import tempfile
 
 import httpx
 import sentry_sdk
+
+logger = logging.getLogger(__name__)
 
 # Ken-Burns zoom rate per frame. Matches the background compositor's default
 # (services/background_compositor.py) so the pan-zoom feel is consistent
@@ -167,6 +170,33 @@ async def render_ken_burns_from_image(
         out_path = os.path.join(tmp, "out.mp4")
         await _download(image_url, img_path, timeout_s=timeout_s)
 
+        # _ken_burns_filter's own scale=width*2:height*2 step assumes the
+        # source is already roughly the canvas shape — it has no
+        # force_original_aspect_ratio guard, so a portrait product/scene
+        # photo fed straight in gets squashed/stretched to fit a landscape
+        # canvas (or vice versa). Pre-conform the still to (width, height)
+        # here: contain-fit + blurred backdrop when the shapes diverge (the
+        # avatar/product-photo-is-always-portrait bug), a cheap cover-crop
+        # resize when they're already close. Either way the Ken Burns
+        # filter below then receives an image already the right shape, so
+        # its 2x scale is undistorted.
+        try:
+            with open(img_path, "rb") as _imf:
+                _img_bytes = _imf.read()
+            from services.aspect_conform import conform_image_bytes
+            _conformed = await asyncio.to_thread(
+                conform_image_bytes, _img_bytes, width, height,
+            )
+            with open(img_path, "wb") as _imf:
+                _imf.write(_conformed)
+        except Exception as conform_exc:
+            sentry_sdk.capture_exception(conform_exc)
+            logger.warning(
+                "Ken Burns source conform failed (%s); using raw image "
+                "as downloaded — may distort on aspect mismatch",
+                conform_exc,
+            )
+
         vf = _ken_burns_filter(width, height, fps, slot_s)
         cmd = [
             "ffmpeg", "-y",
@@ -206,9 +236,31 @@ async def render_video_to_slot(
         out_path = os.path.join(tmp, "out.mp4")
         await _download(video_url, src_path, timeout_s=timeout_s)
 
-        vf = (
-            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},fps={fps},setsar=1"
+        # Product/b-roll videos are frequently portrait even when the cast
+        # canvas is horizontal — a plain cover-crop then has to blow the clip
+        # up and throw away most of one dimension to fill the frame (the
+        # "horizontal video is heavily zoomed in" bug). Only fall back to
+        # contain-fit + blurred backdrop when the shapes actually diverge;
+        # same-shape sources keep the original cover-crop unchanged.
+        src_w = src_h = 0
+        try:
+            from services.block_normalize import _probe_streams
+            probe = await asyncio.to_thread(_probe_streams, src_path)
+            src_w = int(probe.get("width") or 0)
+            src_h = int(probe.get("height") or 0)
+        except Exception as probe_exc:
+            sentry_sdk.capture_exception(probe_exc)
+
+        # build_conform_filter's contain-fit branch uses split + named pads
+        # to merge a blurred backdrop with a contain-fit foreground, which
+        # -vf's simple linear chain can't express — use -filter_complex
+        # with an explicit -map instead (works for both branches).
+        from services.aspect_conform import build_conform_filter
+        filter_complex = build_conform_filter(
+            in_label="0:v", out_label="vout",
+            target_w=width, target_h=height,
+            src_w=src_w, src_h=src_h,
+            extra_pre=f"fps={fps},",
         )
         cmd = [
             "ffmpeg", "-y",
@@ -216,7 +268,8 @@ async def render_video_to_slot(
             "-i", src_path,
             "-t", f"{slot_s:.3f}",
             "-an",
-            "-vf", vf,
+            "-filter_complex", filter_complex,
+            "-map", "[vout]",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
