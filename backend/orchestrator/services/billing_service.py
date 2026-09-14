@@ -109,6 +109,19 @@ def _is_billable(subscription: Optional[Subscription]) -> bool:
     )
 
 
+async def _is_admin(db: AsyncSession, owner_id: str) -> bool:
+    """Admin accounts never need to buy a subscription or PAYG credits —
+    used by check_render_preflight and check_avatar_slot_available (the
+    only two functions that actually BLOCK an action with a "subscribe to
+    continue" error) to bypass those gates entirely for admins. Local
+    import avoids a circular import with models.user; defaults to
+    non-admin on any lookup failure (fail closed, never silently grants
+    the bypass)."""
+    from models.user import User, UserRole
+    user = await db.get(User, owner_id)
+    return bool(user and user.role == UserRole.ADMIN)
+
+
 def get_plan_config(plan_id: str) -> dict:
     return PLAN_CATALOG[plan_id]
 
@@ -334,6 +347,8 @@ async def check_render_preflight(db: AsyncSession, owner_id: str) -> None:
     genuinely no possible way to bill the render at all: free tier
     exhausted, no active subscription, and zero PAYG credits.
     """
+    if await _is_admin(db, owner_id):
+        return
     subscription = await get_active_subscription(db, owner_id)
     if _is_billable(subscription):
         return
@@ -374,6 +389,54 @@ async def deduct_render_usage(
     result = compute_billable_minutes(duration_seconds, production_level, quality)
     billable_minutes = result.billable_minutes
     level = result.production_level
+
+    # Bug (more serious than the start-of-render gate): check_render_preflight
+    # was fixed to never BLOCK an admin from starting a render, but THIS
+    # function — which runs AFTER the render finishes and is what actually
+    # deducts wallet credits or fires a REAL off-session Stripe charge via
+    # _attempt_overage_charge — recomputes billing completely independently
+    # and had no admin awareness at all. An admin whose included/free
+    # minutes were exhausted could start a render fine (gate bypassed) and
+    # then have their card genuinely charged once it completed. Still
+    # record the render for accurate usage analytics, but treat the whole
+    # thing as free — never touch the wallet or Stripe for an admin.
+    if await _is_admin(db, owner_id):
+        period = await get_or_create_current_usage_period(db, owner_id)
+        record = RenderUsageRecord(
+            id=_id("rur"),
+            user_id=user_id,
+            render_id=render_id,
+            cast_id=cast_id,
+            usage_period_id=period.id,
+            duration_seconds=float(duration_seconds or 0.0),
+            production_level=level,
+            multiplier=result.production_multiplier,
+            quality=result.quality,
+            quality_multiplier=result.quality_multiplier,
+            billable_minutes=billable_minutes,
+            included_minutes_applied=0.0,
+            credits_minutes_applied=0.0,
+            credits_amount_cents=0,
+            overage_minutes_applied=0.0,
+            overage_rate_cents_per_minute=None,
+            overage_amount_cents=0,
+            free_minutes_applied=billable_minutes,
+        )
+        db.add(record)
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Lost a race with a concurrent redelivery of the same render's
+            # completion event — see the identical handling below.
+            await db.rollback()
+            existing = (
+                await db.execute(select(RenderUsageRecord).where(RenderUsageRecord.render_id == render_id))
+            ).scalar_one_or_none()
+            if existing:
+                return existing
+            raise
+        return record
+
     remaining = billable_minutes
 
     subscription = await get_active_subscription(db, owner_id)
@@ -647,6 +710,33 @@ async def _attempt_overage_charge(
 
 
 async def get_avatar_slot_summary(db: AsyncSession, owner_id: str) -> dict:
+    used = (
+        await db.execute(
+            select(Avatar).where(Avatar.user_id == owner_id, Avatar.deleted_at.is_(None))
+        )
+    ).scalars().all()
+    used_count = len(used)
+
+    # Bug: check_avatar_slot_available (the actual gate) was fixed to skip
+    # entirely for admins, but this summary — what the avatar Setup page
+    # fetches to decide whether to gray out "Create Avatar" — wasn't, so an
+    # admin over the free-tier count still saw the create button disabled
+    # client-side and never got a chance to reach the now-fixed backend at
+    # all. `unlimited` is for a future frontend read; the padded
+    # `included`/`remaining` numbers below make an admin's create button
+    # correctly stay enabled TODAY even without any frontend change, since
+    # remaining is derived from them the exact same way as everyone else's.
+    if await _is_admin(db, owner_id):
+        headroom = 1000
+        return {
+            "included": used_count + headroom,
+            "purchased": 0,
+            "total": used_count + headroom,
+            "used": used_count,
+            "remaining": headroom,
+            "unlimited": True,
+        }
+
     subscription = await get_active_subscription(db, owner_id)
     if _is_billable(subscription):
         plan = get_plan_config(subscription.plan)
@@ -656,12 +746,6 @@ async def get_avatar_slot_summary(db: AsyncSession, owner_id: str) -> dict:
         included = FREE_TIER["avatar_slots"]
         purchased = 0
 
-    used = (
-        await db.execute(
-            select(Avatar).where(Avatar.user_id == owner_id, Avatar.deleted_at.is_(None))
-        )
-    ).scalars().all()
-    used_count = len(used)
     total = included + purchased
     return {
         "included": included,
@@ -669,10 +753,13 @@ async def get_avatar_slot_summary(db: AsyncSession, owner_id: str) -> dict:
         "total": total,
         "used": used_count,
         "remaining": max(total - used_count, 0),
+        "unlimited": False,
     }
 
 
 async def check_avatar_slot_available(db: AsyncSession, owner_id: str) -> None:
+    if await _is_admin(db, owner_id):
+        return
     summary = await get_avatar_slot_summary(db, owner_id)
     if summary["used"] >= summary["total"]:
         raise HTTPException(
@@ -1158,7 +1245,7 @@ async def mark_subscription_past_due(db: AsyncSession, owner_id: str) -> Optiona
 
 
 def _describe_next_render_billing(
-    subscription: Optional[Subscription], period, wallet
+    subscription: Optional[Subscription], period, wallet, is_admin: bool = False
 ) -> dict:
     """How the NEXT render will be paid for — so the UI can warn the user
     BEFORE a render that will charge their card as overage (there is no other
@@ -1166,7 +1253,30 @@ def _describe_next_render_billing(
     render — see _attempt_overage_charge). Mirrors the cascade used by
     check_render_preflight + deduct_render_usage: included -> credits ->
     overage / blocked.
+
+    Bug: check_render_preflight and deduct_render_usage were both fixed to
+    never block/charge an admin, but this preview (what the editor page's
+    "Finalize & Render" confirmation reads) independently recomputed the
+    same cascade with no admin awareness — an admin WITH an active
+    subscription record (e.g. one who was a paying customer before being
+    made admin) whose included minutes were used up would still see "this
+    render will be charged to your card", even though it genuinely
+    wouldn't be. `is_admin` short-circuits straight to a clean, accurate
+    "included" / no-charge result.
     """
+    if is_admin:
+        return {
+            "source": "included",
+            "will_charge_card": False,
+            "overage_rate_cents_per_minute": {
+                "standard": get_overage_render_rate_cents("standard"),
+                "premium": get_overage_render_rate_cents("premium"),
+            },
+            "non_subscriber_rate_cents_per_minute": (
+                NON_SUBSCRIBER_RENDER_RATE_CENTS_PER_MINUTE
+            ),
+        }
+
     remaining = max(
         period.render_minutes_included - period.render_minutes_used, 0.0
     )
@@ -1202,6 +1312,7 @@ async def get_billing_dashboard(db: AsyncSession, owner_id: str) -> dict:
     period = await get_or_create_current_usage_period(db, owner_id)
     wallet = await get_or_create_credit_wallet(db, owner_id)
     avatar_summary = await get_avatar_slot_summary(db, owner_id)
+    is_admin = await _is_admin(db, owner_id)
 
     plan_id = subscription.plan if _is_billable(subscription) else "free"
     return {
@@ -1228,5 +1339,5 @@ async def get_billing_dashboard(db: AsyncSession, owner_id: str) -> dict:
             "auto_topup_threshold_cents": wallet.auto_topup_threshold_cents,
             "auto_topup_amount_cents": wallet.auto_topup_amount_cents,
         },
-        "render_billing": _describe_next_render_billing(subscription, period, wallet),
+        "render_billing": _describe_next_render_billing(subscription, period, wallet, is_admin),
     }
