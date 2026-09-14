@@ -7949,9 +7949,21 @@ async def _render_async(task, render_id: str):
     try:
         from services.timeline_builder import pip_geometry, is_pip_layout
 
+        # Bug: a full-frame PHOTO b-roll behind a PIP block (e.g. an
+        # AI-generated product still, vs. an AI-generated product VIDEO)
+        # was never picked up here — only type=="video" qualified — so it
+        # fell through to the generic overlay pass instead, which runs
+        # AFTER this block's PIP corner is already baked into the base
+        # timeline and paints the full-canvas photo straight over it. The
+        # talking head then reads as "behind" the product shot: it isn't a
+        # z-order setting, the face was never composited against this
+        # background at all — it went through a completely different,
+        # later pass that has no PIP awareness. Accept image backgrounds
+        # too; worker_ffmpeg_compose.py's PIP step handles either kind
+        # (see bg_kind below).
         _bg_by_block: dict[str, dict] = {}
         for _ov in overlay_elements:
-            if _ov.get("type") != "video":
+            if _ov.get("type") not in ("video", "image"):
                 continue
             _bid = _ov.get("block_id")
             if not _bid or _bid in _bg_by_block:
@@ -7983,6 +7995,10 @@ async def _render_async(task, render_id: str):
             _bg = _bg_by_block.get(_vt.get("block_id") or "")
             if _bg and _bg.get("src"):
                 _vt["pip"]["bg_src"] = _bg["src"]
+                # "image" or "video" — the worker needs this to know whether
+                # to loop a still for the slot's duration (an image has no
+                # inherent duration/motion) or play a video normally.
+                _vt["pip"]["bg_kind"] = _bg.get("type") or "video"
                 # Worker drops this from the top overlay pass — it's now the
                 # PIP background, baked in behind the face.
                 _bg["_pip_bg"] = True

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Plus, X, Search, Loader2, Image as ImageIcon, Video as VideoIcon, ExternalLink, Sparkles, AlertTriangle } from "lucide-react";
+import { Plus, X, Search, Loader2, Image as ImageIcon, Video as VideoIcon, ExternalLink, Sparkles, AlertTriangle, Play } from "lucide-react";
 import { castsApi, api, productsApi } from "@/lib/api";
 import type { Block, ParallelMediaItem } from "@/lib/types";
 import { cn } from "@/lib/cn";
@@ -54,6 +55,7 @@ export function ParallelMediaPicker({
   onUpdated: (block: Block) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const items: ParallelMediaItem[] = block.parallel_media || [];
 
   const persist = useCallback(
@@ -184,30 +186,25 @@ export function ParallelMediaPicker({
           {items.map((item, idx) => (
             <div
               key={idx}
-              className="group relative h-16 w-24 rounded-md overflow-hidden border border-white/10 bg-black/40"
+              role="button"
+              tabIndex={0}
+              onClick={() => setPreviewIdx(idx)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setPreviewIdx(idx);
+                }
+              }}
+              className="group relative h-16 w-24 rounded-md overflow-hidden border border-white/10 bg-black/40 cursor-pointer"
+              title="Click to preview"
             >
-              {item.thumbnail || item.url ? (
-                <img
-                  src={item.thumbnail || item.url}
-                  alt=""
-                  className="w-full h-full object-cover"
-                  loading="lazy"
-                  decoding="async"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  {item.kind === "video" ? (
-                    <VideoIcon className="w-4 h-4 text-white/30" />
-                  ) : (
-                    <ImageIcon className="w-4 h-4 text-white/30" />
-                  )}
-                </div>
-              )}
+              <MediaTileThumb item={item} />
               <div className="absolute top-0.5 left-0.5 rounded bg-black/70 px-1 py-0.5 text-[8px] uppercase tracking-wider text-white/80">
                 {item.kind === "video" ? "vid" : "img"}
               </div>
               <button
-                onClick={() => removeItem(idx)}
+                type="button"
+                onClick={(e) => { e.stopPropagation(); removeItem(idx); }}
                 className="absolute top-0.5 right-0.5 rounded-full bg-black/70 p-0.5 text-white/70 hover:text-white opacity-0 group-hover:opacity-100 transition"
                 title="Remove"
               >
@@ -216,6 +213,13 @@ export function ParallelMediaPicker({
             </div>
           ))}
         </div>
+      )}
+
+      {previewIdx !== null && items[previewIdx] && (
+        <MediaPreviewModal
+          item={items[previewIdx]}
+          onClose={() => setPreviewIdx(null)}
+        />
       )}
 
       {pickerOpen && (
@@ -231,6 +235,122 @@ export function ParallelMediaPicker({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Thumbnail for one b-roll tile.
+ *
+ * Bug: AI-generated video clips store `thumbnail` as the SAME url as the
+ * clip itself (the raw .mp4) — there's no separate poster image. Rendering
+ * that through a plain <img> silently fails (a browser can't decode a video
+ * file as an image), so the tile showed nothing at all. Pexels clips worked
+ * because Pexels' own API returns a real JPG thumbnail distinct from the
+ * video file.
+ *
+ * Fix: render a <video> element for video items (muted, preload="metadata")
+ * so the browser grabs the clip's own first frame as the visual — no
+ * separate thumbnail asset needed, and it works for every video regardless
+ * of what `thumbnail` holds. Photos still use <img>. Either falls back to
+ * the kind icon if the source truly fails to load (deleted asset, etc.)
+ * instead of showing nothing.
+ */
+function MediaTileThumb({ item }: { item: ParallelMediaItem }) {
+  const [failed, setFailed] = useState(false);
+  const src = item.thumbnail || item.url;
+
+  if (failed || !src) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        {item.kind === "video" ? (
+          <VideoIcon className="w-4 h-4 text-white/30" />
+        ) : (
+          <ImageIcon className="w-4 h-4 text-white/30" />
+        )}
+      </div>
+    );
+  }
+
+  if (item.kind === "video") {
+    return (
+      <>
+        <video
+          src={src}
+          muted
+          preload="metadata"
+          playsInline
+          className="w-full h-full object-cover"
+          onError={() => setFailed(true)}
+        />
+        <Play className="absolute inset-0 m-auto w-4 h-4 text-white/70 pointer-events-none drop-shadow" />
+      </>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-full h-full object-cover"
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+/** Full-size click-to-preview for one b-roll tile — video plays with
+ * controls, photo shows at full size. There was previously no way to
+ * actually watch/view an attached b-roll clip at all, AI-generated or
+ * Pexels. */
+function MediaPreviewModal({
+  item,
+  onClose,
+}: {
+  item: ParallelMediaItem;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-[min(90vw,520px)] max-h-[85vh] rounded-xl overflow-hidden border border-white/10 bg-[#0f0f1a]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-2 right-2 z-10 rounded-full bg-black/70 p-1.5 text-white/80 hover:text-white"
+          aria-label="Close"
+        >
+          <X className="w-4 h-4" />
+        </button>
+        {item.kind === "video" ? (
+          <video
+            src={item.url}
+            controls
+            autoPlay
+            playsInline
+            className="max-w-full max-h-[85vh] block"
+          />
+        ) : (
+          <img src={item.url} alt="" className="max-w-full max-h-[85vh] block" />
+        )}
+        <div className="px-3 py-2 text-[10px] text-white/40 border-t border-white/10">
+          {item.source === "ai_generated" ? "AI-generated" : "Pexels"} · {item.kind}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

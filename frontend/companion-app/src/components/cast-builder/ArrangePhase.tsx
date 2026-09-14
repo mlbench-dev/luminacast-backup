@@ -24,6 +24,7 @@ import {
 import type { UndoableState } from "@/components/cast-builder/editor-starter/state/types";
 import { applyAspectFit } from "@/lib/aspectFit";
 import { LuminacastEditor } from "@/components/cast-builder/editor-starter";
+import type { LuminacastEditorHandle } from "@/components/cast-builder/editor-starter";
 import { RenderLockBanner } from "@/components/cast-builder/RenderLockBanner";
 import type { Cast } from "@/lib/types";
 import { Loader2, ExternalLink, RefreshCw } from "lucide-react";
@@ -61,6 +62,7 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
   const navigate = useNavigate();
   const [initialState, setInitialState] = useState<UndoableState | null>(null);
   const [loading, setLoading] = useState(true);
+  const editorRef = useRef<LuminacastEditorHandle>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const changeCountRef = useRef(0);
   const latestStateRef = useRef<UndoableState | null>(null);
@@ -449,6 +451,18 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
     };
   }, []);
 
+  // The whole editor (transport controls included) goes `inert` below while
+  // a render is in progress, so a preview that was already playing when the
+  // render started had no way to be stopped — it just kept playing for the
+  // entire render, audio and all, until it finished or was cancelled. Stop
+  // it the instant the lock engages instead of leaving it stuck running
+  // behind a now-unreachable pause button.
+  useEffect(() => {
+    if (renderInProgress) {
+      editorRef.current?.pause();
+    }
+  }, [renderInProgress]);
+
   // Phase 2.5.3 — Poll for sibling cascade updates while user is editing.
   // If audio becomes stale mid-session, show a non-blocking toast instead
   // of disrupting the user's editing session.
@@ -636,6 +650,7 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
       )}
       <div className="flex-1 min-h-0 overflow-hidden">
         <LuminacastEditor
+          ref={editorRef}
           cast={cast}
           initialUndoableState={initialState}
           onUndoableStateChange={handleStateChange}

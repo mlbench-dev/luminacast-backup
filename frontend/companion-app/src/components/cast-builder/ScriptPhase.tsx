@@ -2011,44 +2011,76 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
           )}
 
           {/* Bottom action bar */}
-          {!generating && blocks.length > 0 && (
+          {!generating && blocks.length > 0 && (() => {
+            // Bug: a user could hit "Generate Audio" (and move on toward
+            // Finalize & Render) while AI-generated b-roll was still baking
+            // in the background for this cast — the render then grabbed
+            // whichever Pexels placeholder was still attached at that
+            // moment, permanently, even though the real AI clip finished
+            // seconds later. Block progress here instead: this is the page
+            // where the user reviews/swaps the "Visual b-roll" tiles above,
+            // so keeping them here until every clip is actually ready (not
+            // just the Finalize button, further downstream) is where they'd
+            // naturally come back to review or regenerate one anyway.
+            const brollGeneratingBlocks = blocks.filter(
+              (b) => (b as any).metadata?.ai_broll === "generating",
+            );
+            const brollGeneratingCount = brollGeneratingBlocks.length;
+            return (
             <div className="flex items-center justify-between pt-4 border-t border-white/10">
               <Button variant="outline" onClick={generateOutline} className="border-white/20 text-white/70">
                 <RefreshCw className="w-4 h-4 mr-2" /> Regenerate Script
               </Button>
-              <Button
-                size="lg"
-                disabled={generateAudioMutation.isPending || blocks.length === 0}
-                onClick={async () => {
-                  const hasExistingAudio = blocks.some(b =>
-                    (b.variants || []).some(v => !!(v as any).audio_key)
-                  );
-                  if (hasExistingAudio) {
-                    // Blocks already have audio — a plain run would skip them, so a
-                    // mic-style / scene change wouldn't take. Offer a full rebuild.
-                    const ok = await confirmAction({
-                      title: "Regenerate all audio?",
-                      text: "Every block already has audio. Regenerating replaces it for all of them — needed to apply a changed mic style or scene.",
-                      confirmButtonText: "Regenerate all",
-                      cancelButtonText: "Cancel",
-                      icon: "warning",
-                    });
-                    if (!ok) return;
-                    generateAudioMutation.mutate(true);
-                    return;
-                  }
-                  generateAudioMutation.mutate(false);
-                }}
-                className="bg-accent hover:bg-accent/90"
-              >
-                {generateAudioMutation.isPending ? (
-                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Starting...</>
-                ) : (
-                  <><Volume2 className="w-4 h-4 mr-2" /> Generate Audio &rarr;</>
+              <div className="flex flex-col items-end gap-1.5">
+                {brollGeneratingCount > 0 && (
+                  <span className="text-[11px] text-fuchsia-200/80 flex items-center gap-1.5">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Waiting on {brollGeneratingCount} AI video{brollGeneratingCount === 1 ? "" : "s"} to
+                    finish — review them in "Visual b-roll" above once ready.
+                  </span>
                 )}
-              </Button>
+                <Button
+                  size="lg"
+                  disabled={generateAudioMutation.isPending || blocks.length === 0 || brollGeneratingCount > 0}
+                  title={
+                    brollGeneratingCount > 0
+                      ? "AI video generation is still running for this cast — wait for it to finish so the render doesn't fall back to a Pexels placeholder."
+                      : undefined
+                  }
+                  onClick={async () => {
+                    const hasExistingAudio = blocks.some(b =>
+                      (b.variants || []).some(v => !!(v as any).audio_key)
+                    );
+                    if (hasExistingAudio) {
+                      // Blocks already have audio — a plain run would skip them, so a
+                      // mic-style / scene change wouldn't take. Offer a full rebuild.
+                      const ok = await confirmAction({
+                        title: "Regenerate all audio?",
+                        text: "Every block already has audio. Regenerating replaces it for all of them — needed to apply a changed mic style or scene.",
+                        confirmButtonText: "Regenerate all",
+                        cancelButtonText: "Cancel",
+                        icon: "warning",
+                      });
+                      if (!ok) return;
+                      generateAudioMutation.mutate(true);
+                      return;
+                    }
+                    generateAudioMutation.mutate(false);
+                  }}
+                  className="bg-accent hover:bg-accent/90 disabled:opacity-50"
+                >
+                  {generateAudioMutation.isPending ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Starting...</>
+                  ) : brollGeneratingCount > 0 ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Generating AI video{brollGeneratingCount === 1 ? "" : "s"}…</>
+                  ) : (
+                    <><Volume2 className="w-4 h-4 mr-2" /> Generate Audio &rarr;</>
+                  )}
+                </Button>
+              </div>
             </div>
-          )}
+            );
+          })()}
         </div>
       </div>
     </>

@@ -10,7 +10,7 @@
  */
 
 export { LuminacastEditor } from "./LuminacastEditor";
-export type { LuminacastEditorProps } from "./LuminacastEditor";
+export type { LuminacastEditorProps, LuminacastEditorHandle } from "./LuminacastEditor";
 
 // Re-export types needed by the mapping layer (Phase F.5)
 export type { EditorState, UndoableState, TrackType } from "./state/types";

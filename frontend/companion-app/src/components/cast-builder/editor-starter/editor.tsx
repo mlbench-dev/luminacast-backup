@@ -31,10 +31,19 @@ export interface EditorProps {
   onUndoableStateChange?: (undoableState: UndoableState) => void;
   /** Live background-music bed volume (0..1) — see ContextProvider. */
   musicVolume?: number;
+  /** Externally-supplied player ref — lets a parent (LuminacastEditor, then
+   * ArrangePhase) reach in and e.g. pause() the preview from outside this
+   * component, such as when a render starts and the editor goes read-only
+   * (the preview would otherwise keep playing with no way to stop it — the
+   * whole subtree, transport controls included, is inert while locked).
+   * Falls back to an internally-created ref so every other Editor mount
+   * (nothing else in this repo passes one today) is unaffected. */
+  playerRef?: React.RefObject<PlayerRef | null>;
 }
 
-export const Editor: React.FC<EditorProps> = ({initialUndoableState, onUndoableStateChange, musicVolume}) => {
-  const playerRef = useRef<PlayerRef | null>(null);
+export const Editor: React.FC<EditorProps> = ({initialUndoableState, onUndoableStateChange, musicVolume, playerRef: externalPlayerRef}) => {
+  const internalPlayerRef = useRef<PlayerRef | null>(null);
+  const playerRef = externalPlayerRef ?? internalPlayerRef;
 
   return (
     <div className="bg-editor-starter-bg flex h-full w-full flex-col items-center justify-between">

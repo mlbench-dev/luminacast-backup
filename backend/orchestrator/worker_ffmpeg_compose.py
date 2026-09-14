@@ -1066,9 +1066,17 @@ def _run_ffmpeg_compose(req):
                 px, py = int(pip.get("x") or 0), int(pip.get("y") or 0)
                 bg_local = None
                 bg_src = pip.get("bg_src")
+                # "image" (a photo b-roll behind this PIP block) or "video"
+                # (default — matches the historical, video-only behaviour).
+                # A still image decoded via plain -i produces exactly ONE
+                # frame; without -loop 1 the overlay below (which uses
+                # shortest=1) would cut the WHOLE composite down to that one
+                # frame's length instead of the slot's real duration.
+                bg_kind = pip.get("bg_kind") or "video"
                 if bg_src:
+                    bg_ext = ".jpg" if bg_kind == "image" else ".mp4"
                     bg_local = os.path.join(
-                        tmpdir, f"pipbg_{block_id or len(normalized_videos)}.mp4"
+                        tmpdir, f"pipbg_{block_id or len(normalized_videos)}{bg_ext}"
                     )
                     try:
                         _download(bg_src, bg_local, timeout=block_timeout(slot_dur))
@@ -1092,7 +1100,12 @@ def _run_ffmpeg_compose(req):
                     "-i", norm,
                 ]
                 if bg_local:
-                    pip_inputs += ["-i", bg_local]
+                    if bg_kind == "image":
+                        # -loop 1: repeat the single decoded frame for the
+                        # requested duration instead of ending after it.
+                        pip_inputs += ["-loop", "1", "-t", f"{slot_dur:.3f}", "-i", bg_local]
+                    else:
+                        pip_inputs += ["-i", bg_local]
                     fc = (
                         f"[2:v]fps={canvas_fps},scale={canvas_w}:{canvas_h}:"
                         f"force_original_aspect_ratio=increase,"

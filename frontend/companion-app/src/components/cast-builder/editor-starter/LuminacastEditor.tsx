@@ -16,7 +16,8 @@
  *     onUndoableStateChange={(s) => debouncedSave(s)}
  *   />
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useImperativeHandle, forwardRef } from "react";
+import type { PlayerRef } from "@remotion/player";
 import { Editor } from "./editor";
 import type { UndoableState } from "./state/types";
 import type { Cast } from "@/lib/types";
@@ -41,13 +42,28 @@ export interface LuminacastEditorProps {
   musicVolume?: number;
 }
 
-export const LuminacastEditor: React.FC<LuminacastEditorProps> = ({
-  cast,
-  className = "",
-  initialUndoableState,
-  onUndoableStateChange,
-  musicVolume,
-}) => {
+/** Imperative controls exposed to whoever mounts <LuminacastEditor ref={...} />
+ * — currently just enough to stop a preview that's mid-playback from
+ * outside the editor (ArrangePhase auto-pauses this when a render starts
+ * and the whole editor goes read-only / inert, since the preview would
+ * otherwise keep playing with no way to reach its own transport controls). */
+export interface LuminacastEditorHandle {
+  pause: () => void;
+  isPlaying: () => boolean;
+}
+
+export const LuminacastEditor = forwardRef<LuminacastEditorHandle, LuminacastEditorProps>(
+  function LuminacastEditor(
+    { cast, className = "", initialUndoableState, onUndoableStateChange, musicVolume },
+    ref,
+  ) {
+  const playerRef = useRef<PlayerRef | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    pause: () => playerRef.current?.pause(),
+    isPlaying: () => playerRef.current?.isPlaying() ?? false,
+  }), []);
+
   const ctxValue = useMemo(
     () => (cast ? { castId: cast.id, cast } : null),
     [cast],
@@ -59,6 +75,7 @@ export const LuminacastEditor: React.FC<LuminacastEditorProps> = ({
         initialUndoableState={initialUndoableState}
         onUndoableStateChange={onUndoableStateChange}
         musicVolume={musicVolume}
+        playerRef={playerRef}
       />
     </div>
   );
@@ -72,4 +89,4 @@ export const LuminacastEditor: React.FC<LuminacastEditorProps> = ({
   }
 
   return editor;
-};
+});

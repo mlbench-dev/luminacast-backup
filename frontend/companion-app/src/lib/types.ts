@@ -351,7 +351,7 @@ export interface ParallelMediaItem {
   url: string;
   thumbnail?: string;
   pexels_id?: string | null;
-  source?: "pexels" | "upload";
+  source?: "pexels" | "upload" | "ai_generated";
   start_offset_s: number;
   duration_s?: number | null;
   /** Set when the Smart Cast pipeline picked this item automatically.
