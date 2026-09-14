@@ -118,8 +118,13 @@ function ProviderChip({ provider }: { provider: string | null }) {
 // RenderFailedButton in CastBuilder.tsx, which shows the render-level
 // reason once the pill's own dropdown (only visible while rendering) is
 // gone.
+// How long a raw error is allowed to run before this truncates it for
+// display — the row's own `title` tooltip still carries the untruncated
+// text (see BlockRow / RenderFailedButton).
+const _MAX_RAW_ERROR_CHARS = 220;
+
 export function friendlyBlockError(raw: string | null | undefined): string {
-  if (!raw) return "Something went wrong — try again.";
+  if (!raw) return "Something went wrong — no error details were recorded. Try again.";
   if (raw.includes("ClipValidationError")) {
     return "The generated clip didn't pass quality checks — try again.";
   }
@@ -129,7 +134,17 @@ export function friendlyBlockError(raw: string | null | undefined): string {
   if (raw.includes("AllProvidersFailedError") || raw.includes("TimeoutError") || raw.includes("RuntimeError")) {
     return "The video service didn't respond in time — try again.";
   }
-  return "Something went wrong — try again.";
+  // Bug: every other error — which, since the backend was fixed to always
+  // record a real reason (never a blank string), is now the common case —
+  // was collapsed into the same generic "Something went wrong" text,
+  // hiding the actual reason even though we have it. Show it instead of
+  // masking it; only cap the length so a very long provider error dump
+  // doesn't blow out the popover (the row's title tooltip still has the
+  // untruncated text).
+  const trimmed = raw.trim();
+  return trimmed.length > _MAX_RAW_ERROR_CHARS
+    ? `${trimmed.slice(0, _MAX_RAW_ERROR_CHARS)}…`
+    : trimmed;
 }
 
 function BlockRow({ block, isNext }: { block: RenderBlockStatus; isNext?: boolean }) {

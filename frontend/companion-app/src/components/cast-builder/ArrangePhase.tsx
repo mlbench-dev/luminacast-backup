@@ -490,6 +490,10 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
    * undoableState changes. Converts to renderer format and POSTs.
    */
   const handleStateChange = useCallback((undoableState: UndoableState) => {
+    // Item count BEFORE this change lands — used below to detect a deletion.
+    const prevItemCount = latestStateRef.current
+      ? Object.keys(latestStateRef.current.items || {}).length
+      : null;
     // Track latest state for flushSave
     latestStateRef.current = undoableState;
 
@@ -498,7 +502,29 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
     if (changeCountRef.current <= 1) return;
     onEdited?.();  // Notify parent that edits were made (invalidates render status)
 
+    // A deletion (fewer items than a moment ago) is destructive and easy not
+    // to notice was lost — unlike a drag/resize tweak, re-doing it isn't a
+    // minor annoyance. Save it right away instead of risking the normal
+    // debounce window: deleting a block's clips, then refreshing quickly
+    // (well inside 1.5s), could beat the debounced save and the
+    // best-effort beforeunload/visibilitychange flush both, silently
+    // reverting to the last-saved state with the "deleted" block(s) intact.
+    const itemCountNow = Object.keys(undoableState.items || {}).length;
+    const isDeletion = prevItemCount != null && itemCountNow < prevItemCount;
+
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (isDeletion) {
+      saveTimerRef.current = undefined;
+      (async () => {
+        try {
+          await castsApi.saveTimeline(cast.id, buildSavePayload(undoableState));
+          console.log("AUTO-SAVE OK (immediate — deletion)", new Date().toISOString());
+        } catch (e) {
+          console.error("Auto-save failed:", e);
+        }
+      })();
+      return;
+    }
     saveTimerRef.current = setTimeout(async () => {
       try {
         await castsApi.saveTimeline(cast.id, buildSavePayload(undoableState));

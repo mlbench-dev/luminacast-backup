@@ -7961,6 +7961,18 @@ async def _render_async(task, render_id: str):
         # later pass that has no PIP awareness. Accept image backgrounds
         # too; worker_ffmpeg_compose.py's PIP step handles either kind
         # (see bg_kind below).
+        def _is_fullframe(_ov: dict) -> bool:
+            _ow = _ov.get("width") or cw_for_overlays
+            _oh = _ov.get("height") or ch_for_overlays
+            _ox = _ov.get("x") or 0
+            _oy = _ov.get("y") or 0
+            return (
+                _ow >= cw_for_overlays * 0.95
+                and _oh >= ch_for_overlays * 0.95
+                and _ox <= cw_for_overlays * 0.05
+                and _oy <= ch_for_overlays * 0.05
+            )
+
         _bg_by_block: dict[str, dict] = {}
         for _ov in overlay_elements:
             if _ov.get("type") not in ("video", "image"):
@@ -7968,17 +7980,54 @@ async def _render_async(task, render_id: str):
             _bid = _ov.get("block_id")
             if not _bid or _bid in _bg_by_block:
                 continue
-            _ow = _ov.get("width") or cw_for_overlays
-            _oh = _ov.get("height") or ch_for_overlays
-            _ox = _ov.get("x") or 0
-            _oy = _ov.get("y") or 0
-            if (
-                _ow >= cw_for_overlays * 0.95
-                and _oh >= ch_for_overlays * 0.95
-                and _ox <= cw_for_overlays * 0.05
-                and _oy <= ch_for_overlays * 0.05
-            ):
+            if _is_fullframe(_ov):
                 _bg_by_block[_bid] = _ov
+
+        # Bug: a clip added straight from the Arrange timeline's own media
+        # panel (click a tile in "Uploaded" / "Stock" / "Generated" to drop
+        # it onto the timeline — a normal way to replace a block's b-roll,
+        # not just the Script tab's picker) carries NO block_id at all —
+        # that add action has no notion of "which block is this for". Such
+        # a clip is invisible to the block_id match above, so it fell
+        # through to the generic overlay pass, which paints it over the
+        # ALREADY-composited PIP corner unconditionally — the talking head
+        # disappears under it in the final render even though the editor
+        # preview's own (client-side only, backend-blind) layering may have
+        # shown it fine. Infer the association by TIME instead when no
+        # explicit tag exists: a full-frame, untagged clip whose window
+        # substantially overlaps a PIP block's own active span is almost
+        # certainly meant as that block's background (the user replaced the
+        # old, tagged b-roll item with this one in roughly the same slot).
+        _pip_spans: dict[str, tuple[float, float]] = {}
+        for _vt0 in compose_video_tracks:
+            _bid0 = _vt0.get("block_id")
+            if _bid0 and is_pip_layout(_vt0.get("pip_layout") or "fullscreen"):
+                _pip_spans[_bid0] = (float(_vt0.get("s") or 0), float(_vt0.get("e") or 0))
+        _untagged_fullframe = [
+            _ov for _ov in overlay_elements
+            if _ov.get("type") in ("video", "image")
+            and not _ov.get("block_id")
+            and _is_fullframe(_ov)
+        ]
+        for _bid, (_bs, _be) in _pip_spans.items():
+            if _bid in _bg_by_block or _be <= _bs:
+                continue
+            _best, _best_overlap = None, 0.0
+            for _ov in _untagged_fullframe:
+                try:
+                    _os_ = float(_ov.get("start_s") or 0)
+                    _oe_ = float(_ov.get("end_s") or 0)
+                except (TypeError, ValueError):
+                    continue
+                _overlap = min(_be, _oe_) - max(_bs, _os_)
+                # Require the overlap to cover most of the block's own span
+                # — a brief incidental overlap with an unrelated cutaway
+                # elsewhere on the timeline shouldn't be mistaken for this
+                # block's dedicated background.
+                if _overlap >= 0.6 * (_be - _bs) and _overlap > _best_overlap:
+                    _best, _best_overlap = _ov, _overlap
+            if _best is not None:
+                _bg_by_block[_bid] = _best
 
         for _vt in compose_video_tracks:
             _pl = _vt.get("pip_layout") or "fullscreen"
