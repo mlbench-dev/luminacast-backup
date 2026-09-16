@@ -4,7 +4,11 @@ Covers:
   - WaveSpeed per-call timeout scales with audio_duration_s.
   - fal hallo per-call timeout scales with audio_duration_s.
   - HOSTKEY POSTs /api/recover-comfyui after 3 high-VRAM skips for a render.
-  - Failed-block retry pass invokes the rebake helper exactly once.
+  - Failed-block retry pass: up to _MAX_BLOCK_RETRY_ATTEMPTS retries, not
+    just one (client report: "The voiceover doesn't match this clip's
+    length" still surfaces occasionally on casts with many blocks — a
+    single retry wasn't enough to absorb the AI lipsync provider's
+    per-attempt duration variance across N independent blocks).
 """
 from __future__ import annotations
 
@@ -306,78 +310,127 @@ def test_hostkey_disabled_by_default_never_recovers(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix 4: failed-block retry pass invokes provider chain exactly once
+# Fix 4 (widened): failed-block retry pass allows up to
+# _MAX_BLOCK_RETRY_ATTEMPTS retries, not just one
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_failed_blocks_retried_once_before_compose():
-    """The bake loop ends with one block in state='failed'. The retry
-    pass must invoke the rebake helper exactly once for that block,
-    then leave retry_count=1 so a second pass would be a no-op.
+_MAX_BLOCK_RETRY_ATTEMPTS = 2  # mirrors tasks.cast_render's default
+
+
+def _mirror_retry_gate(block_statuses: list[dict], failed_blocks: list[tuple[str, str]]):
+    """Mirrors the exact gate logic in cast_render.py's retry loop:
+    filter failed_blocks to those whose persisted retry_count is still
+    under the ceiling."""
+    existing_by_id = {row["block_id"]: row for row in block_statuses}
+    return [
+        (bid, err) for bid, err in failed_blocks
+        if int(existing_by_id.get(bid, {}).get("retry_count", 0)) < _MAX_BLOCK_RETRY_ATTEMPTS
+    ], existing_by_id
+
+
+def test_failed_block_that_recovers_on_its_second_retry_is_not_given_up_on():
+    """The exact scenario the widened ceiling exists for: a block fails
+    the main bake AND its first retry (e.g. two consecutive
+    SpeakingBlockOutOfTolerance misses — plausible, if rare, per-attempt
+    variance), but succeeds on a SECOND retry. With the old ceiling of 1
+    this block would have failed the whole render; with 2 it recovers.
 
     We model the retry logic in isolation here because cast_render
-    imports too many heavy deps (SQLAlchemy, Celery, ffmpeg helpers)
-    to load inside a unit test. The shape of the logic mirrors the
-    production code in cast_render.py:
-
-      - read block_statuses
-      - filter to those with retry_count == 0
-      - call _run_one_job(...) for each
-      - persist retry_count=1 (regardless of outcome)
+    imports too many heavy deps (SQLAlchemy, Celery, ffmpeg helpers) to
+    load inside a unit test — this mirrors the production
+    for _retry_pass in range(_MAX_BLOCK_RETRY_ATTEMPTS): loop.
     """
-    # Initial state: block "blk_2" failed during the main bake.
     block_statuses = [
         {"block_id": "blk_1", "state": "done"},
         {"block_id": "blk_2", "state": "failed", "retry_count": 0},
     ]
-    failed_blocks = [("blk_2", "TimeoutError: cloud poll did not complete")]
+    failed_blocks = [("blk_2", "SpeakingBlockOutOfTolerance: dur=5.6s slot=5.0s")]
+    pending_jobs = [(1, "blk_2", None, None, None, 5.0, "f", "a", "p")]
+
+    # Attempt sequence for blk_2: fails on retry pass 1, succeeds on pass 2.
+    attempt_outcomes = iter(["err", "ok"])
+    rebake_call_log: list[str] = []
+
+    async def _run_one_job_mock(i, job):
+        rebake_call_log.append(job[1])
+        outcome = next(attempt_outcomes)
+        if outcome == "ok":
+            return ("ok", job[1], f"el_{job[1]}", f"baked/{job[1]}.mp4")
+        return ("err", job[1], "still out of tolerance", None)
+
+    async def _run():
+        nonlocal failed_blocks
+        for _retry_pass in range(_MAX_BLOCK_RETRY_ATTEMPTS):
+            if not failed_blocks:
+                break
+            retry_targets, existing_by_id = _mirror_retry_gate(block_statuses, failed_blocks)
+            if not retry_targets:
+                break
+            retry_jobs = [j for j in pending_jobs if j[1] in {b for b, _ in retry_targets}]
+            for bid, _ in retry_targets:
+                prior = int(existing_by_id.get(bid, {}).get("retry_count", 0))
+                existing_by_id[bid]["retry_count"] = prior + 1
+                existing_by_id[bid]["state"] = "retrying"
+            results = await asyncio.gather(
+                *[_run_one_job_mock(i, j) for i, j in enumerate(retry_jobs)]
+            )
+            recovered = {r[1] for r in results if r[0] == "ok"}
+            failed_blocks = [(bid, err) for bid, err in failed_blocks if bid not in recovered]
+        return failed_blocks
+
+    remaining_failures = asyncio.run(_run())
+
+    # Two rebake attempts were made for blk_2 (pass 1 fail, pass 2 succeed).
+    assert rebake_call_log == ["blk_2", "blk_2"]
+    # It ultimately recovered — no longer in the failed list.
+    assert remaining_failures == []
+    assert block_statuses[1]["retry_count"] == 2
+
+
+def test_a_persistently_failing_block_stops_after_the_retry_ceiling():
+    """A block that NEVER succeeds must still be bounded — exactly
+    _MAX_BLOCK_RETRY_ATTEMPTS retries, then the render gives up on it
+    (never an infinite loop)."""
+    block_statuses = [{"block_id": "blk_2", "state": "failed", "retry_count": 0}]
+    failed_blocks = [("blk_2", "AllProvidersFailedError: every tier failed")]
+    pending_jobs = [(0, "blk_2", None, None, None, 5.0, "f", "a", "p")]
 
     rebake_call_log: list[str] = []
 
     async def _run_one_job_mock(i, job):
-        # job tuple: (idx, block_id, v1, a1, key, dur, face, audio, prompt)
         rebake_call_log.append(job[1])
-        return ("ok", job[1], f"el_{job[1]}", f"baked/{job[1]}.mp4")
+        return ("err", job[1], "still failing", None)
 
-    pending_jobs = [
-        (0, "blk_1", None, None, None, 5.0, "f", "a", "p"),
-        (1, "blk_2", None, None, None, 5.0, "f", "a", "p"),
-    ]
+    async def _run():
+        nonlocal failed_blocks
+        for _retry_pass in range(_MAX_BLOCK_RETRY_ATTEMPTS):
+            if not failed_blocks:
+                break
+            retry_targets, existing_by_id = _mirror_retry_gate(block_statuses, failed_blocks)
+            if not retry_targets:
+                break
+            retry_jobs = [j for j in pending_jobs if j[1] in {b for b, _ in retry_targets}]
+            for bid, _ in retry_targets:
+                prior = int(existing_by_id.get(bid, {}).get("retry_count", 0))
+                existing_by_id[bid]["retry_count"] = prior + 1
+            results = await asyncio.gather(
+                *[_run_one_job_mock(i, j) for i, j in enumerate(retry_jobs)]
+            )
+            recovered = {r[1] for r in results if r[0] == "ok"}
+            failed_blocks = [(bid, err) for bid, err in failed_blocks if bid not in recovered]
+        return failed_blocks
 
-    async def _run_retry_pass():
-        # Mirror cast_render.py retry-pass logic.
-        existing_by_id = {row["block_id"]: row for row in block_statuses}
-        retry_targets = [
-            (bid, err) for bid, err in failed_blocks
-            if int(existing_by_id.get(bid, {}).get("retry_count", 0)) == 0
-        ]
-        assert retry_targets == [("blk_2", failed_blocks[0][1])]
+    remaining_failures = asyncio.run(_run())
 
-        retry_jobs = [j for j in pending_jobs if j[1] in {b for b, _ in retry_targets}]
-        # Persist retry_count BEFORE the attempt.
-        for bid, _ in retry_targets:
-            existing_by_id[bid]["retry_count"] = 1
-            existing_by_id[bid]["state"] = "retrying"
+    # Exactly _MAX_BLOCK_RETRY_ATTEMPTS attempts — never more.
+    assert len(rebake_call_log) == _MAX_BLOCK_RETRY_ATTEMPTS
+    assert remaining_failures == [("blk_2", "AllProvidersFailedError: every tier failed")]
+    assert block_statuses[0]["retry_count"] == _MAX_BLOCK_RETRY_ATTEMPTS
 
-        results = await asyncio.gather(
-            *[_run_one_job_mock(i, j) for i, j in enumerate(retry_jobs)]
-        )
-        return results
-
-    results = asyncio.run(_run_retry_pass())
-
-    # Exactly one rebake call was made — for blk_2 — and nothing else.
-    assert rebake_call_log == ["blk_2"], (
-        f"expected single retry of blk_2; got {rebake_call_log}"
-    )
-    assert results[0][0] == "ok"
-    # retry_count was bumped so a second pass would skip it.
-    assert block_statuses[1]["retry_count"] == 1
-    # A second pass with the now-bumped count would filter to no targets.
-    second_targets = [
-        (bid, err) for bid, err in failed_blocks
-        if int(block_statuses[1]["retry_count"]) == 0
-    ]
-    assert second_targets == []
+    # A further pass (were one attempted) would filter to no targets —
+    # confirms the ceiling actually stops it, not just the loop's range().
+    further_targets, _ = _mirror_retry_gate(block_statuses, remaining_failures)
+    assert further_targets == []
 
 
 if __name__ == "__main__":

@@ -155,6 +155,24 @@ _SPEAKING_TOLERANCE_OVER_PCT = float(
     os.environ.get("SPEAKING_TOLERANCE_OVER_PCT", "0.05")
 )
 
+# Client report: "The voiceover doesn't match this clip's length — try
+# again" (SpeakingBlockOutOfTolerance) still shows up occasionally, mostly
+# on casts with many blocks. Root cause isn't a bug in this gate — it's
+# that the underlying AI lipsync provider occasionally returns a clip a few
+# percent off the target length, a random per-attempt quality variance the
+# app has no control over. The render pipeline already retries a failed
+# block once before giving up; with N independent blocks in a cast, even a
+# low per-attempt failure rate compounds into a non-trivial chance that AT
+# LEAST one block fails BOTH its original attempt and its one retry,
+# purely by chance — exactly "mostly happens when there are a lot of
+# blocks". Raising the retry ceiling from 1 to 2 cuts that compound
+# probability roughly another ~30x (each extra attempt is an independent
+# roll), at the cost of one more re-bake ONLY for the rare block that
+# keeps missing — most blocks never touch this path at all.
+_MAX_BLOCK_RETRY_ATTEMPTS = max(1, int(
+    os.environ.get("CAST_RENDER_MAX_BLOCK_RETRY_ATTEMPTS", "2")
+))
+
 # Render_Quality_Duration_Validation.md §2.1: the speaking-block tolerance
 # band is measured against the block's TTS AUDIO duration, not its timeline
 # slot. The slot is a planning-layer value; the lipsync bake's length is
@@ -7617,21 +7635,29 @@ async def _render_async(task, render_id: str):
             if baked_key:  # Voiceover blocks return None (no baked video)
                 baked_urls[element_id] = r2.get_public_url(baked_key)
 
-    # PR #68: failed-block retry pass.
+    # PR #68 (+ later widened): failed-block retry pass.
     #
     # Cloud-tier transient failures (timeouts polled before the upstream
-    # finished, 5xx blips, HOSTKEY VRAM still hot from the prior block)
-    # used to fail the whole render. Before tagging the render FAILED,
-    # walk the failed list once more and re-bake each block exactly
-    # once — provider chain state has moved on (HOSTKEY VRAM may have
-    # drained, recovery may have run), so a second attempt often
-    # succeeds.
+    # finished, 5xx blips, HOSTKEY VRAM still hot from the prior block) —
+    # and, for speaking blocks specifically, an occasional lipsync clip
+    # whose length just misses the audio-duration tolerance band — used to
+    # fail the whole render on the first bad attempt. Before tagging the
+    # render FAILED, walk the failed list and re-bake each block up to
+    # _MAX_BLOCK_RETRY_ATTEMPTS times total — provider chain state has
+    # moved on (HOSTKEY VRAM may have drained, recovery may have run) and
+    # each attempt is an independent roll against the same low-probability
+    # per-attempt failure rate, so a later attempt often succeeds even when
+    # the previous one didn't.
     #
-    # Bounded: retry_count is persisted on the block_statuses row;
-    # only blocks with retry_count == 0 are retried, so a misbehaving
-    # block can't loop forever.
-    if failed_blocks:
+    # Bounded: retry_count is persisted on the block_statuses row; only
+    # blocks with retry_count < _MAX_BLOCK_RETRY_ATTEMPTS are retried, so a
+    # misbehaving block can't loop forever regardless of how many passes
+    # this runs.
+    for _retry_pass in range(_MAX_BLOCK_RETRY_ATTEMPTS):
+        if not failed_blocks:
+            break
         retry_targets: list[tuple[str, str]] = []
+        existing_by_id: dict = {}
         try:
             from models.cast_render import CastRender
             factory = _make_session_factory()
@@ -7642,71 +7668,78 @@ async def _render_async(task, render_id: str):
             existing_by_id = {row.get("block_id"): row for row in existing_statuses}
             for bid, err in failed_blocks:
                 row = existing_by_id.get(bid) or {}
-                if int(row.get("retry_count", 0)) == 0:
+                if int(row.get("retry_count", 0)) < _MAX_BLOCK_RETRY_ATTEMPTS:
                     retry_targets.append((bid, err))
         except Exception as _e_lookup:
             sentry_sdk.capture_exception(_e_lookup)
             # If we can't read prior retry_count, be conservative and
-            # retry everything once — the persisted retry_count below
-            # still prevents a second retry.
+            # retry everything this pass — the persisted retry_count below
+            # (best-effort) still bounds the total attempts over time.
             retry_targets = list(failed_blocks)
 
-        if retry_targets:
-            logger.info(
-                "Render %s: retrying %d failed blocks before compose",
-                render_id, len(retry_targets),
-            )
-            retry_jobs = [
-                j for j in pending_jobs if j[1] in {b for b, _ in retry_targets}
-            ]
-            # Mark retry_count BEFORE attempting so a crash mid-retry
-            # still records that the attempt was made.
-            for bid, _ in retry_targets:
-                try:
-                    await _update_block_status(
-                        render_id, bid, retry_count=1, state="retrying",
-                    )
-                except Exception as _se:
-                    sentry_sdk.capture_exception(_se)
+        if not retry_targets:
+            break
 
-            async def _retry_one(i: int, job: tuple) -> tuple:
-                try:
-                    return await _run_one_job(i, job)
-                except Exception as exc:
-                    sentry_sdk.capture_exception(exc)
-                    logger.warning(
-                        "Retry of block %s failed: %s",
-                        job[1] if len(job) > 1 else "?", exc,
-                    )
-                    return ("err", job[1], str(exc)[:300], None)
-
+        logger.info(
+            "Render %s: retry pass %d/%d — retrying %d failed block(s) "
+            "before compose",
+            render_id, _retry_pass + 1, _MAX_BLOCK_RETRY_ATTEMPTS,
+            len(retry_targets),
+        )
+        retry_jobs = [
+            j for j in pending_jobs if j[1] in {b for b, _ in retry_targets}
+        ]
+        # Mark retry_count BEFORE attempting so a crash mid-retry still
+        # records that the attempt was made. Increment from whatever's
+        # already there rather than hardcoding — this may be this block's
+        # 1st or 2nd retry depending on the pass.
+        for bid, _ in retry_targets:
             try:
-                retry_results = await asyncio.gather(
-                    *[_retry_one(i, j) for i, j in enumerate(retry_jobs)],
-                    return_exceptions=False,
+                prior = int((existing_by_id.get(bid) or {}).get("retry_count", 0))
+                await _update_block_status(
+                    render_id, bid, retry_count=prior + 1, state="retrying",
                 )
-            except Exception as _rg_exc:
-                sentry_sdk.capture_exception(_rg_exc)
-                retry_results = []
+            except Exception as _se:
+                sentry_sdk.capture_exception(_se)
 
-            # Reconcile: drop survivors from failed_blocks, add their
-            # baked URLs into the compose set.
-            recovered_ids: set[str] = set()
-            for r in retry_results:
-                if r[0] == "ok":
-                    _, bid_ok, element_id, baked_key = r
-                    if baked_key:
-                        baked_urls[element_id] = r2.get_public_url(baked_key)
-                    recovered_ids.add(bid_ok)
-            if recovered_ids:
-                failed_blocks = [
-                    (bid, err) for bid, err in failed_blocks
-                    if bid not in recovered_ids
-                ]
-                logger.info(
-                    "Render %s: retry pass recovered %d/%d blocks",
-                    render_id, len(recovered_ids), len(retry_targets),
+        async def _retry_one(i: int, job: tuple) -> tuple:
+            try:
+                return await _run_one_job(i, job)
+            except Exception as exc:
+                sentry_sdk.capture_exception(exc)
+                logger.warning(
+                    "Retry of block %s failed: %s",
+                    job[1] if len(job) > 1 else "?", exc,
                 )
+                return ("err", job[1], str(exc)[:300], None)
+
+        try:
+            retry_results = await asyncio.gather(
+                *[_retry_one(i, j) for i, j in enumerate(retry_jobs)],
+                return_exceptions=False,
+            )
+        except Exception as _rg_exc:
+            sentry_sdk.capture_exception(_rg_exc)
+            retry_results = []
+
+        # Reconcile: drop survivors from failed_blocks, add their
+        # baked URLs into the compose set.
+        recovered_ids: set[str] = set()
+        for r in retry_results:
+            if r[0] == "ok":
+                _, bid_ok, element_id, baked_key = r
+                if baked_key:
+                    baked_urls[element_id] = r2.get_public_url(baked_key)
+                recovered_ids.add(bid_ok)
+        if recovered_ids:
+            failed_blocks = [
+                (bid, err) for bid, err in failed_blocks
+                if bid not in recovered_ids
+            ]
+            logger.info(
+                "Render %s: retry pass %d recovered %d/%d block(s)",
+                render_id, _retry_pass + 1, len(recovered_ids), len(retry_targets),
+            )
 
     # If at least one InfiniteTalk block failed, mark the render FAILED
     # with a friendly message and exit early. The frontend can offer the
