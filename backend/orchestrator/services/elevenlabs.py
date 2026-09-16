@@ -179,7 +179,27 @@ class ElevenLabsService:
                 )
                 raise RuntimeError(f"ElevenLabs create-voice-from-preview failed: {body}") from e
             data = resp.json()
-            return data.get("voice_id", generated_voice_id)
+            voice_id = data.get("voice_id", generated_voice_id)
+            # A real ElevenLabs voice_id is a short alphanumeric token, never
+            # a path. We've seen `data` occasionally come back missing the
+            # top-level "voice_id" field, in which case this used to silently
+            # fall back to `generated_voice_id` (the *preview* id) or worse —
+            # once seen a "voices/refs/<id>/reference.wav" reference path
+            # leaking through — and that bogus value then got persisted as
+            # the avatar's permanent voice_id, permanently breaking every
+            # later TTS call for that avatar with a 404 (the caller's
+            # "if avatar.voice_id: skip re-conversion" check has no way to
+            # tell a corrupt id from a real one). Fail loudly here instead so
+            # a bad response can't silently corrupt the avatar record.
+            if not voice_id or "/" in voice_id:
+                logger.error(
+                    "ElevenLabs create-voice-from-preview returned an unusable voice_id=%r; raw response=%s",
+                    voice_id, data,
+                )
+                raise RuntimeError(
+                    f"ElevenLabs create-voice-from-preview returned an invalid voice_id: {voice_id!r}"
+                )
+            return voice_id
     
     async def _tts_with_voice(self, client: httpx.AsyncClient, voice_id: str, text: str) -> bytes:
         """Generate TTS audio with a specific ElevenLabs voice."""

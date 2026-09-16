@@ -72,12 +72,20 @@ _COLOUR_WORDS = frozenset({
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'-]*")
 
 
-def stockify_query(raw: str | None, *, max_words: int = 4) -> str:
+def stockify_query(raw: str | None, *, max_words: int = 12) -> str:
     """Reduce ``raw`` to its concrete subject for a stock search.
 
     Drops shot-style / aesthetic / filler words, de-duplicates, caps to
     ``max_words``, and floats a colour word to the front. Returns ``""`` when
     nothing meaningful survives — the caller should fall back to the original.
+
+    ``max_words`` used to default to 4, truncating in original word order
+    with no awareness of which words mattered — for a product named "KOTIN
+    G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7 9700X + 32GB DDR5 +
+    1TB SSD" that produced "kotin g60b prebuilt gaming", severing "pc" right
+    off the end. Raised significantly: Pexels' own relevance ranking handles
+    a longer query fine (it doesn't need us to pre-guess which words matter),
+    so this cap is now just a sanity ceiling, not a working constraint.
 
     >>> stockify_query("hoodie flat lay charcoal")
     'charcoal hoodie'

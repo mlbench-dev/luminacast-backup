@@ -253,3 +253,24 @@ def test_shorten_stock_query_strips_sku():
 def test_shorten_stock_query_empty():
     assert shorten_stock_query("") == ""
     assert shorten_stock_query("   ") == ""
+
+
+def test_shorten_stock_query_keeps_short_product_type_words():
+    """Bug #1 regression: a blanket ≤2-char length cutoff used to drop real
+    product-type words like "pc"/"tv", not just filler/units — for a real
+    product ("KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7 9700X
+    + 32GB DDR5 + 1TB SSD") this produced "prebuilt gaming rtx ryzen" with
+    "pc" silently dropped, even though Pexels has a large, well-tagged
+    "Gaming Pc" category for exactly this product."""
+    out = shorten_stock_query(
+        "KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7 9700X "
+        "+ 32GB DDR5 + 1TB SSD"
+    )
+    assert "pc" in out.split()
+
+
+def test_shorten_stock_query_still_drops_short_filler():
+    """Short words that AREN'T real product-type nouns keep getting dropped —
+    the fix is a whitelist, not a blanket length-cutoff removal."""
+    out = shorten_stock_query("Sony WH-1000XM5 Wireless Headphones")
+    assert "wh" not in out.split()

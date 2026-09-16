@@ -648,6 +648,16 @@ export interface Avatar {
   persona_profile?: Record<string, unknown>;
   style_dna?: StyleDNAResult | null;
   candidate_frames?: string[];
+  face_candidates?: string[];
+  selected_face_url?: string;
+  edited_face_versions?: string[];
+  voice_description?: string;
+  voice_test_speech?: string;
+  voice_language?: string;
+  voice_accent?: string;
+  voice_desc_overridden?: boolean;
+  voice_previews?: Array<{ preview_id: string; audio_url: string; index: number }>;
+  selected_voice_preview_idx?: number;
   tiktok_source_url?: string;
   progress_step?: string;
   progress_percent?: number;

@@ -52,6 +52,21 @@ class Avatar(Base):
     test_video_key = Column(String, nullable=True)       # R2 key for InfiniteTalk test video
     persona_profile = Column(JSON, nullable=True)
     candidate_frames = Column(JSON, nullable=True)     # Array of R2 keys for face frame candidates
+    face_candidates = Column(JSON, nullable=True)      # Array of AI-generated face URLs (Face step, DIGITAL avatars) — lets a page refresh restore the batch instead of regenerating
+    selected_face_url = Column(String, nullable=True)  # Which face_candidates entry is highlighted, before "Continue to voice" commits it to face_ref_key
+    edited_face_versions = Column(JSON, nullable=True) # Accumulated /ai/edit-face results for the currently selected base face — cleared when a different base face is picked
+    # Voice step (DIGITAL avatars) — mirrors the face_candidates pattern so a
+    # refresh restores the in-progress voice pick instead of regenerating the
+    # description and resetting language/accent to defaults. Distinct from
+    # voice_style (legacy enum-driven clone-pipeline field) and test_script /
+    # locked_test_script (only written once the Voice step is locked).
+    voice_description = Column(Text, nullable=True)
+    voice_test_speech = Column(Text, nullable=True)
+    voice_language = Column(String(20), nullable=True)
+    voice_accent = Column(String(20), nullable=True)
+    voice_desc_overridden = Column(Boolean, default=False, nullable=False, server_default=text("false"))
+    voice_previews = Column(JSON, nullable=True)              # Array of {preview_id, audio_url, index} — R2-hosted, safe to persist
+    selected_voice_preview_idx = Column(Integer, nullable=True)
     candidate_scores = Column(JSON, nullable=True)     # Array of floats — real scores from MediaPipe+Gemini pipeline
     tiktok_source_url = Column(String, nullable=True)
     progress_step = Column(String, nullable=True)

@@ -852,7 +852,10 @@ async def update_avatar(
     # Whitelist of updatable fields
     allowed = {
         "name", "body_description", "description", "target_audience",
-        "gender", "style_preset", "wizard_step",
+        "gender", "style_preset", "wizard_step", "selected_face_url",
+        "edited_face_versions", "voice_description", "voice_test_speech",
+        "voice_language", "voice_accent", "voice_desc_overridden",
+        "selected_voice_preview_idx",
         # PR #65: clip-on lavalier vs phone-mic toggle. Drives the TTS
         # post-process EQ profile AND the mic-style suffix on the voice
         # description used by the cloning engine.

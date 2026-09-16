@@ -19,7 +19,6 @@ import { VoiceCorpusTab } from "@/components/avatar/VoiceCorpusTab";
 import { LiveReferenceCard } from "@/components/avatar/LiveReferenceCard";
 import { VoiceBrowser } from "@/components/avatar/VoiceBrowser";
 import { AvatarIdentityPanel } from "@/components/avatar/AvatarIdentityPanel";
-import { ClipMicToggle } from "@/components/avatar/ClipMicToggle";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { STYLE_PRESETS, MAKE_IT_REAL_CHIPS, type StylePresetId } from "@/lib/avatarStyles";
 import type { Avatar } from "@/lib/types";
@@ -121,6 +120,28 @@ const INTEREST_OPTIONS = [
   "Professionals", "Small Business", "Gardening", "Auto", "Sports", "Music",
   "Entertainment", "Finance", "Education", "Lifestyle",
 ];
+
+// Fire a keepalive PATCH to /avatar/{id} that survives the browser cancelling
+// in-flight requests on page unload/refresh — used for saves that happen
+// right when the user might immediately navigate away (e.g. clicking a
+// selection thumbnail), where a plain axios call can get silently dropped.
+function patchAvatarKeepalive(avatarId: string, body: Record<string, unknown>) {
+  let token: string | undefined;
+  try {
+    const raw = localStorage.getItem("luminacast-auth");
+    token = raw ? JSON.parse(raw)?.state?.token : undefined;
+  } catch {}
+  const base = (import.meta.env.VITE_API_URL as string | undefined) || "/api";
+  fetch(`${base}/avatar/${avatarId}`, {
+    method: "PATCH",
+    keepalive: true,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  }).catch(() => {});
+}
 
 /* ═══ ShimmerField — shared component for auto-generating fields ═══ */
 
@@ -847,11 +868,49 @@ function FacePhase({
   const [isGeneratingFaces, setIsGeneratingFaces] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
-  // Auto-generate faces on mount using the description from Setup
+  // Restore a previously generated batch on mount/remount (navigate-away-and-back,
+  // page refresh) instead of always regenerating. `avatar` arrives async from the
+  // avatar-identity query, so wait for it to actually resolve (undefined = still
+  // loading) before deciding, and only ever decide once via the ref guard —
+  // avatar-identity refetches every 10s and we don't want that to reset the grid.
+  const hasInitializedFaces = useRef(false);
   useEffect(() => {
-    if (!description.trim() || !avatarId) return;
-    handleGenerateFaces();
-  }, []);
+    if (hasInitializedFaces.current || !avatarId || avatar === undefined) return;
+    hasInitializedFaces.current = true;
+    if (avatar?.face_candidates && avatar.face_candidates.length > 0) {
+      setFaces(avatar.face_candidates);
+      if (avatar.selected_face_url) {
+        const idx = avatar.face_candidates.indexOf(avatar.selected_face_url);
+        if (idx !== -1) setSelectedFaceIdx(idx);
+      }
+      // edited_face_versions is scoped to whichever base face is currently
+      // selected (cleared server-side by selectFace on switch) — the most
+      // recent edit is always the active one, same rule handleEditFace
+      // already applies locally right after a successful edit.
+      if (avatar.edited_face_versions && avatar.edited_face_versions.length > 0) {
+        setEditVersions(avatar.edited_face_versions);
+        setSelectedVersion(avatar.edited_face_versions.length - 1);
+      }
+    } else if (description.trim()) {
+      handleGenerateFaces();
+    }
+  }, [avatar, avatarId, description]);
+
+  // Persist which candidate is highlighted (not yet the final "Continue to
+  // voice" pick — that's face_ref_key, written separately) so a refresh
+  // restores the same selection instead of showing none picked. Uses a
+  // keepalive fetch rather than the normal axios client: a plain request
+  // gets cancelled by the browser if the user hits refresh right after
+  // clicking a thumbnail (a very natural thing to do while testing this),
+  // which silently drops the selection — keepalive lets it finish in the
+  // background across that navigation.
+  const selectFace = (idx: number) => {
+    setSelectedFaceIdx(idx);
+    setEditVersions([]);
+    setSelectedVersion(null);
+    if (!avatarId || !faces[idx]) return;
+    patchAvatarKeepalive(avatarId, { selected_face_url: faces[idx], edited_face_versions: [] });
+  };
 
   const handleGenerateFaces = async () => {
     if (!description.trim() || !avatarId) return;
@@ -892,8 +951,8 @@ function FacePhase({
       setEditVersions((prev) => [...prev, data.edited_url]);
       setSelectedVersion(editVersions.length);
       setEditPrompt("");
-    } catch {
-      toast({ title: "Edit failed", variant: "destructive" });
+    } catch (err: any) {
+      toast({ title: "Edit failed", description: err?.response?.data?.detail, variant: "destructive" });
     } finally {
       setIsEditing(false);
     }
@@ -1066,7 +1125,7 @@ function FacePhase({
                 faces={faces}
                 currentIdx={modalFaceIdx}
                 onClose={() => setModalFaceIdx(null)}
-                onSelect={(idx) => { setSelectedFaceIdx(idx); setEditVersions([]); setSelectedVersion(null); }}
+                onSelect={selectFace}
                 onNavigate={setModalFaceIdx}
               />
             )}
@@ -1193,6 +1252,51 @@ function VoicePhase({
   const [playingIdx, setPlayingIdx] = useState<number | null>(null);
   const audioRefs = useRef<(HTMLAudioElement | null)[]>([]);
 
+  // Hand-edited description bypasses regeneration entirely, so it needs its
+  // own persistence path — debounced to avoid a PATCH on every keystroke.
+  const voiceDescSaveDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const handleDescriptionEdit = (value: string) => {
+    setVoiceDescription(value);
+    setVoiceDescOverridden(true);
+    if (!avatarId) return;
+    if (voiceDescSaveDebounceRef.current) clearTimeout(voiceDescSaveDebounceRef.current);
+    voiceDescSaveDebounceRef.current = setTimeout(() => {
+      avatarApi.updateAvatar(avatarId, { voice_description: value, voice_desc_overridden: true }).catch(() => {});
+    }, 600);
+  };
+
+  // Restore a previously generated description/language/accent/previews on
+  // mount/remount (refresh, navigate-away-and-back) instead of always
+  // regenerating from scratch with language/accent reset to their defaults —
+  // same bug class fixed for the Face step's face_candidates. `avatar`
+  // arrives async, so wait for it to resolve (undefined = still loading)
+  // before deciding, and only ever decide once via the ref guard.
+  const hasInitializedVoice = useRef(false);
+  // Set by the restore branch so the auto-regen effect below (which fires
+  // whenever language/accent change, including the change restore itself
+  // just made) doesn't immediately re-generate what was just restored.
+  const skipNextAutoRegen = useRef(false);
+  useEffect(() => {
+    if (hasInitializedVoice.current || avatar === undefined) return;
+    hasInitializedVoice.current = true;
+    if (avatar?.voice_description) {
+      skipNextAutoRegen.current = true;
+      setVoiceDescription(avatar.voice_description);
+      setTestSpeech(avatar.voice_test_speech || "");
+      setLanguage(avatar.voice_language || "english");
+      setAccent(avatar.voice_accent || "us");
+      setVoiceDescOverridden(!!avatar.voice_desc_overridden);
+      if (avatar.voice_previews && avatar.voice_previews.length > 0) {
+        setVoicePreviews(avatar.voice_previews);
+        setVoiceScreen("previews");
+        if (avatar.selected_voice_preview_idx != null) setSelectedPreviewIdx(avatar.selected_voice_preview_idx);
+      }
+    } else {
+      handleGenerateDescription();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avatar]);
+
   // Generate (or regenerate) the voice description so it reflects the
   // user's current base-voice picks (gender + language + accent). Triggered
   // on mount and from the explicit "Regenerate" button below.
@@ -1221,13 +1325,16 @@ function VoicePhase({
     }
   }, [avatarId, gender, language, accent, avatarName]);
 
-  // Auto-generate voice description on mount AND whenever gender/language/
-  // accent change (debounced 500ms). The user expects the description to
-  // stay in sync with their picks — a stale "young woman" description after
-  // switching gender to Male is a bug. If the user hand-edited the field,
-  // skip auto-regen so we don't clobber their text.
+  // Auto-generate voice description whenever gender/language/accent change
+  // (debounced 500ms) — but not until the mount-time restore above has had
+  // its say (hasInitializedVoice), and not for the one re-render restore
+  // itself causes by setting language/accent (skipNextAutoRegen). The user
+  // still expects the description to stay in sync with real picks — a stale
+  // "young woman" description after switching gender to Male is a bug. If
+  // the user hand-edited the field, skip auto-regen so we don't clobber it.
   useEffect(() => {
-    if (voiceDescOverridden) return;
+    if (!hasInitializedVoice.current || voiceDescOverridden) return;
+    if (skipNextAutoRegen.current) { skipNextAutoRegen.current = false; return; }
     if (voiceDescDebounceRef.current) clearTimeout(voiceDescDebounceRef.current);
     voiceDescDebounceRef.current = setTimeout(() => {
       handleGenerateDescription();
@@ -1332,7 +1439,7 @@ function VoicePhase({
               <div className="space-y-2">
                 <textarea
                   value={voiceDescription}
-                  onChange={(e) => { setVoiceDescription(e.target.value); setVoiceDescOverridden(true); }}
+                  onChange={(e) => handleDescriptionEdit(e.target.value)}
                   placeholder="Warm, energetic, youthful voice with..."
                   className="w-full rounded-md border border-border bg-bg p-3 text-sm text-text resize-none focus:border-accent focus:outline-hidden"
                   rows={4}
@@ -1352,47 +1459,17 @@ function VoicePhase({
               </div>
             </ShimmerField>
 
-            {/* Clip-mic vs phone-mic toggle. Default OFF = phone mic. The
-              backend appends a mic-style suffix to the voice description
-              AND switches the TTS post-process EQ profile to match. */}
-            <ClipMicToggle
-              avatarId={avatarId}
-              initialEnabled={!!(avatar as any)?.clip_mic_enabled}
-            />
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Gender</label>
-                <div className="flex gap-1.5">
-                  {GENDER_OPTIONS.map((g) => (
-                    <button
-                      key={g.value}
-                      onClick={() => setGender(g.value)}
-                      className={cn(
-                        "flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition",
-                        gender === g.value
-                          ? "text-white"
-                          : "bg-surface border border-border text-text-muted hover:border-accent/40",
-                      )}
-                      style={gender === g.value ? { backgroundColor: "var(--accent-active)" } : undefined}
-                    >
-                      <span className="text-xs">{g.icon}</span> {g.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Language</label>
-                <select
-                  value={language}
-                  onChange={(e) => { setLanguage(e.target.value); setAccent(LANGUAGES_WITH_ACCENTS[e.target.value]?.accents[0]?.value || ""); }}
-                  className="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text"
-                >
-                  {LANGUAGE_OPTIONS.map((l) => (
-                    <option key={l} value={l}>{LANGUAGES_WITH_ACCENTS[l].label}</option>
-                  ))}
-                </select>
-              </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-text-muted uppercase tracking-wide">Language</label>
+              <select
+                value={language}
+                onChange={(e) => { setLanguage(e.target.value); setAccent(LANGUAGES_WITH_ACCENTS[e.target.value]?.accents[0]?.value || ""); }}
+                className="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text"
+              >
+                {LANGUAGE_OPTIONS.map((l) => (
+                  <option key={l} value={l}>{LANGUAGES_WITH_ACCENTS[l].label}</option>
+                ))}
+              </select>
             </div>
 
             {LANGUAGES_WITH_ACCENTS[language]?.accents.length > 1 && (
@@ -1403,8 +1480,10 @@ function VoicePhase({
                     <button
                       key={a.value}
                       onClick={() => setAccent(a.value)}
+                      disabled={isGeneratingVoiceDesc}
                       className={cn(
                         "rounded-full px-3 py-1 text-xs font-medium transition",
+                        isGeneratingVoiceDesc && "opacity-50 cursor-not-allowed",
                         accent === a.value
                           ? "text-white"
                           : "bg-surface border border-border text-text-muted hover:border-accent/40",
@@ -1502,7 +1581,7 @@ function VoicePhase({
                 </p>
                 <textarea
                   value={voiceDescription}
-                  onChange={(e) => { setVoiceDescription(e.target.value); setVoiceDescOverridden(true); }}
+                  onChange={(e) => handleDescriptionEdit(e.target.value)}
                   placeholder="Warm, energetic, youthful voice with..."
                   rows={3}
                   disabled={isGeneratingVoicePreviews}
@@ -1544,7 +1623,10 @@ function VoicePhase({
                       selectedPreviewIdx === idx ? "ring-1 ring-accent/30" : "border-border hover:border-accent/40",
                     )}
                     style={selectedPreviewIdx === idx ? { borderColor: "var(--accent-active)", backgroundColor: "var(--accent-active-muted)" } : undefined}
-                    onClick={() => setSelectedPreviewIdx(idx)}
+                    onClick={() => {
+                      setSelectedPreviewIdx(idx);
+                      if (avatarId) patchAvatarKeepalive(avatarId, { selected_voice_preview_idx: idx });
+                    }}
                   >
                     <p className="text-sm font-medium text-text">Voice {idx + 1}</p>
                     <div className="flex items-center gap-2">
@@ -2081,11 +2163,21 @@ function PreviewPhase({
     }
   };
 
+  // Wait for the avatar record to resolve before deciding whether to
+  // auto-generate — avatarStatus (above) is disabled until a generation is
+  // already running, so checking it here always read as "no video yet" and
+  // fired a fresh generation on every refresh, even over an already-completed
+  // preview. `avatar` (the already-loaded record passed in as a prop) has
+  // the real answer.
+  const hasCheckedExistingPreview = useRef(false);
   useEffect(() => {
-    if (!avatarStatus?.test_video_url && !isGeneratingPreview) {
+    if (hasCheckedExistingPreview.current || avatar === undefined) return;
+    hasCheckedExistingPreview.current = true;
+    if (!avatar?.test_video_url && !isGeneratingPreview) {
       generatePreview();
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avatar]);
 
   return (
     <div className="flex gap-6">

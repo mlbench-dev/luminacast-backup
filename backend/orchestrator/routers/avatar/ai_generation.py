@@ -210,6 +210,8 @@ async def generate_voice_description(
     try:
         result = _json.loads(cleaned)
         description = result.get("voice_description", "Warm, friendly voice with clear pronunciation")
+        test_speech = result.get("test_speech", named_fallback)
+        suggested_filters = result.get("suggested_filters", fallback_filters)
         logger.info(
             "voice_description.generate base_voice=%r accent=%r gender=%r language=%r len=%d",
             req.base_voice_id or req.base_voice_name or None,
@@ -218,11 +220,6 @@ async def generate_voice_description(
             req.language or None,
             len(description),
         )
-        return {
-            "voice_description": description,
-            "test_speech": result.get("test_speech", named_fallback),
-            "suggested_filters": result.get("suggested_filters", fallback_filters),
-        }
     except (_json.JSONDecodeError, TypeError) as e:
         sentry_sdk.capture_exception(e)
         logger.info(
@@ -233,11 +230,26 @@ async def generate_voice_description(
             req.language or None,
             len(cleaned),
         )
-        return {
-            "voice_description": cleaned,
-            "test_speech": named_fallback,
-            "suggested_filters": fallback_filters,
-        }
+        description = cleaned
+        test_speech = named_fallback
+        suggested_filters = fallback_filters
+
+    # Persist so a refresh mid-Voice-step restores this instead of
+    # regenerating from scratch with the language/accent chips reset to
+    # their defaults. voice_desc_overridden=False here — this was an
+    # auto/explicit regen, not the user hand-editing the textarea.
+    avatar.voice_description = description
+    avatar.voice_test_speech = test_speech
+    avatar.voice_language = req.language or None
+    avatar.voice_accent = req.accent or None
+    avatar.voice_desc_overridden = False
+    await db.commit()
+
+    return {
+        "voice_description": description,
+        "test_speech": test_speech,
+        "suggested_filters": suggested_filters,
+    }
 
 class GenerateVoicePreviewsRequest(BaseModel):
     avatar_id: str
@@ -349,6 +361,14 @@ async def generate_voice_previews(
             "audio_url": r2.get_public_url(r2_key, cache_bust=True),
             "index": p["index"],
         })
+
+    # Persist — these are R2-hosted URLs (not short-lived signed links), so
+    # they're safe to restore on a refresh instead of re-hitting ElevenLabs.
+    # A fresh batch invalidates whatever was previously selected.
+    if avatar:
+        avatar.voice_previews = result_previews
+        avatar.selected_voice_preview_idx = None
+        await db.commit()
 
     return {"previews": result_previews}
 

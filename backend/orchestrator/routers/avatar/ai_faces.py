@@ -100,6 +100,7 @@ async def create_ai_avatar(
     return CreateAIAvatarResponse(avatar_id=avatar_id)
 
 class GenerateFacesRequest(BaseModel):
+    avatar_id: Optional[str] = None
     description: str = ""
     reference_photo_url: Optional[str] = None
 
@@ -111,6 +112,7 @@ async def ai_generate_faces(
     req: GenerateFacesRequest,
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
+    db: AsyncSession = Depends(get_db),
 ):
     """Generate 8 face images using FLUX Kontext Pro."""
     import fal_client
@@ -162,9 +164,16 @@ async def ai_generate_faces(
     if not face_urls:
         raise HTTPException(status_code=500, detail="Face generation failed. Please try again.")
 
+    if req.avatar_id:
+        avatar = await db.get(Avatar, req.avatar_id)
+        if avatar and avatar.user_id == ctx.workspace_owner_id:
+            avatar.face_candidates = face_urls
+            await db.commit()
+
     return GenerateFacesResponse(face_urls=face_urls)
 
 class AIEditFaceRequest(BaseModel):
+    avatar_id: Optional[str] = None
     face_url: str
     instructions: str
 
@@ -172,13 +181,106 @@ class AIEditFaceResponse(BaseModel):
     original_url: str
     edited_url: str
 
+# Reject obviously out-of-scope requests before spending a FLUX call on them.
+# This is a fast, free first gate for the common case (explicit "change the
+# background" wording) — a keyword list can never enumerate every phrasing
+# ("back scene", "different setting", "put me on a beach", ...), so
+# _is_out_of_scope_edit below covers whatever this misses, and
+# _lock_background_to_original still runs regardless as the hard guarantee.
+_OUT_OF_SCOPE_PATTERN = re.compile(
+    r"\b(background|backround|bg|backdrop|scene|scenery|setting|environment|surroundings|location)\b",
+    re.IGNORECASE,
+)
+
+async def _is_out_of_scope_edit(instructions: str) -> bool:
+    """Cheap LLM fallback for instructions that dodge the keyword pattern but
+    still ask for something outside face/hair/accessories (e.g. "put me on a
+    beach", "make it look like an office"). Same default model
+    (claude-3-haiku) the content-type classifier in services/content_type.py
+    uses for this kind of single-word classification — fast and cheap enough
+    to run on every edit request that isn't already caught by the regex.
+    Fails open (returns False) on any error so a classifier hiccup never
+    blocks a legitimate edit.
+    """
+    try:
+        from services.openrouter import get_openrouter_service
+        result = await get_openrouter_service().generate_text(
+            prompt=f'Edit instructions: """{instructions.strip()[:300]}"""',
+            system_prompt=(
+                "You classify photo-edit instructions for a face-only editing tool. "
+                "Reply with exactly one word.\n"
+                "Reply ALLOW if the instructions only change the person's face, hair, "
+                "expression, or accessories (glasses, earrings, makeup, hats worn on "
+                "the head, etc).\n"
+                "Reply REJECT if the instructions ask to change the background, scene, "
+                "location, setting, clothing, pose, or add anything unrelated to the "
+                "person's face/hair/accessories."
+            ),
+            temperature=0,
+            max_tokens=5,
+        )
+        return (result or "").strip().upper().startswith("REJECT")
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        logger.warning(f"Out-of-scope LLM classification failed, allowing through: {e}")
+        return False
+
+async def _lock_background_to_original(original_url: str, edited_url: str, owner_id: str) -> str:
+    """Composite the FLUX-edited pixels back onto the original image outside
+    the person silhouette, so the background/pose is pixel-identical to the
+    original no matter what the model actually drew there. Kontext's "keep
+    the background unchanged" instruction is a soft prompt constraint the
+    model doesn't reliably honor — a hair-color edit could still redraw the
+    whole scene. Returns the composited R2 URL, or the raw ``edited_url``
+    unchanged if the composite step fails for any reason.
+    """
+    import httpx
+    from io import BytesIO
+    from PIL import Image, ImageFilter
+    from rembg import remove as rembg_remove
+    from services.r2_storage import get_r2_storage_service
+
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        original_resp, edited_resp = await client.get(original_url), await client.get(edited_url)
+        original_resp.raise_for_status()
+        edited_resp.raise_for_status()
+        original_bytes, edited_bytes = original_resp.content, edited_resp.content
+
+    original_img = Image.open(BytesIO(original_bytes)).convert("RGB")
+    edited_img = Image.open(BytesIO(edited_bytes)).convert("RGB")
+    if edited_img.size != original_img.size:
+        edited_img = edited_img.resize(original_img.size)
+
+    # Person-silhouette alpha matte from the ORIGINAL photo — this is the
+    # region allowed to take the edited pixels; everything outside it is
+    # forced back to the original. Feather the edge slightly to avoid a
+    # visible seam.
+    matte = rembg_remove(original_bytes)
+    mask = Image.open(BytesIO(matte)).convert("RGBA").split()[-1].filter(ImageFilter.GaussianBlur(3))
+
+    composited = Image.composite(edited_img, original_img, mask)
+    buf = BytesIO()
+    composited.save(buf, "JPEG", quality=92)
+
+    key = f"creators/{owner_id}/avatar/face_edits/{uuid.uuid4().hex}.jpg"
+    r2 = get_r2_storage_service()
+    await r2.upload_bytes(buf.getvalue(), key, "image/jpeg")
+    return r2.get_public_url(key)
+
 @router.post("/ai/edit-face", response_model=AIEditFaceResponse)
 async def ai_edit_face(
     req: AIEditFaceRequest,
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
+    db: AsyncSession = Depends(get_db),
 ):
     """Edit a generated face using FLUX Kontext Pro."""
+    if _OUT_OF_SCOPE_PATTERN.search(req.instructions) or await _is_out_of_scope_edit(req.instructions):
+        raise HTTPException(
+            status_code=400,
+            detail="This tool only edits facial features (hair, glasses, expression, accessories, etc.) — background and scene changes aren't supported.",
+        )
+
     import fal_client
     import os
     from config import settings as _settings
@@ -186,9 +288,11 @@ async def ai_edit_face(
     if not os.environ.get("FAL_KEY") and _settings.FAL_API_KEY:
         os.environ["FAL_KEY"] = _settings.FAL_API_KEY
 
-    from services.ai_prompts import get_prompt
-    edit_prompt = f"{req.instructions}. Keep the same person identity and face structure."
-    prompt = edit_prompt
+    prompt = (
+        f"{req.instructions}. Apply this change only to the person's face, hair, and "
+        "accessories. Keep the same person identity, face structure, pose, framing, "
+        "clothing, background, and lighting completely unchanged."
+    )
 
     result = await fal_client.run_async(
         "fal-ai/flux-pro/kontext",
@@ -208,6 +312,24 @@ async def ai_edit_face(
     edited_url = images[0].get("url", "")
     if not edited_url:
         raise HTTPException(status_code=500, detail="Face editing returned empty URL")
+
+    try:
+        edited_url = await _lock_background_to_original(req.face_url, edited_url, ctx.workspace_owner_id)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        logger.warning(f"Background-lock composite failed, returning raw edit: {e}")
+
+    if req.avatar_id:
+        avatar = await db.get(Avatar, req.avatar_id)
+        if avatar and avatar.user_id == ctx.workspace_owner_id:
+            # selected_face_url deliberately stays pointing at the base
+            # face_candidates entry (not this edited result) — the frontend
+            # restore logic looks it up by index in face_candidates, and the
+            # "latest edit is active" rule (mirroring handleEditFace's local
+            # behavior) means edited_face_versions alone is enough to know
+            # what to show.
+            avatar.edited_face_versions = list(avatar.edited_face_versions or []) + [edited_url]
+            await db.commit()
 
     return AIEditFaceResponse(original_url=req.face_url, edited_url=edited_url)
 

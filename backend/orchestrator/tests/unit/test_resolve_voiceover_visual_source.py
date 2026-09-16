@@ -173,17 +173,126 @@ def test_parallel_media_wins_over_stock_media_url(monkeypatch):
     assert result == ("video", "https://videos.pexels.com/pm.mp4")
 
 
-def test_product_own_media_outranks_generic_stock(monkeypatch):
-    """When a product resolves for the block, its OWN uploaded gallery
-    assets must be tried before the AI-picked stock (parallel_media) and
-    the coarse stock_media_url — a "promote the Galaxy S26" cast should
-    show the real S26 photos, not a random Pexels phone. Regression for the
-    old order where product media sat at the bottom and was never reached."""
+def test_video_beats_product_image_regardless_of_source(monkeypatch):
+    """Bug regression (cst_294eeaf04af2 block blk_990214163387): a
+    voiceover slot is b-roll — motion footage must be tried before any
+    static image, even the product's own real photo, even when the video
+    is generic AI-picked stock (parallel_media). Confirmed on a real
+    render: a product with an all-image gallery baked a marketing photo on
+    the very first candidate — no trial-and-error in the logs at all — and
+    never even tried the 2 Pexels B-roll videos already attached to the
+    same block."""
+    from tasks.cast_render import resolve_voiceover_visual_sources
+
+    block = _FakeBlock(parallel_media=[
+        {"kind": "video", "url": "https://videos.pexels.com/broll.mp4"},
+    ])
+    block.product_id = "prod_s26"
+    block.position = 0
+
+    class _GalleryAsset:
+        def __init__(self, asset_id, media_type, key):
+            self.id = asset_id
+            self.media_type = media_type
+            self.r2_key = key
+            self.position = 0
+            self.created_at = asset_id
+
+    gallery = [_GalleryAsset("pa_1", "image", "products/prod_s26/assets/pa_1.jpg")]
+
+    class _Prod:
+        cover_image_key = ""
+
+    class _Result:
+        def scalars(self):
+            return types.SimpleNamespace(all=lambda: gallery)
+
+    async def _fake_get(model, obj_id):
+        if getattr(model, "__name__", "") == "Product":
+            return _Prod()
+        return block
+
+    async def _fake_execute(_query):
+        return _Result()
+
+    session = types.SimpleNamespace(get=_fake_get, execute=_fake_execute)
+    r2 = types.SimpleNamespace(get_public_url=lambda key: f"https://cdn/{key}")
+
+    import tasks.cast_render as cr
+    monkeypatch.setattr(
+        cr, "resolve_effective_product_id", AsyncMock(return_value="prod_s26"),
+    )
+
+    result = _run(resolve_voiceover_visual_sources(
+        "blk_test", session, r2, "cst_test",
+    ))
+    assert result[0] == ("video", "https://videos.pexels.com/broll.mp4"), (
+        f"expected the AI-picked B-roll video ahead of the product's own "
+        f"static image, got order {result}"
+    )
+    assert ("image", "https://cdn/products/prod_s26/assets/pa_1.jpg") in result
+
+
+def test_product_own_video_outranks_generic_stock_video(monkeypatch):
+    """Within the VIDEO kind, the product's own footage still wins over
+    generic AI-picked stock — unchanged by the video-before-image fix
+    above; source priority still applies within a kind."""
     from tasks.cast_render import resolve_voiceover_visual_sources
 
     block = _FakeBlock(parallel_media=[
         {"kind": "video", "url": "https://videos.pexels.com/random-phone.mp4"},
     ])
+    block.product_id = "prod_s26"
+    block.position = 0
+
+    class _GalleryAsset:
+        def __init__(self, asset_id, media_type, key):
+            self.id = asset_id
+            self.media_type = media_type
+            self.r2_key = key
+            self.position = 0
+            self.created_at = asset_id
+
+    gallery = [_GalleryAsset("pa_vid", "video", "products/prod_s26/assets/pa_vid.mp4")]
+
+    class _Prod:
+        cover_image_key = ""
+
+    class _Result:
+        def scalars(self):
+            return types.SimpleNamespace(all=lambda: gallery)
+
+    async def _fake_get(model, obj_id):
+        if getattr(model, "__name__", "") == "Product":
+            return _Prod()
+        return block
+
+    async def _fake_execute(_query):
+        return _Result()
+
+    session = types.SimpleNamespace(get=_fake_get, execute=_fake_execute)
+    r2 = types.SimpleNamespace(get_public_url=lambda key: f"https://cdn/{key}")
+
+    import tasks.cast_render as cr
+    monkeypatch.setattr(
+        cr, "resolve_effective_product_id", AsyncMock(return_value="prod_s26"),
+    )
+
+    result = _run(resolve_voiceover_visual_sources(
+        "blk_test", session, r2, "cst_test",
+    ))
+    assert result[0] == ("video", "https://cdn/products/prod_s26/assets/pa_vid.mp4")
+    assert result.index(("video", "https://videos.pexels.com/random-phone.mp4")) > 0
+
+
+def test_product_own_image_outranks_generic_stock_image(monkeypatch):
+    """Within the IMAGE kind (no video candidates at all), the product's
+    own photos still win over the coarse stock_media_url fallback — a
+    "promote the Galaxy S26" cast should show the real S26 photos, not a
+    random Pexels phone, when neither side has any video to offer."""
+    from tasks.cast_render import resolve_voiceover_visual_sources
+
+    block = _FakeBlock(parallel_media=None)
     block.stock_media_url = "https://images.pexels.com/photos/vivo.jpeg"
     block.stock_media_kind = "photo"
     block.product_id = "prod_s26"
@@ -228,13 +337,10 @@ def test_product_own_media_outranks_generic_stock(monkeypatch):
     result = _run(resolve_voiceover_visual_sources(
         "blk_test", session, r2, "cst_test",
     ))
-    # First two candidates are the product's own gallery photos, then the
-    # cover, and only then the generic Pexels stock.
     assert result[0] == ("image", "https://cdn/products/prod_s26/assets/pa_1.jpg")
     assert result[1] == ("image", "https://cdn/products/prod_s26/assets/pa_2.jpg")
     assert result[2] == ("image", "https://cdn/products/covers/s26.jpg")
-    assert ("video", "https://videos.pexels.com/random-phone.mp4") in result
-    assert result.index(("video", "https://videos.pexels.com/random-phone.mp4")) > 2
+    assert result[3] == ("image", "https://images.pexels.com/photos/vivo.jpeg")
 
 
 def test_product_media_rotates_by_block_position(monkeypatch):

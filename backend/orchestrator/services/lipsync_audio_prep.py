@@ -61,10 +61,31 @@ _HEAD_PAD_S = 0.1
 
 # Max allowed drift between the prepared output duration and the
 # expected duration (input + head pad). The chain must be strictly
-# duration-preserving apart from the intentional head pad; anything
-# beyond this margin indicates a filter (e.g. silenceremove) ate real
-# speech and is treated as a defect. Env-overridable for tuning.
-_PREP_DURATION_DRIFT_MAX_MS = 30.0
+# duration-preserving apart from the intentional head pad AND the
+# trailing-silence trim; anything beyond this margin indicates a filter
+# (e.g. silenceremove) ate real speech and is treated as a defect.
+#
+# Was 30ms, which is incompatible with the trailing-silence trim this
+# step performs on purpose. Confirmed empirically (reproducing this exact
+# filter chain against real audio, and again with a synthesized clip in
+# tests/unit/test_lipsync_audio_prep_duration.py): with stop_periods
+# correctly negative (tail-anchored), ffmpeg's silenceremove removes
+# essentially ALL of a qualifying trailing-silence run, not just an
+# excess above some small buffer — so the legitimate drift for a clip
+# scales with however much real trailing silence the TTS engine actually
+# left (tens of ms up to a second or more is normal), not a small fixed
+# constant. A tight cap rejected those as "defects" and fell back to raw
+# audio on every one, which is what fed the downstream speaking-duration-
+# tolerance check a mismatched clip and forced a full re-bake retry loop
+# (cst_294eeaf04af2 block blk_1a61c93a5731 — a real block, no defect,
+# whose correctly-trimmed output still drifted 58ms, failing the old
+# 30ms cap). Now that the stop_periods sign is fixed, silenceremove is
+# structurally incapable of touching non-trailing audio (the search is
+# anchored to the end of the clip), so this cap's remaining job is to
+# catch unrelated defects (corrupted downloads, ffmpeg crashes, a
+# different filter bug) producing multi-second garbage — not to
+# second-guess a legitimate trailing-silence trim. Env-overridable.
+_PREP_DURATION_DRIFT_MAX_MS = 2000.0
 
 # Trailing-silence trim. Anything quieter than -50 dB sustained for
 # more than 200ms at the tail is stripped — this prevents the
@@ -416,16 +437,26 @@ async def prepare_lipsync_audio(
             )
 
             # Step 5: trim trailing silence > 200ms below -50 dB.
-            # stop_periods=1 means "trim once at the end only" so
-            # internal pauses (breaths, comma beats) are preserved —
-            # those serve as alignment anchors for the rolling-window
-            # encoders. With the tail pad gone (Step 4), this only strips
-            # genuine trailing silence that was already in the TTS source,
-            # tightening the tail so the engine stops animating the moment
-            # speech ends.
+            # stop_periods must be NEGATIVE (-1) to anchor the search at
+            # the END of the clip and remove only genuine trailing
+            # silence. A positive stop_periods scans FORWARD from the
+            # start and removes the Nth qualifying silence period
+            # wherever it's first found — for TTS audio that can be a
+            # mid-sentence breath/pause, and everything after it gets cut
+            # too. This was previously stop_periods=1 (positive), which
+            # is exactly that bug: confirmed on a real render
+            # (cst_294eeaf04af2 block blk_1a61c93a5731) it matched an
+            # internal pause and discarded 2.46s of real trailing speech
+            # (6.526s -> 4.066s) instead of trimming the ~58ms of actual
+            # trailing silence stop_periods=-1 correctly removes. With
+            # the tail pad gone (Step 4) and the sign correct, this only
+            # strips genuine trailing silence already in the TTS source,
+            # tightening the tail so the engine stops animating the
+            # moment speech ends — internal pauses (breaths, comma beats)
+            # are left alone since the search never looks at them.
             silence_filter = (
                 "silenceremove="
-                "stop_periods=1"
+                "stop_periods=-1"
                 f":stop_duration={_TRAILING_SILENCE_STOP_DURATION_S}"
                 f":stop_threshold={_TRAILING_SILENCE_THRESHOLD_DB}dB"
             )

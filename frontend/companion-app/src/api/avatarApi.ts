@@ -217,16 +217,18 @@ export const avatarApi = {
         headers: { "Content-Type": "multipart/form-data" },
       }).then((r) => r.data);
       return api.post<{ face_urls: string[] }>("/avatar/ai/generate-faces", {
+        avatar_id: avatarId,
         description: data.description,
         reference_photo_url: uploadResult.face_url,
       }).then((r) => r.data);
     }
     return api.post<{ face_urls: string[] }>("/avatar/ai/generate-faces", {
+      avatar_id: avatarId,
       description: data.description,
     }).then((r) => r.data);
   },
   aiEditFace: (avatarId: string, data: { face_url: string; instructions: string }) =>
-    api.post<{ original_url: string; edited_url: string }>("/avatar/ai/edit-face", data).then((r) => r.data),
+    api.post<{ original_url: string; edited_url: string }>("/avatar/ai/edit-face", { avatar_id: avatarId, ...data }).then((r) => r.data),
   aiSelectFace: (avatarId: string, data: { face_url: string }) =>
     api.post(`/avatar/ai/${avatarId}/select-face`, data).then((r) => r.data),
   aiGetVoices: (params: { page?: number; per_page?: number; gender?: string; search?: string }) =>

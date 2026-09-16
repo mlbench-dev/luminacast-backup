@@ -1424,6 +1424,18 @@ _OCCASION_PATTERN_TOKENS = frozenset({
 })
 
 
+
+# Short (≤2 char) tokens that are real product-type nouns, not units/filler —
+# a blanket length cutoff below would silently drop the actual category word
+# (e.g. "Gaming PC" -> "gaming", severing "pc" and sending stock search
+# toward generic "gaming" footage instead of "gaming pc" b-roll — confirmed
+# with a real product: "KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB +
+# Ryzen 7 9700X + 32GB DDR5 + 1TB SSD" lost "pc" this way).
+_SHORT_MEANINGFUL_WORDS = frozenset({
+    "pc", "tv", "ac", "ev", "ar", "vr", "rv",
+})
+
+
 def _meaningful_product_words(product_name: str) -> list[str]:
     """Tokenize a product name into brand/SKU-stripped meaningful words, in
     original order, with no length cap.
@@ -1448,7 +1460,9 @@ def _meaningful_product_words(product_name: str) -> list[str]:
     meaningful: list[str] = []
     for w in words:
         lw = w.lower()
-        if lw in _GENERIC_BRAND_TOKENS or len(lw) <= 2 or lw in meaningful:
+        if lw in _GENERIC_BRAND_TOKENS or lw in meaningful:
+            continue
+        if len(lw) <= 2 and lw not in _SHORT_MEANINGFUL_WORDS:
             continue
         if _looks_like_sku(w):
             continue
@@ -2832,6 +2846,25 @@ def _extract_feature_words(script_block: dict | None, limit: int = 4) -> list[st
     return seen
 
 
+def _lightly_clean_product_name(name: str) -> str:
+    """Normalize separators/whitespace in a product name without dropping or
+    reordering any words — unlike shorten_stock_query's aggressive trimming.
+
+    Pexels' own search tolerates a long, literal product name fine (a direct
+    search of the full raw title "KOTIN G60B Prebuilt Gaming PC — RTX 5070
+    12GB + Ryzen 7 9700X + 32GB DDR5 + 1TB SSD" returned strong, correct
+    results on Pexels' own site), so this only cleans up punctuation that
+    isn't a real word ("—", "+", "|", "/") rather than cutting words.
+    """
+    import re
+
+    if not name:
+        return ""
+    cleaned = re.sub(r"[—–|+/]+", " ", name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def build_pexels_query(product: dict | None, script_block: dict | None) -> list[str]:
     """Return 2–3 Pexels search queries for a block, ordered specific → generic.
 
@@ -2847,8 +2880,8 @@ def build_pexels_query(product: dict | None, script_block: dict | None) -> list[
         >>> product = {"name": "Sony WH-1000XM5", "category": "headphones"}
         >>> block = {"key_points": ["noise cancellation", "wireless music"]}
         >>> build_pexels_query(product, block)
-        ['Sony WH-1000XM5 noise cancellation wireless',
-         'headphones noise cancellation wireless',
+        ['headphones noise cancellation wireless',
+         'Sony WH-1000XM5',
          'headphones lifestyle close-up']
     """
     product = product or {}
@@ -2857,17 +2890,18 @@ def build_pexels_query(product: dict | None, script_block: dict | None) -> list[
     features = _extract_feature_words(script_block)
     feature_phrase = " ".join(features[:3]).strip()
 
-    # Infer a category from the product name when none is supplied, so the
-    # generic fallback is still product-shaped ("headphones") and not "product".
-    # Reuses the same brand/SKU-stripped word list shorten_stock_query() builds
-    # (rather than an independent whitespace split) so both candidates below
-    # describe the same product instead of drifting onto different words for
-    # long, descriptor-heavy titles.
-    if not category and name:
-        name_words = _meaningful_product_words(name)
-        non_descriptor_words = [w for w in name_words if w not in _OCCASION_PATTERN_TOKENS]
-        candidates_for_category = non_descriptor_words or name_words
-        category = candidates_for_category[-1] if candidates_for_category else ""
+    # Prefer the outline LLM's own visual_subject (a short, plain-language
+    # description of what the product physically looks like, e.g. "gaming pc
+    # tower") when the product record has no explicit category. We deliberately
+    # do NOT synthesize a category by grabbing the last surviving word of the
+    # product name — that heuristic picked "ssd" over "gaming pc" for a
+    # product literally named "...RTX 5070 12GB + Ryzen 7 9700X + 32GB DDR5 +
+    # 1TB SSD". If neither a real category nor a visual_subject is available,
+    # the category-dependent candidates below are simply skipped rather than
+    # guessing badly.
+    if not category:
+        visual_subject = (script_block or {}).get("visual_subject") if isinstance(script_block, dict) else None
+        category = (visual_subject or "").strip()
 
     candidates: list[str] = []
 
@@ -2879,21 +2913,27 @@ def build_pexels_query(product: dict | None, script_block: dict | None) -> list[
     if short_name:
         candidates.append(f"{short_name} {feature_phrase}".strip())
 
-    # 1b. Full product name + features — kept as a lower-priority candidate in
-    #     case the short form is too generic and real branded footage exists.
-    if name:
-        specific = f"{name} {feature_phrase}".strip()
-        candidates.append(specific)
-
-    # 2. Mid: product category + features (drops the brand so Pexels stops
-    #    returning storefronts, but keeps the product type + use-case).
+    # 2. Mid: product category (explicit, or the LLM's visual_subject) +
+    #    features — drops the brand so Pexels stops returning storefronts,
+    #    but keeps the product type + use-case.
     if category:
         mid = f"{category} {feature_phrase}".strip()
         candidates.append(mid)
     elif feature_phrase:
         candidates.append(feature_phrase)
 
-    # 3. Generic lifestyle fallback so the block is never left empty.
+    # 3. Lightly-cleaned full product name (punctuation normalized only — no
+    #    words dropped or reordered, no feature words appended). A direct
+    #    search of the full raw product name on Pexels returned strong,
+    #    correct results for the KOTIN case above; Pexels' own relevance
+    #    ranking tolerates the extra unmatched words fine, so this doesn't
+    #    need shorten_stock_query's aggressive trimming to work. Positioned
+    #    before the generic lifestyle fallback.
+    cleaned_name = _lightly_clean_product_name(name) if name else ""
+    if cleaned_name:
+        candidates.append(cleaned_name)
+
+    # 4. Generic lifestyle fallback so the block is never left empty.
     fallback_subject = category or (name.split()[0] if name else "product")
     if fallback_subject.lower() in _GENERIC_BRAND_TOKENS:
         fallback_subject = "product"

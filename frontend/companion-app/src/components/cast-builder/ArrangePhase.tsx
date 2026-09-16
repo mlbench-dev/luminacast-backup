@@ -47,6 +47,7 @@ export interface ArrangePhaseHandle {
   getChangeCount: () => number;
   getTimelineTracks: () => unknown[];
   getBlockRegions: () => import("@/lib/editorStarterMapping").BlockRegion[];
+  pause: () => void;
 
 }
 
@@ -155,6 +156,9 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
       const state = latestStateRef.current;
       if (!state) return [];
       return computeBlockRegions(state);
+    },
+    pause() {
+      editorRef.current?.pause();
     },
   }), [cast.id, buildSavePayload]);
 

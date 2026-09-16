@@ -49,6 +49,8 @@ RUN echo 'server { \
   \
   location /api { \
     proxy_pass http://orchestrator:8000; \
+    proxy_read_timeout 300s; \
+    proxy_send_timeout 300s; \
   } \
   location /ws { \
     proxy_pass http://orchestrator:8000; \

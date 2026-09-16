@@ -38,10 +38,12 @@ def test_build_query_blends_product_name_and_features():
     block = {"key_points": ["noise cancellation", "wireless music"]}
     queries = build_pexels_query(product, block)
 
-    # Specific first (product name + feature words), category mid, lifestyle last.
-    assert queries[0].startswith("Sony WH-1000XM5")
+    # "WH-1000XM5" has nothing meaningful left after brand/SKU stripping, so
+    # the short_name candidate is empty and category + features leads,
+    # followed by the lightly-cleaned full name, then the lifestyle fallback.
+    assert queries[0].startswith("headphones")
     assert "noise" in queries[0]
-    assert queries[1].startswith("headphones")
+    assert queries[1] == "Sony WH-1000XM5"
     assert queries[-1] == "headphones lifestyle close-up"
     assert 2 <= len(queries) <= 3
 
@@ -56,12 +58,72 @@ def test_build_query_never_leaves_brand_token_standing_alone():
     assert queries[-1] == "product lifestyle close-up"
 
 
-def test_build_query_infers_category_from_name_tail():
-    product = {"name": "Acme Wireless Earbuds"}
-    block = {"key_points": ["deep bass"]}
+def test_build_query_does_not_guess_category_from_name_tail():
+    """Bug #2 regression: no explicit category must NOT synthesize one by
+    grabbing the last surviving word of the product name — that heuristic
+    picked "ssd" over "gaming pc" for a real product (see the KOTIN case
+    below), because "ssd" happened to be the trailing spec token."""
+    product = {
+        "name": (
+            "KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7 9700X "
+            "+ 32GB DDR5 + 1TB SSD"
+        ),
+    }
+    block = {"key_points": []}
     queries = build_pexels_query(product, block)
-    # "earbuds" is the product-shaped tail token, not the brand "Acme".
-    assert queries[-1] == "earbuds lifestyle close-up"
+    joined = " ".join(queries).lower()
+    assert "ssd lifestyle" not in joined
+    assert not any(q.strip().lower() == "ssd" for q in queries)
+
+
+def test_build_query_kotin_case_keeps_pc():
+    """Confirmed real-world regression (bugs #1+#2 combined): a blanket
+    ≤2-char word cutoff dropped "pc", and the last-word category guess then
+    picked "ssd" — producing "prebuilt gaming rtx ryzen" as the primary
+    query and an "ssd" fallback, even though Pexels has a large, well-tagged
+    "Gaming Pc" category for this exact product."""
+    product = {
+        "name": (
+            "KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7 9700X "
+            "+ 32GB DDR5 + 1TB SSD"
+        ),
+    }
+    block = {"key_points": []}
+    queries = build_pexels_query(product, block)
+    assert any("pc" in q.lower().split() for q in queries)
+
+
+def test_build_query_prefers_visual_subject_over_no_category():
+    """Bug #5: when the outline LLM supplied visual_subject, it must be used
+    in place of the (now-removed) name-derived last-word guess."""
+    product = {
+        "name": (
+            "KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7 9700X "
+            "+ 32GB DDR5 + 1TB SSD"
+        ),
+    }
+    block = {"key_points": [], "visual_subject": "gaming pc tower"}
+    queries = build_pexels_query(product, block)
+    assert any(q.startswith("gaming pc tower") for q in queries)
+    assert "ssd lifestyle close-up" not in [q.lower() for q in queries]
+
+
+def test_build_query_includes_lightly_cleaned_full_name():
+    """Bug #3: the lightly-cleaned full product name (punctuation normalized,
+    no words dropped/reordered, no feature words appended) is tried ahead of
+    the generic lifestyle fallback — Pexels' own search handled the full raw
+    KOTIN title fine, it doesn't need aggressive trimming."""
+    name = (
+        "KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7 9700X "
+        "+ 32GB DDR5 + 1TB SSD"
+    )
+    product = {"name": name, "category": "gaming pc"}
+    block = {"key_points": []}
+    queries = build_pexels_query(product, block)
+    cleaned = [q for q in queries if "ssd" in q.lower()]
+    assert cleaned, "expected the lightly-cleaned full name candidate to survive"
+    assert "PC" in cleaned[0] and "5070" in cleaned[0] and "SSD" in cleaned[0]
+    assert "—" not in cleaned[0] and "+" not in cleaned[0]
 
 
 def test_build_query_dedupes_and_caps_at_three():

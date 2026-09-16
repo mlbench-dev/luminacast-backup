@@ -692,7 +692,12 @@ export function CastBuilderPage() {
                   )}
 
                   {/* Right: Renders collection */}
-                  <RendersCollection ref={rendersRef} castId={cast.id} outputFormat={cast.output_format} />
+                  <RendersCollection
+                    ref={rendersRef}
+                    castId={cast.id}
+                    outputFormat={cast.output_format}
+                    onBeforePlay={() => arrangePhaseRef.current?.pause()}
+                  />
 
                   {/* FIX 1.2 — Kebab menu with Duplicate + Delete cast */}
                   <div className="relative" ref={kebabRef}>

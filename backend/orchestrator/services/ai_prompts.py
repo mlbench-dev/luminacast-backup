@@ -332,6 +332,17 @@ Stock queries should reflect ALL three contexts when possible, while staying 2�
 GOOD: "woman charging phone commute", "phone battery close-up subway"
 BAD:  "wireless charger", "technology lifestyle"
 
+VISUAL SUBJECT (REQUIRED for EVERY block):
+Every block must ALSO have a `visual_subject` — a short (2-4 word), plain-
+language description of what the PRODUCT PHYSICALLY LOOKS LIKE, e.g. "gaming
+pc tower", "wireless earbuds case", "cordless neck massager". This is used
+directly to pick b-roll footage, so it must name the real-world object/form
+factor a camera would see — NEVER the brand, SKU, model number, or spec
+string (no "RTX 5070", no "9700X", no capacity/DDR/storage numbers). A
+product titled "KOTIN G60B Prebuilt Gaming PC — RTX 5070 12GB + Ryzen 7
+9700X + 32GB DDR5 + 1TB SSD" should get visual_subject "gaming pc tower" —
+not "ssd" and not the raw spec string.
+
 How to write a great query:
 - SHORT (2–4 words is the sweet spot, max 6). Pexels rewards specific
   nouns + a single descriptor verb. Long queries return ZERO results.
@@ -373,6 +384,7 @@ Return ONLY a valid JSON array — no markdown, no preamble. Each block:
   "hook_type": <string or null — only for the first block>,
   "style_directives": ["..."],
   "stock_media_query": <string or null>,
+  "visual_subject": <string or null — REQUIRED, 2-4 words, plain-language description of what the PRODUCT PHYSICALLY LOOKS LIKE (e.g. "gaming pc tower", "wireless earbuds case"). NEVER a brand/SKU/spec string — see VISUAL SUBJECT rules above.>,
   "motion_prompt": <string or null — REQUIRED for avatar_action blocks: 15-30 vivid words covering the action + setting + lighting + camera angle. DO NOT repeat the avatar's age/skin/hair/outfit — those are auto-prepended by the system.>,
   "background_type": "avatar_full" | "stock_video" | "stock_photo" | "product_image" | "solid_color",
   "transition_in": "cut" | "fade" | "zoom" | "slide",

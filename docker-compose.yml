@@ -72,6 +72,11 @@ services:
       - hls_data:/tmp/hls
       # SSR caption overlays — written by captions-ssr, read here (ro).
       - captions_ssr_out:/tmp/captions_ssr:ro
+      # rembg downloads its ~176MB segmentation model to ~/.u2net on first
+      # use (face-edit background lock, product bg removal); without this
+      # volume it re-downloads on every container rebuild, and that first
+      # request can be slow enough to hit the frontend's proxy timeout.
+      - rembg_models:/root/.u2net
     restart: always
     command: >
       sh -c "python scripts/bootstrap_db.py &&
@@ -106,6 +111,7 @@ services:
       - hls_data:/tmp/hls
       # SSR caption overlays — written by captions-ssr, read here (ro).
       - captions_ssr_out:/tmp/captions_ssr:ro
+      - rembg_models:/root/.u2net
     restart: always
     command: celery -A tasks worker -l info --concurrency=2 --queues=default --hostname=default-worker@%h --prefetch-multiplier=1
 
@@ -138,6 +144,7 @@ services:
       - hls_data:/tmp/hls
       # SSR caption overlays — written by captions-ssr, read here (ro).
       - captions_ssr_out:/tmp/captions_ssr:ro
+      - rembg_models:/root/.u2net
     restart: unless-stopped
     command: celery -A tasks worker -l info --concurrency=2 --queues=renders --hostname=render-worker@%h --prefetch-multiplier=1
 
@@ -236,3 +243,4 @@ volumes:
   certbot_www:
   hls_data:
   captions_ssr_out:
+  rembg_models:

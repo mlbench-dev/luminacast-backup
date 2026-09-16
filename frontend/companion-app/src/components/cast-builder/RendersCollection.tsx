@@ -34,6 +34,14 @@ interface RenderItem {
 interface RendersCollectionProps {
   castId: string;
   outputFormat?: string;
+  /** Called right before a render starts playing (RenderPlayer autoPlay is
+   *  about to start a second audio source) — the caller uses this to pause
+   *  the editor's own live preview so its audio doesn't overlap. See
+   *  CastBuilder's "Render Ready" button for why this can't just live in
+   *  ArrangePhase's renderInProgress effect: that only fires at render
+   *  START, and the editor is interactive (and its preview resumable)
+   *  again by the time there's anything to play here. */
+  onBeforePlay?: () => void;
 }
 
 export interface RendersCollectionHandle {
@@ -49,7 +57,7 @@ const STATUS_BADGE: Record<string, { label: string; color: string }> = {
 };
 
 export const RendersCollection = forwardRef<RendersCollectionHandle, RendersCollectionProps>(
-  function RendersCollection({ castId, outputFormat }, ref) {
+  function RendersCollection({ castId, outputFormat, onBeforePlay }, ref) {
   const triggerRef = useRef<HTMLDivElement>(null);
   const portalRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -108,6 +116,7 @@ export const RendersCollection = forwardRef<RendersCollectionHandle, RendersColl
         setRenders(list);
         const latestReady = list.find((r: RenderItem) => r.status === "ready" && r.output_video_r2_key);
         if (latestReady) {
+          onBeforePlay?.();
           setPlayingRender(latestReady);
         } else {
           setOpen(true);
@@ -116,7 +125,7 @@ export const RendersCollection = forwardRef<RendersCollectionHandle, RendersColl
         setOpen(true);
       }
     },
-  }), [castId]);
+  }), [castId, onBeforePlay]);
 
   // Click-outside close — check both trigger AND portal
   useEffect(() => {
@@ -173,9 +182,10 @@ export const RendersCollection = forwardRef<RendersCollectionHandle, RendersColl
   }, [castId]);
 
   const handlePlay = useCallback((render: RenderItem) => {
+    onBeforePlay?.();
     setPlayingRender(render);
     setOpen(false);
-  }, []);
+  }, [onBeforePlay]);
 
   const handleDownload = useCallback((render: RenderItem) => {
     if (!render.output_video_r2_key) return;

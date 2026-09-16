@@ -587,26 +587,31 @@ async def resolve_voiceover_visual_sources(
     parallel_media[1] (a gift-wrapping shot, already attached to the same
     block) had zero detected freeze — but was never tried.
 
-      1. ("video"/"image", url) — a registered explicit asset
-         (block.video_asset_id / block.image_asset_id). An explicit
-         per-block override picked in the Script tab still wins outright.
-      2. ("video"/"image", url) — the effective product's OWN uploaded
-         media: every gallery ProductAsset (videos + images), rotated by
-         block position so consecutive product beats don't all open on the
-         same photo, then the product cover image. Ranked ABOVE generic
-         stock so a "promote the Galaxy S26" cast actually shows the S26
-         instead of a random stock phone. Only applies when a product
-         resolves for the block (block.product_id, else the cast's primary
-         product — see resolve_effective_product_id).
-      3. ("video"/"image", url) — each entry in block.parallel_media, the
-         AI-picked stock B-roll the script engine attaches to this beat.
-      4. ("video"/"image", url) — stock_photo/stock_video blocks' pick
-         (block.stock_media_url).
-      5. ("image", url) — block.scene_image_key.
-      Blocks with no resolvable product keep the old order (parallel_media
-      → stock_media_url → scene). Videos are looped/trimmed to the slot by
-      the caller; images are animated with a Ken-Burns pan-zoom (NEVER
-      shown as a still — a still trips clip_mostly_frozen).
+      1. ("video", url) — a registered explicit asset
+         (block.video_asset_id), or explicit image asset if that's what
+         was set. An explicit per-block override picked in the Script tab
+         still wins outright, ahead of everything else including kind.
+      2. ("video", url) — the effective product's OWN uploaded video(s),
+         if any (only applies when a product resolves for the block —
+         block.product_id, else the cast's primary product; see
+         resolve_effective_product_id).
+      3. ("video", url) — each VIDEO entry in block.parallel_media / the
+         stock_photo/stock_video block's own pick (block.stock_media_url)
+         — the AI-picked stock B-roll the script engine attaches to this
+         beat.
+      4. ("image", url) — the product's OWN images (gallery ProductAsset
+         rows, rotated by block position so consecutive product beats
+         don't all open on the same photo, then the cover image).
+      5. ("image", url) — any IMAGE entry in parallel_media / stock_media_url.
+      6. ("image", url) — block.scene_image_key, last resort.
+      All VIDEO candidates are tried before any IMAGE candidate, regardless
+      of source — a voiceover slot is b-roll, and motion footage (even
+      generic AI-picked stock) beats a static image, even the product's
+      own marketing photo. Only WITHIN each kind does source priority
+      apply (product's own media still ranks above generic stock). Videos
+      are looped/trimmed to the slot by the caller; images are animated
+      with a Ken-Burns pan-zoom (NEVER shown as a still — a still trips
+      clip_mostly_frozen).
 
     Returns ``[]`` when nothing resolves (the caller then renders
     avatar-idle B-roll as the last resort). Any DB / resolver error is
@@ -710,10 +715,30 @@ async def resolve_voiceover_visual_sources(
             if url:
                 scene_tail.append(("image", url))
 
-        # Assemble in priority order: explicit override (already appended
-        # above) → the product's own media → generic stock → scene still.
-        candidates.extend(product_media)
-        candidates.extend(generic_stock)
+        # Assemble: explicit override (already appended above) first, then
+        # every VIDEO candidate (product's own footage, then AI-picked
+        # stock) before any STATIC IMAGE candidate, then the scene still
+        # last. A "voiceover" slot is b-roll — motion footage is the whole
+        # point — so a real product photo must not preempt an available
+        # product-relevant Pexels clip just because the product's gallery
+        # happens to be all stills. Previously this was strictly source-
+        # ranked (product media, image or video, ahead of generic stock),
+        # so a product with an all-image gallery could win on candidate #1
+        # with a static marketing photo and never even try the 2 AI-picked
+        # B-roll videos already attached to the same block (confirmed:
+        # cst_294eeaf04af2 block blk_990214163387 baked a product image on
+        # the first attempt, no candidate trial-and-error in the logs at
+        # all — the parallel_media videos visible in the editor timeline
+        # were never tried). Within each kind, source priority is
+        # unchanged (product's own media still ranks above generic stock).
+        product_video = [c for c in product_media if c[0] == "video"]
+        product_image = [c for c in product_media if c[0] == "image"]
+        stock_video = [c for c in generic_stock if c[0] == "video"]
+        stock_image = [c for c in generic_stock if c[0] == "image"]
+        candidates.extend(product_video)
+        candidates.extend(stock_video)
+        candidates.extend(product_image)
+        candidates.extend(stock_image)
         candidates.extend(scene_tail)
 
         return candidates
@@ -3837,6 +3862,7 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
     rejected_bonded = 0
     rejected_type = 0
     rejected_malformed = 0
+    rejected_preview_candidate = 0
 
     for track in tracks:
         for el in track.get("elements", []):
@@ -3844,6 +3870,24 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
             # Skip bonded V1/A1 -- those are baked avatar clips
             if meta.get("bonded"):
                 rejected_bonded += 1
+                continue
+
+            # Skip parallel_media (pm_*) elements — these are the raw AI-
+            # picked B-roll CANDIDATES for a voiceover block's slot (see
+            # resolve_voiceover_visual_sources / _attach_multi_angle in
+            # engine/cast_generator.py), placed on the timeline as their own
+            # short unbonded sub-segments purely so the editor can preview/
+            # scrub between candidates. They are NOT meant to render — the
+            # block's own bonded V1 element already carries whichever ONE
+            # candidate actually got baked and validated. Left in, these
+            # passed the (bonded=False, type="video") checks below same as
+            # any real overlay and got composited a second time on top of
+            # the block's own bake in the exact same time window — the
+            # "image on image" / mismatched-blur-backdrop bug (cst_294eeaf04af2
+            # block blk_990214163387: pm_blk_990214163387_0/_1 overlaid on
+            # top of v1_blk_990214163387 for the entire 11.07s-19.23s slot).
+            if meta.get("track_type") == "parallel_media":
+                rejected_preview_candidate += 1
                 continue
 
             el_type = (el.get("type") or "").lower().strip()
@@ -4070,8 +4114,8 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
             cur["end_s"] = nxt["start_s"]
 
     logger.info(
-        "Overlay extraction complete: accepted=%d rejected(bonded=%d, type=%d, malformed=%d) canvas=%dx%d render=%dx%d",
-        accepted, rejected_bonded, rejected_type, rejected_malformed,
+        "Overlay extraction complete: accepted=%d rejected(bonded=%d, type=%d, malformed=%d, preview_candidate=%d) canvas=%dx%d render=%dx%d",
+        accepted, rejected_bonded, rejected_type, rejected_malformed, rejected_preview_candidate,
         canvas_w, canvas_h, render_width, render_height,
     )
     by_type: dict[str, int] = {}

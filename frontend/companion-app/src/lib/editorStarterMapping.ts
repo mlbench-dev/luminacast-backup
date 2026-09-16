@@ -553,7 +553,19 @@ export function castToEditorStarterTimeline(
           opacity: 1,
           isDraggingInTimeline: false,
           videoStartFromInSeconds: 0,
-          decibelAdjustment: 0,
+          // Mute the bake's own embedded audio — this item's voice always
+          // comes from the separately-declared paired_audio_element_id (the
+          // A1 audio item below), never from the video file itself. Before
+          // a block's real clip exists, this branch isn't reached at all
+          // (the else-branch placeholder is a silent still image), so the
+          // gap was invisible until the bake landed and the real lip-synced
+          // audio in the MP4 started playing at full volume right alongside
+          // the paired A1 track — audible voice-doubling in the editor's
+          // own preview only (the backend compose step already extracts a
+          // single audio source per block, so rendered output was never
+          // affected). Matches the -60dB muting convention used for every
+          // other video source in this file (b-roll, stock clips, PIP).
+          decibelAdjustment: -60,
           playbackRate: 1,
           audioFadeInDurationInSeconds: 0,
           audioFadeOutDurationInSeconds: 0,

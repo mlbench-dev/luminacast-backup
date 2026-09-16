@@ -51,6 +51,50 @@ def _synth_speech_wav(out_path: str, duration_s: float) -> None:
         raise RuntimeError(f"synth failed: {proc.stderr[-300:]}")
 
 
+def _run_ffmpeg_cmd(cmd: list[str]) -> None:
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {proc.stderr[-300:]}")
+
+
+def _synth_speech_with_mid_pause_and_trailing_silence(
+    out_path: str, tmp_path, *,
+    speech1_s: float, mid_silence_s: float,
+    speech2_s: float, trailing_silence_s: float,
+) -> None:
+    """speech - MID PAUSE (>=200ms) - speech - TRAILING SILENCE (>=200ms).
+
+    Reproduces the real-world shape that exposed the stop_periods sign bug
+    (cst_294eeaf04af2 block blk_1a61c93a5731): a *positive* stop_periods
+    scans forward from the start and removes the first qualifying silence
+    period wherever it's found — a mid-sentence breath/pause counts — and
+    the trailing speech + genuine trailing silence.
+    """
+    seg1 = str(tmp_path / "_seg1.wav")
+    seg2 = str(tmp_path / "_seg2.wav")
+    seg3 = str(tmp_path / "_seg3.wav")
+    seg4 = str(tmp_path / "_seg4.wav")
+    _synth_speech_wav(seg1, speech1_s)
+    _run_ffmpeg_cmd([
+        "ffmpeg", "-y", "-hide_banner", "-nostats", "-f", "lavfi", "-i",
+        f"anullsrc=r=16000:cl=mono:d={mid_silence_s}",
+        "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", seg2,
+    ])
+    _synth_speech_wav(seg3, speech2_s)
+    _run_ffmpeg_cmd([
+        "ffmpeg", "-y", "-hide_banner", "-nostats", "-f", "lavfi", "-i",
+        f"anullsrc=r=16000:cl=mono:d={trailing_silence_s}",
+        "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", seg4,
+    ])
+    _run_ffmpeg_cmd([
+        "ffmpeg", "-y", "-hide_banner", "-nostats",
+        "-i", seg1, "-i", seg2, "-i", seg3, "-i", seg4,
+        "-filter_complex", "[0:a][1:a][2:a][3:a]concat=n=4:v=0:a=1[out]",
+        "-map", "[out]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+        out_path,
+    ])
+
+
 def _leading_silence_s(path: str) -> float:
     """Seconds of leading silence as reported by ffmpeg silencedetect."""
     proc = subprocess.run(
@@ -176,8 +220,13 @@ async def test_duration_drift_assertion_raises_when_filter_eats_speech(
     failure mode that produces lips-without-voice — the prep raises rather
     than shipping the mismatched audio. We simulate it by making the FINAL
     output probe report a duration far from the expected post-head-pad
-    length, leaving the input probe accurate."""
-    in_dur = 2.0
+    length, leaving the input probe accurate.
+
+    The simulated loss must clear _PREP_DURATION_DRIFT_MAX_MS (2000ms,
+    raised from 30ms so legitimate trailing-silence trims stop tripping
+    this check — see the constant's docstring) to still prove a genuine
+    defect gets caught."""
+    in_dur = 5.0
     _synth_speech_wav(patched_download, in_dur)
 
     real_probe = lipsync_audio_prep._probe_duration_s
@@ -187,10 +236,11 @@ async def test_duration_drift_assertion_raises_when_filter_eats_speech(
         calls["n"] += 1
         # First probe is the source duration (used for timeouts + expected
         # baseline); return the real value. The final probe is the output
-        # duration check — return a value 1s short to simulate eaten speech.
+        # duration check — return a value 3s short to simulate eaten speech,
+        # well past the drift tolerance.
         if calls["n"] == 1:
             return real_probe(path)
-        return in_dur - 1.0
+        return in_dur - 3.0
 
     monkeypatch.setattr(
         lipsync_audio_prep, "_probe_duration_s", _probe_side_effect
@@ -200,3 +250,58 @@ async def test_duration_drift_assertion_raises_when_filter_eats_speech(
         await prepare_lipsync_audio(
             "https://cdn/tts/blk.wav", "rnd_test", "blk_2", r2=fake_r2,
         )
+
+
+async def test_trailing_trim_preserves_mid_clip_pause_and_speech_after_it(
+    fake_r2, patched_download, tmp_path
+):
+    """Bug regression (cst_294eeaf04af2 block blk_1a61c93a5731): stop_periods
+    must be NEGATIVE so the silence search anchors to the end of the clip.
+    With a *positive* stop_periods, ffmpeg's silenceremove scans forward
+    from the start and removes the first qualifying silence period wherever
+    it's found — on the real production block, that matched an internal
+    pause and discarded 2.46s of real trailing speech (6.526s -> 4.066s;
+    confirmed by reproducing the exact filter from this module against the
+    block's actual TTS audio). This test synthesizes the same shape —
+    speech, a mid-clip pause long enough to qualify as "silence", more
+    speech, then genuine trailing silence — and asserts the second speech
+    segment survives while the genuine trailing silence still gets trimmed.
+    """
+    speech1_s, mid_silence_s, speech2_s, trailing_silence_s = 1.0, 0.4, 1.0, 0.6
+    _synth_speech_with_mid_pause_and_trailing_silence(
+        patched_download, tmp_path,
+        speech1_s=speech1_s, mid_silence_s=mid_silence_s,
+        speech2_s=speech2_s, trailing_silence_s=trailing_silence_s,
+    )
+
+    url = await prepare_lipsync_audio(
+        "https://cdn/tts/blk.wav", "rnd_test", "blk_3", r2=fake_r2,
+    )
+    out_path = fake_r2.objects[url.split("https://r2.test/")[1]]
+    out_dur = lipsync_audio_prep._probe_duration_s(out_path)
+
+    # With the sign bug, output truncates right after the mid-clip pause:
+    # ~ speech1_s + head_pad ≈ 1.1s. The fix must keep speech2 — output
+    # must reach past speech1 + mid_silence + speech2.
+    min_expected_if_speech2_survives = (
+        speech1_s + mid_silence_s + speech2_s
+        + lipsync_audio_prep._HEAD_PAD_S - 0.05
+    )
+    assert out_dur >= min_expected_if_speech2_survives, (
+        f"output {out_dur:.3f}s is shorter than speech1+pause+speech2 "
+        f"({min_expected_if_speech2_survives:.3f}s) — the mid-clip pause "
+        f"was mistaken for the trailing silence and speech2 was discarded"
+    )
+    # And the genuine trailing silence should still be trimmed down near
+    # zero (ffmpeg's silenceremove in tail-anchored mode removes
+    # essentially all of a qualifying trailing-silence run, not just an
+    # excess above some retained buffer — confirmed empirically), not
+    # passed through untouched.
+    max_expected_if_trailing_trimmed = (
+        speech1_s + mid_silence_s + speech2_s
+        + lipsync_audio_prep._HEAD_PAD_S + 0.15
+    )
+    assert out_dur <= max_expected_if_trailing_trimmed, (
+        f"output {out_dur:.3f}s still carries the full trailing silence "
+        f"({trailing_silence_s}s) — the trim did not run"
+    )
