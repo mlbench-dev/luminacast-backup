@@ -53,3 +53,4 @@ Neither `generate_cast_clips` nor `_generate_tts_only` call any LLM. They only d
 1. Added `b.deleted_at is None` filter to compositor block query (line 1201)
 2. Before TTS dispatch, propagate script edits: reset variant status to PENDING and clear audio_key when script_text has been updated since last TTS generation
 3. Added explicit `ORDER BY Block.position` verification comment
+
