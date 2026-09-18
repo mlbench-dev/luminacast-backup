@@ -42,6 +42,7 @@ export function PhaseHeader({ currentPhase, castName, onPhaseClick, actions, ren
     el?.scrollIntoView({ inline: "end", block: "nearest" });
   }, [focusIdx]);
 
+  
   return (
     // Two-row header. The phase-pill strip owns the full top row so it never
     // has to compete with the actions for width; the actions (Finalize &
