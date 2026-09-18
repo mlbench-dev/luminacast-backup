@@ -650,6 +650,8 @@ class SaveSetupRequest(BaseModel):
     body_description: Optional[str] = None
     style_preset: Optional[str] = None
     imperfections: Optional[list[str]] = None
+    # "9:16" | "16:9" | "1:1" | "4:5" — see models/avatar.py's Avatar.layout.
+    layout: Optional[str] = None
 
 @router.post("/ai/save-setup")
 async def save_setup(
@@ -674,6 +676,8 @@ async def save_setup(
             avatar.style_preset = req.style_preset
         if req.imperfections is not None:
             avatar.imperfections = req.imperfections
+        if req.layout is not None:
+            avatar.layout = req.layout
         await db.commit()
         return {"status": "ok"}
     except HTTPException:

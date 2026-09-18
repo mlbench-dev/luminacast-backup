@@ -5450,6 +5450,26 @@ async def _render_async(task, render_id: str):
                     block_id, _cf_exc,
                 )
 
+        # Dev-only avatar-layout-fix A/B tool (routers/dev_avatar_layout_fix.py).
+        # When a test cast has this set, it wins over every resolution step
+        # above — lets two test casts be pinned to two different
+        # crop-vs-AI-generate candidates for a real render comparison.
+        # Never set outside that dev tool; a no-op (one cheap null-check
+        # query) for every normal cast.
+        try:
+            from database import async_session_factory as _dbg_sf
+            from models.cast import Cast as _DbgCast
+            async with _dbg_sf() as _dbg_db:
+                _dbg_cast = await _dbg_db.get(_DbgCast, cast_id)
+            if _dbg_cast is not None and _dbg_cast.debug_face_ref_override_key:
+                face_ref_url = r2.get_public_url(_dbg_cast.debug_face_ref_override_key)
+                logger.info(
+                    "Block %s: using dev debug_face_ref_override_key for cast %s",
+                    block_id, cast_id,
+                )
+        except Exception as _dbg_exc:
+            sentry_sdk.capture_exception(_dbg_exc)
+
         pending_jobs.append((idx, block_id, v1_element, a1_element, baked_key, duration_s,
                              face_ref_url, audio_url, motion_prompt))
 

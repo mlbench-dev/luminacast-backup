@@ -2449,3 +2449,71 @@ async def _assemble_speaker_segments(
         sentry_sdk.capture_exception(e)
         logger.error(f"Segment assembly failed: {e}", exc_info=True)
         return None
+
+
+@celery_app.task(name="reconcile_stale_avatar_wavespeed_jobs")
+def reconcile_stale_avatar_wavespeed_jobs():
+    """Safety net for avatar test-video renders whose WaveSpeed webhook
+    callback never arrived (server mid-deploy, transient network blip,
+    WaveSpeed retry exhaustion, etc). Same idea as
+    tasks.generate_cast.cleanup_stale_rendering_jobs for the older RunPod
+    Variant pipeline — poll the provider directly for anything stuck past
+    a reasonable window and finalize it. WaveSpeed InfiniteTalk jobs
+    typically finish in ~1-2 minutes, so a 5-minute cutoff is generous
+    without leaving a user staring at a stuck "Creating your avatar..."
+    screen anywhere near as long as the RunPod path's 60-minute one.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_reconcile_stale_avatar_wavespeed_async())
+    except Exception as exc:
+        logger.error(f"Stale avatar WaveSpeed job reconciliation failed: {exc}")
+        sentry_sdk.capture_exception(exc)
+    finally:
+        loop.close()
+
+
+async def _reconcile_stale_avatar_wavespeed_async():
+    from datetime import timedelta
+    from sqlalchemy import select
+    from models.avatar import Avatar, AvatarStatus, AvatarPhase
+    from services.render_providers import WavespeedInfinitetalkProvider
+    from routers.webhooks import finalize_wavespeed_avatar_job
+
+    factory = _make_session_factory()
+    cutoff = datetime.utcnow() - timedelta(minutes=5)  # naive UTC to match DB column
+
+    async with factory() as db:
+        stuck = (await db.execute(
+            select(Avatar).where(
+                Avatar.status == AvatarStatus.PROCESSING,
+                Avatar.active_phase == AvatarPhase.RENDER,
+                Avatar.runpod_job_id.like("wavespeed:%"),
+                Avatar.updated_at < cutoff,
+            )
+        )).scalars().all()
+
+        if not stuck:
+            return
+
+        logger.warning(f"Found {len(stuck)} stale avatar WaveSpeed render jobs, polling directly")
+        provider = WavespeedInfinitetalkProvider()
+
+        for avatar in stuck:
+            prediction_id = avatar.runpod_job_id.split(":", 1)[1]
+            try:
+                result = await provider.poll_once(prediction_id)
+            except Exception as poll_err:
+                # Unreachable/rate-limited this sweep — leave it for the
+                # next one rather than guessing at a status.
+                logger.warning(f"WaveSpeed poll failed for avatar {avatar.id}: {poll_err}")
+                continue
+
+            status = result["status"]
+            if status not in ("succeeded", "completed", "failed", "canceled", "cancelled", "error"):
+                continue  # still processing — leave it, check again next sweep
+
+            await finalize_wavespeed_avatar_job(
+                db, avatar, status, result["outputs"], result["error"], source="reconcile",
+            )

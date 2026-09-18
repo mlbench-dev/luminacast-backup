@@ -1002,17 +1002,26 @@ export function castToEditorStarterTimeline(
     // would arrive in the editor empty (the V1 avatar item is correctly
     // skipped because there's no avatar to render). Synthesize a single
     // full-canvas item from stock_media_url so the asset shows up.
+    //
+    // Also covers PIP/split blocks (isAnyPip) whose background came from
+    // stock_media_url rather than parallel_media: without a full-canvas
+    // background element in the saved timeline, the renderer's PIP
+    // compositor (cast_ffmpeg_composer.py's ≥95%-canvas-coverage check for
+    // "is this a full-frame background") finds nothing to use behind the
+    // face window and falls back to solid black — the editor preview was
+    // equally blank behind the avatar for the same reason.
     const blockCategory = (block as any).category as string | undefined;
     const stockMediaUrl = (block as any).stock_media_url as string | undefined;
     const stockMediaThumb = (block as any).stock_media_thumbnail as string | undefined;
     const stockMediaKind = ((block as any).stock_media_kind as "video" | "photo" | undefined) || "video";
-    const isPureStockCategory =
+    const needsStockMediaFallback =
       blockCategory === "stock_video" ||
       blockCategory === "stock_photo" ||
       blockCategory === "generated_photo" ||
-      blockCategory === "generated_video";
+      blockCategory === "generated_video" ||
+      isAnyPip;
     const hasParallelMedia = Array.isArray(parallelMedia) && parallelMedia.length > 0;
-    if (isPureStockCategory && !hasParallelMedia && stockMediaUrl) {
+    if (needsStockMediaFallback && !hasParallelMedia && stockMediaUrl) {
       const sItemId = `stock_${block.id}`;
       const sAssetId = `asset_stock_${block.id}`;
       const itemFrom = secondsToFrames(start, fps);
@@ -1063,15 +1072,22 @@ export function castToEditorStarterTimeline(
             track_type: "stock_media",
             category_color: categoryHex,
             stock_kind: "video",
-            // This clip IS the block's entire visual (stock_video /
-            // generated_video categories have no avatar) — nothing sits
-            // behind it, so a plain "contain" would show an empty gap on a
-            // mismatched-aspect clip. Blurred backdrop instead.
+            // Non-PIP blocks: this clip IS the block's entire visual
+            // (stock_video / generated_video categories have no avatar) —
+            // nothing sits behind it, so a plain "contain" would show an
+            // empty gap on a mismatched-aspect clip. Blurred backdrop
+            // instead. PIP blocks (isAnyPip) DO have something behind —
+            // this clip IS that something, with the avatar window on top.
             fit: "contain-blur",
           },
         };
         items[sItemId] = sItem;
-        videoTrackItemIds.push(sItemId);
+        // PIP blocks: this is the background behind the avatar window, so
+        // it belongs on the same b-roll track parallel_media-derived
+        // backgrounds use (ordered below pipAvatarTrackItemIds — see the
+        // track-stacking comment near the final `tracks` array). Non-PIP
+        // blocks keep the original videoTrackItemIds placement.
+        (isAnyPip ? brollTrackItemIds : videoTrackItemIds).push(sItemId);
       } else {
         const sAsset: ImageAsset = {
           type: "image",
@@ -1122,7 +1138,7 @@ export function castToEditorStarterTimeline(
           },
         };
         items[sItemId] = sItem;
-        videoTrackItemIds.push(sItemId);
+        (isAnyPip ? brollTrackItemIds : videoTrackItemIds).push(sItemId);
       }
     }
 

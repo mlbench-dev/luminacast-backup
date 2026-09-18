@@ -139,9 +139,15 @@ def test_generate_look_async_no_longer_branches_on_talking_head():
     assert "elif look_type == TALKING_HEAD_LOOK_TYPE:" not in src
 
 
-def test_apply_framing_importable_and_per_framing_distinct():
-    """The crop primitive the task relies on yields a distinct bitmap per
-    framing while preserving canvas dimensions."""
+def test_apply_framing_importable_and_distinct_framings_differ():
+    """The crop primitive the task relies on yields a distinct bitmap for
+    framings that still apply a transform (e.g. WIDE vs MEDIUM), while
+    preserving canvas dimensions. CLOSE is intentionally NOT distinct from
+    MEDIUM (see services/framing_crop.py's CLOSE branch comment) — the
+    in-browser editor preview doesn't apply per-block framing, so CLOSE's
+    render-time zoom made the final render look wrongly "cut off" compared
+    to the editor. CLOSE now matches MEDIUM (no crop) so preview and render
+    agree."""
     import io
 
     from PIL import Image
@@ -159,5 +165,7 @@ def test_apply_framing_importable_and_per_framing_distinct():
 
     close = apply_framing(raw, "CLOSE")
     medium = apply_framing(raw, "MEDIUM")
-    assert close != medium
+    wide = apply_framing(raw, "WIDE")
+    assert close == medium
+    assert wide != medium
     assert Image.open(io.BytesIO(close)).size == (832, 1488)

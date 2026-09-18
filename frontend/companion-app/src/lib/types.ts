@@ -560,6 +560,10 @@ export interface CastCreate {
   broll_media_source?: string; // "stock" | "ai_generated" | "ai_generated:<modelId>"
   products?: ProductCreate[];
   blocks?: BlockCreate[];
+  /** Dev-only avatar-layout-fix A/B tool — pins this cast's face reference
+   *  to a pre-generated crop/generate candidate. Never set outside that
+   *  tool. See routers/dev_avatar_layout_fix.py. */
+  debug_face_ref_override_key?: string;
 }
 
 /** Stage-1 creative template summary returned by GET /api/casts/templates. */
@@ -677,6 +681,10 @@ export interface Avatar {
   gender?: string;
   style_preset?: string;
   imperfections?: string[];
+  /** "9:16" | "16:9" | "1:1" | "4:5" — the layout this avatar's face_ref_key
+   *  was generated/cropped for. Null for avatars created before this field
+   *  existed (treated as matching every layout). */
+  layout?: string;
   render_status?: {
     state?: string;
     position?: number;

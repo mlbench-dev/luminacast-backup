@@ -5,6 +5,8 @@ import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { avatarApi, avatarLooksApi, castsApi, productsApi } from "@/lib/api";
+import { api } from "@/lib/apiClient";
+import { LAYOUT_OPTIONS } from "@/lib/layoutOptions";
 import { AvatarLookPicker } from "@/components/cast-builder/scriptphase/AvatarLookPicker";
 import { MusicTrackPickerModal } from "@/components/cast-builder/MusicTrackPickerModal";
 import { UserVideoPickerDialog } from "@/components/cast-builder/UserVideoPickerDialog";
@@ -37,12 +39,6 @@ const PRODUCTION_MINUTE_MULTIPLIER: Record<string, number> = {
   premium: 1.5,
 };
 
-const LAYOUT_OPTIONS = [
-  { value: "9:16", label: "Vertical 9:16", desc: "1080×1920", icon: "📱" },
-  { value: "16:9", label: "Horizontal 16:9", desc: "1920×1080", icon: "🖥" },
-  { value: "1:1", label: "Square 1:1", desc: "1080×1080", icon: "⬜" },
-  { value: "4:5", label: "4:5 Feed", desc: "1080×1350", icon: "📷" },
-] as const;
 
 const BROLL_SOURCE_OPTIONS = [
   {
@@ -438,12 +434,19 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   });
 
   const allAvatars = avatarsData?.avatars || [];
+  // Avatars created before Avatar.layout existed have layout == null —
+  // treated as a wildcard (shown for every cast layout) so nobody's
+  // pre-existing avatars disappear. Only avatars created with this field
+  // (going forward) get the precise match.
+  const matchesOutputLayout = (a: Avatar) => !a.layout || a.layout === outputFormat;
   const avatars = allAvatars.filter(
-    (a: Avatar) => a.status === AvatarStatus.APPROVED || a.status === AvatarStatus.READY
+    (a: Avatar) => (a.status === AvatarStatus.APPROVED || a.status === AvatarStatus.READY) && matchesOutputLayout(a)
   );
   // Also include non-selectable avatars for display (greyed out)
   const nonSelectableAvatars = allAvatars.filter(
-    (a: Avatar) => a.status !== AvatarStatus.APPROVED && a.status !== AvatarStatus.READY && a.status !== AvatarStatus.DRAFT
+    (a: Avatar) =>
+      a.status !== AvatarStatus.APPROVED && a.status !== AvatarStatus.READY && a.status !== AvatarStatus.DRAFT
+      && matchesOutputLayout(a)
   );
   const products = productsData?.products || [];
 
@@ -487,6 +490,42 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
   const pendingBackgroundLooks = avatarLooks.filter(
     (l) => l.look_type === "background" && l.status !== "ready" && l.status !== "failed",
   );
+
+  // Dev-only avatar-layout-fix A/B tool — TEMPORARY, throwaway once a
+  // strategy is picked (see plan at rustling-crafting-sutherland.md).
+  // Generates a crop or AI-generated layout-fixed face reference for the
+  // selected avatar right here, on demand, and pins this one cast to the
+  // result via debug_face_ref_override_key. No pre-generation step.
+  const [debugFaceRefOverrideKey, setDebugFaceRefOverrideKey] = useState<string>("");
+  const [layoutFixResult, setLayoutFixResult] = useState<{ strategy: "crop" | "generate"; url: string | null } | null>(null);
+  const [layoutFixRunning, setLayoutFixRunning] = useState<"" | "crop" | "generate">("");
+  const [layoutFixError, setLayoutFixError] = useState<string | null>(null);
+  useEffect(() => {
+    // Selected avatar changed — a result generated for the old avatar is
+    // never valid for the new one.
+    setDebugFaceRefOverrideKey("");
+    setLayoutFixResult(null);
+    setLayoutFixError(null);
+  }, [selectedAvatar]);
+  const runLayoutFix = useCallback(async (strategy: "crop" | "generate") => {
+    if (!selectedAvatar) return;
+    setLayoutFixRunning(strategy);
+    setLayoutFixError(null);
+    try {
+      const formatFamily = outputFormat === "16:9" ? "horizontal" : "vertical";
+      const r = await api.post("/dev/avatar-layout-fix/run", {
+        avatar_id: selectedAvatar,
+        format_family: formatFamily,
+        strategy,
+      });
+      setDebugFaceRefOverrideKey(r.data.r2_key);
+      setLayoutFixResult({ strategy, url: r.data.url });
+    } catch (e: any) {
+      setLayoutFixError(e?.response?.data?.detail || e.message);
+    } finally {
+      setLayoutFixRunning("");
+    }
+  }, [selectedAvatar, outputFormat]);
   // Reset the picked look whenever the avatar changes — a look is owned
   // by exactly one avatar. Only fires on a genuine SWITCH (a real avatar id
   // replaced by a different real avatar id), not on the initial null →
@@ -500,6 +539,25 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
     }
     prevAvatarForLookResetRef.current = selectedAvatar;
   }, [selectedAvatar]);
+
+  // If the user changes the output layout AFTER already picking an avatar,
+  // and that avatar has a stored layout that no longer matches, the pick
+  // is now invalid (it was filtered out of the list above) — clear it
+  // rather than silently keep a mismatched avatar selected, and let the
+  // "no avatars for this layout" empty state explain why.
+  useEffect(() => {
+    if (!selectedAvatar) return;
+    const current = allAvatars.find((a: Avatar) => a.id === selectedAvatar);
+    if (current && current.layout && current.layout !== outputFormat) {
+      setSelectedAvatar(null);
+      toast({
+        title: "Avatar cleared",
+        description: "That avatar was created for a different layout — pick one that matches, or switch the layout back.",
+      });
+    }
+    // Only re-check on a layout change, not on every avatar-list refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outputFormat]);
 
   // FIX 4 — Auto-select the first ready background on mount/avatar-change
   // so the left tile in Setup isn't blank. Skipped if the user already
@@ -626,6 +684,10 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
         broll_media_source: brollMediaValue,
         // Stage-1 template. Omitted when null (Auto / let AI choose).
         template_id: selectedTemplate || undefined,
+        // Dev-only avatar-layout-fix A/B tool — see the "Debug: face
+        // reference override" picker below. Empty/undefined for every
+        // normal cast.
+        debug_face_ref_override_key: debugFaceRefOverrideKey || undefined,
         // LIVE-only: user-uploaded b-roll clips to weave between voiceover takes.
         user_video_ids:
           castType === "live" && selectedUserVideos.length > 0
@@ -1378,6 +1440,66 @@ export function SetupPhase({ cast, onCreated, renderInProgress, onCancelRender }
           </p>
         )}
       </div>
+
+      {/* DEV-ONLY, TEMPORARY: avatar-layout-fix A/B tool. Generates a
+          layout-fixed face reference for the selected avatar right here,
+          on demand, and pins THIS cast to it via debug_face_ref_override_key.
+          Not part of the normal cast-creation flow — throwaway once a
+          strategy is chosen for production. Only shown once an avatar is
+          selected. */}
+      {selectedAvatar && (
+        <div className="rounded-xl border border-dashed border-amber-400/40 bg-amber-500/5 p-3 space-y-2">
+          <div>
+            <div className="text-[10px] font-medium uppercase tracking-wider text-amber-200/80">
+              Dev only: fix avatar/layout mismatch
+            </div>
+            <p className="text-[10px] text-white/40 mt-0.5">
+              Temporary test tool — generates a crop or AI-extended version of
+              the avatar photo for the layout picked above, and uses it only
+              for this cast.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button" size="sm" variant="outline" className="text-xs flex-1"
+              disabled={layoutFixRunning !== ""}
+              onClick={() => runLayoutFix("crop")}
+            >
+              {layoutFixRunning === "crop" ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
+              Try crop
+            </Button>
+            <Button
+              type="button" size="sm" variant="outline" className="text-xs flex-1"
+              disabled={layoutFixRunning !== ""}
+              onClick={() => runLayoutFix("generate")}
+            >
+              {layoutFixRunning === "generate" ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
+              Try AI-generated
+            </Button>
+            {debugFaceRefOverrideKey && (
+              <Button
+                type="button" size="sm" variant="ghost" className="text-[10px] text-white/40"
+                onClick={() => { setDebugFaceRefOverrideKey(""); setLayoutFixResult(null); }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          {layoutFixError && (
+            <div className="text-[10px] text-red-400 bg-red-500/10 rounded-md px-2 py-1">{layoutFixError}</div>
+          )}
+          {layoutFixResult && debugFaceRefOverrideKey && (
+            <div className="flex items-center gap-2">
+              {layoutFixResult.url && (
+                <img src={layoutFixResult.url} alt="Layout-fixed preview" className="w-12 h-12 rounded object-cover border border-white/10" />
+              )}
+              <span className="text-[10px] text-amber-200/80">
+                Using {layoutFixResult.strategy === "crop" ? "cropped" : "AI-generated"} face reference for this cast.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Production Level selector — replaces the legacy AI-Plan chip
           preview. Three cards: Quick / Standard / Premium. The picked

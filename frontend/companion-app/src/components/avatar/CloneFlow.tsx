@@ -54,6 +54,7 @@ import { PipelineProgressView } from "./PipelineProgressView";
 import { VoiceCorpusTab } from "./VoiceCorpusTab";
 import { ImageCropModal } from "./ImageCropModal";
 import type { VoiceCorpusEntry } from "@/lib/types";
+import { LAYOUT_OPTIONS, playerAspectRatio } from "@/lib/layoutOptions";
 
 // ── Constants ──
 
@@ -151,6 +152,7 @@ interface SourcePhaseData {
   voicePreviewText: string;
   selectedFaceIdx: number;
   candidates: FaceCandidate[];
+  layout: string;
 }
 
 interface AudiencePhaseData {
@@ -496,13 +498,15 @@ function CloneUploadSubPhase({
   ensureAvatarId,
   onComplete,
   onFaceReady,
-  existingFace
+  existingFace,
+  layout,
 }: {
   avatarId?: string | null;
   ensureAvatarId: () => Promise<string>;
   onComplete: (result: UploadPhaseResult) => void;
   onFaceReady?: (candidates: FaceCandidate[], ensuredAvatarId?: string) => void;
   existingFace?: FaceCandidate | null;   // NEW
+  layout?: string;
 }) {
   const qc = useQueryClient();
   // Face state
@@ -584,7 +588,7 @@ function CloneUploadSubPhase({
       setFaceStatus("processing");
       const isVideo = file.type.startsWith("video/");
       const ensuredAvatarId = avatarId || await ensureAvatarId();
-      const result = await avatarApi.cloneUploadFace(ensuredAvatarId, file, isVideo);
+      const result = await avatarApi.cloneUploadFace(ensuredAvatarId, file, isVideo, layout);
       setFaceCandidates(result.candidates);
       setFaceSourceType(result.source_type);
       setFaceStatus("ready");
@@ -610,8 +614,8 @@ function CloneUploadSubPhase({
         variant: "destructive",
       });
     }
-  }, [avatarId, ensureAvatarId, onComplete, onFaceReady]);
- 
+  }, [avatarId, ensureAvatarId, onComplete, onFaceReady, layout]);
+
   // Voice upload handler (separate)
   const handleVoiceUpload = useCallback(async (file: File) => {
     setVoiceStatus("uploading");
@@ -695,6 +699,7 @@ function CloneUploadSubPhase({
         {pendingCropFile && (
           <ImageCropModal
             file={pendingCropFile}
+            targetLayout={layout}
             onCancel={() => setPendingCropFile(null)}
             onConfirm={(croppedFile) => {
               setPendingCropFile(null);
@@ -1027,7 +1032,7 @@ function CloneRecordSubPhase({
       const ext = recordedBlob.type.includes("mp4") ? "mp4" : "webm";
       const file = new File([recordedBlob], `recording.${ext}`, { type: recordedBlob.type });
       const ensuredAvatarId = avatarId || await ensureAvatarId();
-      const result = await avatarApi.cloneUploadFace(ensuredAvatarId, file, true);
+      const result = await avatarApi.cloneUploadFace(ensuredAvatarId, file, true, layout);
       stopLivePreview();
       setRecordingState("recorded");
       onComplete({
@@ -1044,7 +1049,7 @@ function CloneRecordSubPhase({
         variant: "destructive",
       });
     }
-  }, [avatarId, ensureAvatarId, recordedBlob, onComplete, stopLivePreview]);
+  }, [avatarId, ensureAvatarId, recordedBlob, onComplete, stopLivePreview, layout]);
 
   return (
     <div className="space-y-5">
@@ -1277,6 +1282,11 @@ function CloneSourcePhase({
   const [name, setName] = useState("");
   const [gender, setGender] = useState("");
   const [voicePreviewText, setVoicePreviewText] = useState(DEFAULT_PREVIEW_TEXT);
+  // Layout this avatar's face photo gets cropped/framed for — picked
+  // up front, before upload, so the server-side framing step
+  // (detect_and_frame_face) uses the right target shape from the start
+  // instead of needing a render-time conform fallback later.
+  const [layout, setLayout] = useState("9:16");
 
   // Auto-describe on face selection
   const [describing, setDescribing] = useState(false);
@@ -1296,16 +1306,21 @@ function CloneSourcePhase({
     setName(hydratedName);
     setGender(initialData.gender || "");
     setVoicePreviewText(initialData.voicePreviewText || DEFAULT_PREVIEW_TEXT);
+    setLayout(initialData.layout || "9:16");
     if (initialData.candidates?.length) {
       setUploadDone(true);
     }
     hydratedRef.current = true;
   }, [initialData]);
 
-  // Debounce-save partial input to backend every 2s
+  // Debounce-save partial input to backend every 2s. Also fires on a
+  // non-default layout pick even before a name is typed — the Clone
+  // upload step reads avatar.layout synchronously at upload time, so a
+  // layout chosen before the first name keystroke still needs to reach
+  // the backend before that upload happens.
   const partialSaveRef = useRef<NodeJS.Timeout | null>(null);
   useEffect(() => {
-    if (!name.trim() && !avatarId) return;
+    if (!name.trim() && !avatarId && layout === "9:16") return;
     if (partialSaveRef.current) clearTimeout(partialSaveRef.current);
     partialSaveRef.current = setTimeout(() => {
       void (async () => {
@@ -1314,6 +1329,7 @@ function CloneSourcePhase({
           await avatarApi.updateAvatar(ensuredAvatarId, {
             name: name.trim() || undefined,
             gender: gender || undefined,
+            layout,
             wizard_step: "source",
           });
         } catch {
@@ -1322,7 +1338,7 @@ function CloneSourcePhase({
       })();
     }, 2000);
     return () => { if (partialSaveRef.current) clearTimeout(partialSaveRef.current); };
-  }, [avatarId, ensureAvatarId, name, gender, voicePreviewText]);
+  }, [avatarId, ensureAvatarId, name, gender, voicePreviewText, layout]);
 
   // Poll real voice-corpus state — the single source of truth for whether a
   // usable voice recording exists, regardless of whether it came from the
@@ -1478,11 +1494,12 @@ function CloneSourcePhase({
         voicePreviewText: voicePreviewText.trim(),
         selectedFaceIdx,
         candidates,
+        layout,
       });
     } finally {
       setContinuing(false);
     }
-  }, [canContinue, avatarId, ensureAvatarId, name, gender, voicePreviewText, selectedFaceIdx, candidates, onComplete]);
+  }, [canContinue, avatarId, ensureAvatarId, name, gender, voicePreviewText, selectedFaceIdx, candidates, layout, onComplete]);
 
   // Keep the parent's sourceData snapshot live, not just on "Continue" — the
   // Source step stays mounted (only CSS-hidden) when navigating away via
@@ -1497,11 +1514,40 @@ function CloneSourcePhase({
       voicePreviewText: voicePreviewText.trim(),
       selectedFaceIdx,
       candidates,
+      layout,
     });
-  }, [name, gender, voicePreviewText, selectedFaceIdx, candidates, onLiveChange]);
+  }, [name, gender, voicePreviewText, selectedFaceIdx, candidates, layout, onLiveChange]);
 
   return (
     <div className="space-y-6" data-testid="clone-source-phase">
+      {/* Layout — picked before upload so the server-side face framing
+          crops/fits to the right shape from the start. */}
+      <div className="space-y-1.5">
+        <h3 className="text-sm font-semibold text-text">Layout</h3>
+        <p className="text-xs text-text-muted">
+          Which cast layout will this avatar mostly be used for? Only casts
+          in the same layout will show this avatar.
+        </p>
+        <div className="grid grid-cols-4 gap-1.5 max-w-md">
+          {LAYOUT_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setLayout(opt.value)}
+              title={`${opt.label} — ${opt.desc}`}
+              className={cn(
+                "rounded-lg border p-2 text-center transition-all",
+                layout === opt.value
+                  ? "border-accent bg-accent/10"
+                  : "border-border bg-surface hover:border-accent/40",
+              )}
+            >
+              <div className="text-base leading-none">{opt.icon}</div>
+              <div className="text-[10px] font-medium text-text mt-0.5">{opt.label}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="grid gap-6 lg:grid-cols-2">
         {/* ── LEFT COLUMN: Upload controls ── */}
         <div className="space-y-5">
@@ -1549,7 +1595,7 @@ function CloneSourcePhase({
             <CloneSocialMediaSubPhase avatarId={avatarId} ensureAvatarId={ensureAvatarId} onComplete={handleUploadComplete} />
           )}
           {method === "upload" && (
-            <CloneUploadSubPhase avatarId={avatarId} ensureAvatarId={ensureAvatarId} onComplete={handleUploadComplete} onFaceReady={handleFaceReady} existingFace={candidates[selectedFaceIdx ?? 0] ?? null} />
+            <CloneUploadSubPhase avatarId={avatarId} ensureAvatarId={ensureAvatarId} onComplete={handleUploadComplete} onFaceReady={handleFaceReady} existingFace={candidates[selectedFaceIdx ?? 0] ?? null} layout={layout} />
           )}
           {method === "record" && (
             <CloneRecordSubPhase avatarId={avatarId} ensureAvatarId={ensureAvatarId} onComplete={handleUploadComplete} />
@@ -2453,7 +2499,7 @@ function ClonePreviewPhase({
       {isReady && testVideoUrl && (
         <div className="flex flex-col items-center gap-4">
           <div className="w-full max-w-xs mx-auto rounded-xl overflow-hidden border border-border bg-black">
-            <div className="aspect-9/16">
+            <div style={{ aspectRatio: playerAspectRatio(sourceData.layout) }}>
               <video
                 src={testVideoUrl}
                 controls
@@ -2616,6 +2662,7 @@ export function CloneFlow({ resumeAvatarId, resumeStep }: { resumeAvatarId?: str
           voicePreviewText: avatar.test_script || DEFAULT_PREVIEW_TEXT,
           selectedFaceIdx: findSelectedFaceIdx(candidates, avatar.face_ref_key),
           candidates,
+          layout: avatar.layout || "9:16",
         });
       }
 

@@ -103,6 +103,8 @@ class GenerateFacesRequest(BaseModel):
     avatar_id: Optional[str] = None
     description: str = ""
     reference_photo_url: Optional[str] = None
+    # "9:16" | "16:9" | "1:1" | "4:5" — see models/avatar.py's Avatar.layout.
+    layout: Optional[str] = None
 
 class GenerateFacesResponse(BaseModel):
     face_urls: list[str]
@@ -123,6 +125,7 @@ async def ai_generate_faces(
         os.environ["FAL_KEY"] = _settings.FAL_API_KEY
 
     from services.ai_prompts import get_prompt
+    from services.aspect_conform import IMAGE_SIZE_BY_LAYOUT
 
     description = req.description or "A professional, friendly-looking person suitable for live streaming"
 
@@ -130,6 +133,7 @@ async def ai_generate_faces(
     if req.reference_photo_url:
         base_prompt = f"{description}. Reference photo style."
 
+    image_size = IMAGE_SIZE_BY_LAYOUT.get(req.layout, IMAGE_SIZE_BY_LAYOUT["9:16"])
 
     import asyncio
     face_urls = []
@@ -142,6 +146,7 @@ async def ai_generate_faces(
                 "num_inference_steps": 28,
                 "output_format": "jpeg",
                 "seed": seed,
+                "image_size": image_size,
             }
             if req.reference_photo_url:
                 args["image_url"] = req.reference_photo_url
@@ -168,6 +173,8 @@ async def ai_generate_faces(
         avatar = await db.get(Avatar, req.avatar_id)
         if avatar and avatar.user_id == ctx.workspace_owner_id:
             avatar.face_candidates = face_urls
+            if req.layout:
+                avatar.layout = req.layout
             await db.commit()
 
     return GenerateFacesResponse(face_urls=face_urls)
@@ -294,15 +301,22 @@ async def ai_edit_face(
         "clothing, background, and lighting completely unchanged."
     )
 
+    edit_args = {
+        "prompt": prompt,
+        "image_url": req.face_url,
+        "guidance_scale": 3.5,
+        "num_inference_steps": 28,
+        "output_format": "jpeg",
+    }
+    if req.avatar_id:
+        from services.aspect_conform import IMAGE_SIZE_BY_LAYOUT
+        edit_avatar = await db.get(Avatar, req.avatar_id)
+        if edit_avatar and edit_avatar.layout in IMAGE_SIZE_BY_LAYOUT:
+            edit_args["image_size"] = IMAGE_SIZE_BY_LAYOUT[edit_avatar.layout]
+
     result = await fal_client.run_async(
         "fal-ai/flux-pro/kontext",
-        arguments={
-            "prompt": prompt,
-            "image_url": req.face_url,
-            "guidance_scale": 3.5,
-            "num_inference_steps": 28,
-            "output_format": "jpeg",
-        },
+        arguments=edit_args,
     )
 
     images = result.get("images", [])

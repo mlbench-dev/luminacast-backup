@@ -22,6 +22,7 @@ import { AvatarIdentityPanel } from "@/components/avatar/AvatarIdentityPanel";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { STYLE_PRESETS, MAKE_IT_REAL_CHIPS, type StylePresetId } from "@/lib/avatarStyles";
 import type { Avatar } from "@/lib/types";
+import { LAYOUT_OPTIONS, playerAspectRatio } from "@/lib/layoutOptions";
 
 /* ═══ Phase structure — 5 steps (body_description merged into setup) ═══ */
 const PHASE_STEPS = [
@@ -246,6 +247,7 @@ function SetupPhase({
     body_description?: string;
     style_preset?: string;
     imperfections?: string[];
+    layout?: string;
   };
 }) {
   // Audience fields
@@ -281,6 +283,10 @@ function SetupPhase({
   );
   const [selectedChips, setSelectedChips] = useState<string[]>(initialData?.imperfections || []);
   const [isGeneratingIdentity, setIsGeneratingIdentity] = useState(false);
+  // Layout this avatar's face gets generated in — picked once, up front,
+  // so the base photo never needs a render-time crop/blur fallback for a
+  // mismatched cast layout. Defaults to the most common case.
+  const [layout, setLayout] = useState(initialData?.layout || "9:16");
 
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
@@ -479,6 +485,7 @@ function SetupPhase({
           body_description: bodyDescription,
           style_preset: selectedPresets[0] || undefined,
           imperfections: selectedChips,
+          layout,
         });
         setSaveStatus("saved");
         setTimeout(() => setSaveStatus("idle"), 2000);
@@ -487,7 +494,7 @@ function SetupPhase({
       }
     }, 800);
     return () => { if (autoSaveRef.current) clearTimeout(autoSaveRef.current); };
-  }, [avatarId, ageRange, interests.join(","), audienceDesc, avatarName, baseDescription, gender, bodyDescription, selectedPresets.join(","), selectedChips.join(",")]);
+  }, [avatarId, ageRange, interests.join(","), audienceDesc, avatarName, baseDescription, gender, bodyDescription, selectedPresets.join(","), selectedChips.join(","), layout]);
 
   // Continue — save explicitly + navigate
   const handleContinue = async () => {
@@ -506,6 +513,7 @@ function SetupPhase({
         body_description: bodyDescription,
         style_preset: selectedPresets[0] || undefined,
         imperfections: selectedChips,
+        layout,
       });
       onContinue(baseDescription, audienceDesc, gender, bodyDescription);
     } catch (err: any) {
@@ -660,6 +668,34 @@ function SetupPhase({
             {avatarName ? `Meet ${avatarName}` : "Avatar Identity Card"}
           </h3>
           <p className="text-sm text-text-muted">Design your avatar's look and personality.</p>
+        </div>
+
+        {/* Layout — picked once, up front, so this avatar's face photo is
+            generated in the right shape for the casts it'll be used in. */}
+        <div>
+          <label className="text-sm font-medium text-text mb-2 block">Layout</label>
+          <p className="text-xs text-text-muted mb-2">
+            Which cast layout will this avatar mostly be used for? Only casts
+            in the same layout will show this avatar.
+          </p>
+          <div className="grid grid-cols-4 gap-1.5">
+            {LAYOUT_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setLayout(opt.value)}
+                title={`${opt.label} — ${opt.desc}`}
+                className={cn(
+                  "rounded-lg border p-2 text-center transition-all",
+                  layout === opt.value
+                    ? "border-accent bg-accent/10"
+                    : "border-border bg-surface hover:border-accent/40",
+                )}
+              >
+                <div className="text-base leading-none">{opt.icon}</div>
+                <div className="text-[10px] font-medium text-text mt-0.5">{opt.label}</div>
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Gender */}
@@ -933,7 +969,7 @@ function FacePhase({
     }
 
     try {
-      const data = await avatarApi.aiGenerateFaces(avatarId, { description: description.trim() });
+      const data = await avatarApi.aiGenerateFaces(avatarId, { description: description.trim(), layout: avatar?.layout });
       setFaces(data.face_urls);
     } catch (err: any) {
       toast({ title: "Face generation failed", description: err?.response?.data?.detail || "Try again", variant: "destructive" });
@@ -2229,7 +2265,7 @@ function PreviewPhase({
                   preload="auto"
                   className="w-full rounded-xl border border-border bg-black"
                   // onClick={() => avatarStatus?.test_video_url && setFullscreenVideo(avatarStatus.test_video_url)}
-                  style={{ aspectRatio: "9/16" }}
+                  style={{ aspectRatio: playerAspectRatio(avatarStatus.layout) }}
                   data-testid="preview-video"
                 />
               </div>
@@ -2276,7 +2312,7 @@ function PreviewPhase({
                 src={fullscreenVideo}
                 controls autoPlay playsInline
                 className="w-full rounded-xl"
-                style={{ aspectRatio: "9/16" }}
+                style={{ aspectRatio: playerAspectRatio(avatarStatus?.layout) }}
               />
               <button
                 onClick={() => setFullscreenVideo(null)}
@@ -2349,6 +2385,7 @@ export function AIAvatarSetupPage() {
     body_description?: string;
     style_preset?: string;
     imperfections?: string[];
+    layout?: string;
   } | undefined>(undefined);
   // SetupPhase only reads `initialData` once, at mount (it's a useState
   // initializer, not something a later prop update can re-apply) — so on a
@@ -2380,6 +2417,7 @@ export function AIAvatarSetupPage() {
           gender: data.gender || undefined,
           body_description: data.body_description || undefined,
           style_preset: data.style_preset || undefined,
+          layout: data.layout || undefined,
         });
 
         if (data.status === AvatarStatus.READY || data.status === AvatarStatus.APPROVED) {
@@ -2478,6 +2516,7 @@ export function AIAvatarSetupPage() {
         body_description: data.body_description || undefined,
         style_preset: data.style_preset || undefined,
         imperfections: data.imperfections || undefined,
+        layout: data.layout || undefined,
       });
       if (data.name) setAvatarName(data.name);
     }).catch(() => { }).finally(() => setSetupDataReady(true));

@@ -134,13 +134,15 @@ export const avatarApi = {
   cloneCreate: (data: {
     name?: string; target_audience?: Record<string, unknown>; gender?: string;
     description?: string; body_description?: string; style_preset?: string; imperfections?: string[];
+    layout?: string;
   }) => api.post<{ avatar_id: string }>("/avatar/clone/create", data).then((r) => r.data),
 
-  cloneUploadFace: (avatarId: string, file: File, extractVoice?: boolean) => {
+  cloneUploadFace: (avatarId: string, file: File, extractVoice?: boolean, layout?: string) => {
     const formData = new FormData();
     formData.append("avatar_id", avatarId);
     formData.append("file", file, file.name);
     if (extractVoice) formData.append("extract_voice", "true");
+    if (layout) formData.append("layout", layout);
     return api.post<{
       candidates: { url: string; r2_key: string; score: number }[];
       source_type: "image" | "video";
@@ -208,7 +210,7 @@ export const avatarApi = {
     api.post<{ avatar_id: string }>("/avatar/ai/create", data).then((r) => r.data),
   getSlotSummary: () =>
     api.get<{ included: number; purchased: number; total: number; used: number; remaining: number; unlimited?: boolean }>("/avatar/slots").then((r) => r.data),
-  aiGenerateFaces: async (avatarId: string, data: { description: string; reference_photo?: File }) => {
+  aiGenerateFaces: async (avatarId: string, data: { description: string; reference_photo?: File; layout?: string }) => {
     if (data.reference_photo) {
       // Upload reference photo first, then pass URL
       const formData = new FormData();
@@ -220,11 +222,13 @@ export const avatarApi = {
         avatar_id: avatarId,
         description: data.description,
         reference_photo_url: uploadResult.face_url,
+        layout: data.layout,
       }).then((r) => r.data);
     }
     return api.post<{ face_urls: string[] }>("/avatar/ai/generate-faces", {
       avatar_id: avatarId,
       description: data.description,
+      layout: data.layout,
     }).then((r) => r.data);
   },
   aiEditFace: (avatarId: string, data: { face_url: string; instructions: string }) =>
@@ -299,7 +303,7 @@ export const avatarApi = {
     api.post<{ status: string; locked_test_script: string }>(`/avatar/ai/${avatarId}/lock-test-script`, { test_script: testScript }).then((r) => r.data),
   aiRegeneratePreviewVideo: (avatarId: string) =>
     api.post<{ preview_video_url: string; status: string }>(`/avatar/${avatarId}/regenerate-preview-video`).then((r) => r.data),
-  aiSaveSetup: (avatarId: string, data: { target_audience: Record<string, unknown>; name: string; description: string; gender: string; body_description?: string; style_preset?: string; imperfections?: string[] }) =>
+  aiSaveSetup: (avatarId: string, data: { target_audience: Record<string, unknown>; name: string; description: string; gender: string; body_description?: string; style_preset?: string; imperfections?: string[]; layout?: string }) =>
     api.post<{ status: string }>("/avatar/ai/save-setup", { avatar_id: avatarId, ...data }).then((r) => r.data),
   aiRewriteAudienceDescription: (data: { 
     age_min: number; 

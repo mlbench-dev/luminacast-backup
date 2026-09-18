@@ -44,6 +44,8 @@ class CreateCloneRequest(BaseModel):
     body_description: Optional[str] = None
     style_preset: Optional[str] = None
     imperfections: Optional[list[str]] = None
+    # "9:16" | "16:9" | "1:1" | "4:5" — see models/avatar.py's Avatar.layout.
+    layout: Optional[str] = None
 
 
 class SelectFaceRequest(BaseModel):
@@ -84,6 +86,7 @@ async def create_clone_avatar(
             gender=req.gender,
             target_audience=req.target_audience,
             style_preset=req.style_preset,
+            layout=req.layout,
             source_platform="upload",
             progress_step="Waiting for face and voice upload",
             progress_percent=0,
@@ -105,6 +108,15 @@ async def upload_face(
     avatar_id: str = Form(...),
     file: UploadFile = File(...),
     extract_voice: str = Form("false"),
+    # "9:16" | "16:9" | "1:1" | "4:5" — passed explicitly on the upload
+    # itself rather than relying on avatar.layout already being saved.
+    # The frontend's layout picker autosaves via a separate debounced (2s)
+    # PATCH, so an upload that starts right after picking a non-default
+    # layout could otherwise race ahead of that save and crop to the wrong
+    # shape (confirmed: avt_be65718efa7b got cropped 9:16 despite the user
+    # picking 16:9, because the PATCH hadn't landed yet when this endpoint
+    # ran detect_and_frame_face).
+    layout: str = Form(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -158,7 +170,7 @@ async def upload_face(
 
     try:
         if is_image:
-            result = await _handle_image_face(data, ext, avatar, user, r2, db)
+            result = await _handle_image_face(data, ext, avatar, user, r2, db, layout_override=layout)
         else:
             result = await _handle_video_face(data, ext, avatar, user, r2, db)
 
@@ -186,7 +198,7 @@ async def upload_face(
         raise HTTPException(500, "Face upload processing failed")
 
 
-async def _handle_image_face(data, ext, avatar, user, r2, db):
+async def _handle_image_face(data, ext, avatar, user, r2, db, layout_override=None):
     """Process uploaded image as a single face candidate.
 
     Reframes the photo around the detected face (see detect_and_frame_face)
@@ -194,10 +206,22 @@ async def _handle_image_face(data, ext, avatar, user, r2, db):
     subject gets cut off later when the avatar animation pipeline fits the
     image into its fixed portrait canvas, and that same cropped framing
     then propagates into every Cast video rendered from this avatar.
+
+    ``layout_override``, when given, wins over ``avatar.layout`` — the
+    caller passes the frontend's current layout-picker value directly, so
+    this doesn't depend on that value having already been autosaved to the
+    avatar row (which happens on a separate, debounced PATCH that can lose
+    a race against a fast upload). Also persists it onto the avatar so the
+    two stay in sync going forward.
     """
     from services.face_extraction import detect_and_frame_face
+    from services.aspect_conform import IMAGE_SIZE_BY_LAYOUT
 
-    result = detect_and_frame_face(data)
+    effective_layout = layout_override or avatar.layout
+    if layout_override and avatar.layout != layout_override:
+        avatar.layout = layout_override
+    target = IMAGE_SIZE_BY_LAYOUT.get(effective_layout, IMAGE_SIZE_BY_LAYOUT["9:16"])
+    result = detect_and_frame_face(data, target_w=target["width"], target_h=target["height"])
     if not result["ok"]:
         if result["reason"] == "too_close_to_edge":
             raise HTTPException(

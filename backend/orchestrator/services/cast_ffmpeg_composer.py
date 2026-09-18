@@ -1136,10 +1136,34 @@ def translate_timeline_to_ffmpeg(
         LayoutPrimitive.PIP_QUARTER_BR.value,
         LayoutPrimitive.SPLIT_H.value,
     }
+
+    def _effective_pip_layout(seg_meta: dict) -> str:
+        """``pip_layout`` with a legacy-aware fallback.
+
+        Some blocks are unambiguously PIP (``render_mode == "pip"``,
+        category ``pip``/``pip_talking_head``) but only ever got the older
+        ``pip_position``/``pip_scale`` pair written, never a ``pip_layout``
+        metadata key — confirmed on cast cst_36d7b532400f's
+        blk_cc629d168fba. ``seg_meta.get("pip_layout") or "fullscreen"``
+        silently treated that as a FULLSCREEN segment: the tiny baked PIP
+        clip got scaled to fill the whole canvas instead of composited as a
+        small corner window, and — since only PIP_QUARTER_BL/BR/SPLIT_H
+        trigger the background-wiring above — any full-frame b-roll for
+        that block was never used as its background either. Mirrors the
+        frontend's equivalent legacy fallback (isPip in
+        lib/editorStarterMapping.ts) so editor preview and render agree.
+        """
+        layout = seg_meta.get("pip_layout")
+        if layout:
+            return layout
+        if seg_meta.get("render_mode") == "pip":
+            return "pip_quarter_bl" if seg_meta.get("pip_position") == "bottom_left" else "pip_quarter_br"
+        return "fullscreen"
+
     _pip_bg_block_ids: set[str] = set()
     for _seg in bonded_segments:
         _sm = (_seg.get("metadata") or {}) if isinstance(_seg, dict) else {}
-        if coerce_to_primitive(_sm.get("pip_layout") or "fullscreen") in _PIP_BG_PRIMS:
+        if coerce_to_primitive(_effective_pip_layout(_sm)) in _PIP_BG_PRIMS:
             _bid = _sm.get("block_id")
             if _bid:
                 _pip_bg_block_ids.add(_bid)
@@ -1197,7 +1221,7 @@ def translate_timeline_to_ffmpeg(
     for i, (v_label, a_label) in enumerate(segment_labels):
         seg = bonded_segments[i] if i < len(bonded_segments) else {}
         seg_meta = (seg.get("metadata") or {}) if isinstance(seg, dict) else {}
-        pip_layout = seg_meta.get("pip_layout") or "fullscreen"
+        pip_layout = _effective_pip_layout(seg_meta)
 
         # Non-mic-on blocks get the lo-fi "recorded on a phone" VO texture;
         # mic-on blocks keep the clean studio voice. The chain is applied to

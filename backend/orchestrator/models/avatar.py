@@ -93,6 +93,12 @@ class Avatar(Base):
     preview_video_key = Column(String, nullable=True)
     wizard_step = Column(String(30), nullable=True)  # Phase 2: tracks clone/AI flow step for draft resume
     detected_language = Column(String(10), nullable=True)  # Auto-detected via langdetect
+    # Layout this avatar's face_ref_key was generated/cropped for — one of
+    # "9:16" | "16:9" | "1:1" | "4:5" (Cast.output_format's own values).
+    # Nullable: avatars created before this field existed have no layout
+    # and are treated as a wildcard (shown for every cast layout) by the
+    # cast Setup avatar picker.
+    layout = Column(String(10), nullable=True)
     # Style DNA — full editing-style profile cloned from creator videos.
     # Includes pacing, b-roll ratio, caption preset, signature phrases, etc.
     # Voice clone id lives in the existing `voice_id` column; this JSON

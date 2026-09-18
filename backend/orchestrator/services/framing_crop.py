@@ -206,8 +206,16 @@ def apply_framing(source_image_bytes: bytes, framing: str) -> bytes:
     if key == MEDIUM:
         out = img
     elif key == CLOSE:
-        # Tight head shot: zoom 1.4x, recenter the face at 0.4 of canvas height.
-        out = _zoom_about(img, 1.4, face_xy, (0.5, 0.4))
+        # Previously a tight head shot (zoom 1.4x) — disabled per user report:
+        # the in-browser editor preview (editorStarterMapping.ts) never reads
+        # block.framing at all, so it always shows the full unframed avatar;
+        # a CLOSE-framed block's actual render (torso/jeans cropped out) then
+        # looked "zoomed"/"cut off" compared to what the editor had shown.
+        # Rather than teach the editor to replicate every framing's crop,
+        # CLOSE now matches MEDIUM (no crop) so render always matches
+        # preview. Revisit alongside an editor-side framing preview if CLOSE
+        # is wanted back as a distinct look.
+        out = img
     elif key == MEDIUM_WIDE:
         # More torso + headroom: shrink to 0.72x, keep face high-center.
         out = _zoom_about(img, 0.72, face_xy, (0.5, 0.42))

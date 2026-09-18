@@ -9,16 +9,17 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { IMAGE_SIZE_BY_LAYOUT } from "@/lib/layoutOptions";
 
 // Matches the backend's avatar animation canvas (services/face_extraction.py
-// detect_and_frame_face target_w/target_h). The crop selection itself is
-// NOT locked to this ratio — locking it forced a narrow vertical strip out
-// of any landscape photo, cutting off arms/shoulders that were wider than a
-// 9:16 strip could ever contain. Instead the user can select any rectangle
-// (up to the whole photo) and it gets fit into this canvas afterward,
-// padding the leftover space rather than cropping anything further.
-const TARGET_W = 720;
-const TARGET_H = 1280;
+// detect_and_frame_face target_w/target_h, sized per the avatar's picked
+// layout via IMAGE_SIZE_BY_LAYOUT). The crop selection itself is NOT locked
+// to this ratio — locking it forced a narrow vertical strip out of any
+// landscape photo, cutting off arms/shoulders that were wider than a 9:16
+// strip could ever contain. Instead the user can select any rectangle (up
+// to the whole photo) and it gets fit into this canvas afterward, padding
+// the leftover space rather than cropping anything further.
+const DEFAULT_TARGET = IMAGE_SIZE_BY_LAYOUT["9:16"];
 // Floor on the crop selection size (in on-screen pixels) so it can't be
 // resized down to something unusably tiny.
 const MIN_CROP_SIZE = 40;
@@ -51,6 +52,8 @@ function sampleEdgeColor(image: HTMLImageElement, sx: number, sy: number, sw: nu
 async function buildFramedImage(
   image: HTMLImageElement,
   crop: PixelCrop,
+  targetW: number,
+  targetH: number,
 ): Promise<Blob> {
   // react-image-crop reports the crop in on-screen (rendered) pixels — scale
   // up to the source file's actual resolution before drawing from it.
@@ -62,8 +65,8 @@ async function buildFramedImage(
   const sh = crop.height * scaleY;
 
   const canvas = document.createElement("canvas");
-  canvas.width = TARGET_W;
-  canvas.height = TARGET_H;
+  canvas.width = targetW;
+  canvas.height = targetH;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas not supported");
 
@@ -72,15 +75,15 @@ async function buildFramedImage(
   // studio background) — this blends the padding in instead of showing an
   // obvious blurred/ghosted duplicate of the photo.
   ctx.fillStyle = sampleEdgeColor(image, sx, sy, sw, sh);
-  ctx.fillRect(0, 0, TARGET_W, TARGET_H);
+  ctx.fillRect(0, 0, targetW, targetH);
 
   // The actual selection on top, scaled to fit WITHOUT cropping or
   // stretching — this is what guarantees nothing the user selected gets
   // cut off, regardless of the shape they drew.
-  const containScale = Math.min(TARGET_W / sw, TARGET_H / sh);
+  const containScale = Math.min(targetW / sw, targetH / sh);
   const fgW = sw * containScale;
   const fgH = sh * containScale;
-  ctx.drawImage(image, sx, sy, sw, sh, (TARGET_W - fgW) / 2, (TARGET_H - fgH) / 2, fgW, fgH);
+  ctx.drawImage(image, sx, sy, sw, sh, (targetW - fgW) / 2, (targetH - fgH) / 2, fgW, fgH);
 
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -92,13 +95,17 @@ async function buildFramedImage(
 
 export function ImageCropModal({
   file,
+  targetLayout,
   onCancel,
   onConfirm,
 }: {
   file: File;
+  /** "9:16" | "16:9" | "1:1" | "4:5" — defaults to 9:16 if omitted/unknown. */
+  targetLayout?: string;
   onCancel: () => void;
   onConfirm: (croppedFile: File) => void;
 }) {
+  const target = (targetLayout && IMAGE_SIZE_BY_LAYOUT[targetLayout]) || DEFAULT_TARGET;
   const [imageUrl] = useState(() => URL.createObjectURL(file));
   const [crop, setCrop] = useState<Crop>();
   const [completedCrop, setCompletedCrop] = useState<PixelCrop>();
@@ -122,13 +129,13 @@ export function ImageCropModal({
     if (!completedCrop || !imgRef.current) return;
     setProcessing(true);
     try {
-      const blob = await buildFramedImage(imgRef.current, completedCrop);
+      const blob = await buildFramedImage(imgRef.current, completedCrop, target.width, target.height);
       const baseName = file.name.replace(/\.[^./\\]+$/, "");
       onConfirm(new File([blob], `${baseName}-cropped.jpg`, { type: "image/jpeg" }));
     } catch {
       setProcessing(false);
     }
-  }, [completedCrop, file.name, onConfirm]);
+  }, [completedCrop, file.name, onConfirm, target.width, target.height]);
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>

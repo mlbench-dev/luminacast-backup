@@ -75,6 +75,11 @@ class CastCreate(BaseModel):
     products: Optional[List[ProductCreate]] = None
     blocks: Optional[List[BlockCreate]] = None
     effects_config: Optional[dict] = None
+    # Dev-only (routers/dev_avatar_layout_fix.py's A/B comparison tool):
+    # pins this cast's talking-head/PIP face reference to a specific
+    # pre-generated R2 key, bypassing normal resolution. Passthrough only —
+    # never set by the normal Setup flow.
+    debug_face_ref_override_key: Optional[str] = None
     script_direction: Optional[str] = None
     cast_type: Optional[str] = "recorded"
     description: Optional[str] = None

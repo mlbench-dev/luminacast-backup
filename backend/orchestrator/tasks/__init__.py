@@ -71,6 +71,15 @@ celery_app.conf.update(
             "task": "cleanup_stale_cast_renders",
             "schedule": crontab(minute="*/5"),
         },
+        # Safety net for avatar-creation WaveSpeed webhook deliveries that
+        # never arrive (e.g. the orchestrator was mid-deploy when WaveSpeed
+        # called back) — same idea as cleanup-stale-rendering above, but for
+        # the avatar test-video preview path. See
+        # tasks.generate_avatar.reconcile_stale_avatar_wavespeed_jobs.
+        "reconcile-stale-avatar-wavespeed-jobs": {
+            "task": "reconcile_stale_avatar_wavespeed_jobs",
+            "schedule": crontab(minute="*/5"),
+        },
         # DISABLED: this ran a full `maxItems: 200` parseforge trending scrape
         # per section x 5 sections, plus up to 15 pro100chok enrichment scrapes
         # per section, every day — with force_refresh=True bypassing the 24h

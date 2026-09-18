@@ -117,6 +117,9 @@ class AvatarResponse(BaseModel):
     imperfections: Optional[list[str]] = None
     wizard_step: Optional[str] = None
     detected_language: Optional[str] = None
+    # "9:16" | "16:9" | "1:1" | "4:5" — null for avatars created before this
+    # field existed; treated as a wildcard by the cast Setup avatar picker.
+    layout: Optional[str] = None
     # PR #65: clip-on lavalier vs phone-mic toggle. Default false = phone mic.
     clip_mic_enabled: bool = False
     created_at: Optional[str] = None
@@ -190,6 +193,7 @@ def _avatar_to_response(avatar: Avatar, voice_corpus_count: int = 0) -> AvatarRe
         imperfections=avatar.imperfections,
         wizard_step=avatar.wizard_step,
         detected_language=avatar.detected_language,
+        layout=avatar.layout,
         clip_mic_enabled=bool(getattr(avatar, "clip_mic_enabled", False)),
         created_at=avatar.created_at.isoformat() if avatar.created_at else None,
     )

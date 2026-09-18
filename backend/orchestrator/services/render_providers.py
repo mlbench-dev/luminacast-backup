@@ -968,6 +968,33 @@ class WavespeedInfinitetalkProvider:
             sentry_sdk.capture_exception(e)
             raise
 
+    async def poll_once(self, prediction_id: str) -> dict:
+        """Single, non-blocking status check for a job submitted via
+        ``submit_webhook`` — used by the reconciliation sweep for jobs whose
+        webhook callback never arrived (see
+        tasks.generate_avatar.reconcile_stale_avatar_wavespeed_jobs), as a
+        safety net alongside the webhook path rather than instead of it.
+
+        Returns {"status": str, "outputs": list, "error": str}. Raises on a
+        network/auth failure so the caller can distinguish "still
+        processing/unreachable" from "resolved" without misreading an
+        exception as an empty pending state.
+        """
+        api_key = _wavespeed_api_key()
+        if not api_key:
+            raise RuntimeError("WAVESPEED_API_KEY missing at call time")
+        headers = {"Authorization": f"Bearer {api_key}"}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"{self.POLL_BASE}/{prediction_id}/result", headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+        data = body.get("data") or body
+        return {
+            "status": data.get("status", ""),
+            "outputs": data.get("outputs") or [],
+            "error": data.get("error") or data.get("message") or "",
+        }
+
     @staticmethod
     def _wavespeed_webhook_base() -> str:
         """Same pattern as services.runpod._webhook_base() — a public

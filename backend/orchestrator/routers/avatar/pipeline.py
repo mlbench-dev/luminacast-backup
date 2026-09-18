@@ -860,6 +860,8 @@ async def update_avatar(
         # post-process EQ profile AND the mic-style suffix on the voice
         # description used by the cloning engine.
         "clip_mic_enabled",
+        # "9:16" | "16:9" | "1:1" | "4:5" — see models/avatar.py's Avatar.layout.
+        "layout",
     }
     changed: dict = {}
     for key, value in update.items():

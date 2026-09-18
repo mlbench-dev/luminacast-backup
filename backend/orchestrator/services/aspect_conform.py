@@ -51,6 +51,18 @@ CONTAIN_FIT_THRESHOLD = 0.65
 
 _JPEG_QUALITY = 92
 
+# Target pixel dimensions per cast layout, keyed by the same strings used
+# for Cast.output_format / LAYOUT_OPTIONS in the frontend. Single source of
+# truth for avatar-creation image generation/cropping (AI Avatar face
+# generation, Clone photo framing) so an avatar's face_ref_key is born in
+# the right shape instead of needing a render-time conform fallback.
+IMAGE_SIZE_BY_LAYOUT = {
+    "9:16": {"width": 1024, "height": 1792},
+    "16:9": {"width": 1792, "height": 1024},
+    "1:1": {"width": 1024, "height": 1024},
+    "4:5": {"width": 1024, "height": 1280},
+}
+
 
 def aspect_ratio(w: int, h: int) -> float:
     if not w or not h:

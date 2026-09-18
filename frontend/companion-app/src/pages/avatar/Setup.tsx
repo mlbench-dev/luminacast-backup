@@ -29,6 +29,7 @@ import { cn } from "@/lib/cn";
 import { cdnUrl } from "@/lib/cdn";
 import { CloneFlow } from "@/components/avatar/CloneFlow";
 import { confirmAction } from "@/lib/swal";
+import { playerAspectRatio } from "@/lib/layoutOptions";
 
 
 export function SetupPage() {
@@ -224,6 +225,18 @@ export function SetupPage() {
 
 // ── Avatar Card Component ──
 
+// Thumbnail/preview aspect ratios were hardcoded to portrait everywhere in
+// this file, so a landscape avatar's video always got squeezed into a
+// portrait-shaped box (object-cover crops it, or contain letterboxes it —
+// either way it reads as "still vertical" even though the underlying
+// face_ref/test_video files are the correct landscape shape). Derive the
+// box shape from avatar.layout instead; falls back to the pre-existing
+// portrait default for avatars with no stored layout (created before this
+// field existed).
+function thumbnailAspectRatio(layout: string | undefined | null): string {
+  return layout === "16:9" ? "4/3" : "3/4";
+}
+
 function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avatar; activeVideoId: string | null; setActiveVideoId: (id: string | null) => void }) {
   const navigate = useNavigate();
   const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null);
@@ -398,7 +411,7 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
           {/* Face thumbnail with click-to-play video */}
           <div
             className="group relative mx-auto cursor-pointer rounded-lg overflow-hidden border border-border"
-            style={{ maxWidth: "200px", aspectRatio: "3/4" }}
+            style={{ maxWidth: "200px", aspectRatio: thumbnailAspectRatio(avatar.layout) }}
             onClick={(e) => {
               e.stopPropagation();
               const videoUrl = avatar.preview_video_url || avatar.test_video_url;
@@ -581,7 +594,7 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
               src={fullscreenVideo}
               controls autoPlay playsInline
               className="w-full rounded-xl"
-              style={{ aspectRatio: "9/16" }}
+              style={{ aspectRatio: playerAspectRatio(avatar.layout) }}
             />
             <button
               onClick={() => setFullscreenVideo(null)}

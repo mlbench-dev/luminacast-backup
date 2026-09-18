@@ -83,6 +83,14 @@ class Cast(Base):
     output_format = Column(String(10), default="9:16", nullable=False, server_default="9:16")
     r2_manifest_key = Column(String, nullable=True)
 
+    # Dev-only escape hatch (routers/dev_avatar_layout_fix.py): when set, the
+    # render pipeline uses this R2 key directly as the talking-head/PIP face
+    # reference for this cast, bypassing normal resolution entirely. Lets two
+    # test casts be pinned to two different avatar-layout-fix candidates for
+    # a real side-by-side render comparison. Never set by normal cast
+    # creation/update flows.
+    debug_face_ref_override_key = Column(String(500), nullable=True)
+
     layout_config = Column(JSON, default=None)
     effects_config = Column(JSON, default=None)
 
