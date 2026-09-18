@@ -38,6 +38,14 @@ class Product(Base):
 
     cover_image_key = Column(String, default="")
     media_keys = Column(JSON, nullable=True)
+    # Cached vision-generated Pexels search queries (up to 3), from sending
+    # cover_image_key to a vision LLM — see services/product_stock_queries.py.
+    ai_stock_queries = Column(JSON, nullable=True)
+    # Cached plain-English description of what the product looks like /
+    # how it's used, from the same cover photo (separate vision call).
+    # Combined per-block with that block's own script text to produce a
+    # query grounded in both signals — see product_stock_queries.py.
+    ai_visual_description = Column(Text, nullable=True)
 
     # pro100chok product-mode rich fields
     full_description = Column(Text, nullable=True)

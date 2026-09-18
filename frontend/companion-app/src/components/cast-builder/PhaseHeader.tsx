@@ -50,7 +50,7 @@ export function PhaseHeader({ currentPhase, castName, onPhaseClick, actions, ren
     // Top row: cast name truncates (shrink, not shrink-0) and the strip carries
     // min-w-0 so the name can give. title={castName} keeps the full name on
     // hover once truncated. Requires min-w-0 on the CastBuilder wrappers above.
-    <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/10 bg-black/30 backdrop-blur-xs w-full min-w-0">
+    <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/10 backdrop-blur-xs w-full min-w-0">
       <div className="flex items-center gap-3 sm:gap-4 w-full min-w-0">
         {castName && (
           <span

@@ -96,6 +96,21 @@ FAL_QWEN_BODY_MOTION_ANGLES = {
 FAL_QWEN_BODY_MOTION_ZOOM = 2
 FAL_QWEN_BODY_MOTION_IMAGE_SIZE = {"width": 1024, "height": 1792}
 
+# Orientation-aware sizing for the plain FLUX Kontext fallback used by
+# _generate_look_async's default/action-frame branch (see call_flux() below).
+# Was hardcoded square (1536x1536) regardless of the cast's actual format —
+# when that square reference image is later used as the I2V start/end frame
+# for a 9:16 (or 16:9) render, the I2V model pads the mismatched aspect with
+# a blurred stretch of the source baked directly into every output frame,
+# rather than generating real content in the margins (confirmed on
+# cst_31ffdbd70ecf block blk_5417beaca6a2: the actual demonstrated action —
+# a watch held up to camera — ended up in the blurred band, unreadable).
+# Portrait value matches FAL_QWEN_BODY_MOTION_IMAGE_SIZE above for consistency.
+_FLUX_KONTEXT_IMAGE_SIZE_BY_ORIENTATION = {
+    "portrait": {"width": 1024, "height": 1792},
+    "landscape": {"width": 1792, "height": 1024},
+}
+
 
 @celery_app.task(name="tasks.avatar_looks.generate", bind=True, max_retries=1)
 def generate_avatar_look_task(self, look_id: str):
@@ -115,7 +130,7 @@ def generate_all_body_motion_task(self, avatar_id: str, look_ids: list):
 
 
 @celery_app.task(name="tasks.avatar_looks.generate_action_frame_look", bind=True, max_retries=1)
-def generate_action_frame_look_task(self, look_id: str, product_ref_url: str = ""):
+def generate_action_frame_look_task(self, look_id: str, product_ref_url: str = "", orientation: str = "portrait"):
     """Render a pre-created action-frame AvatarLook through FLUX Kontext.
 
     Unlike generate_avatar_look_task, this carries the resolved product
@@ -124,7 +139,10 @@ def generate_action_frame_look_task(self, look_id: str, product_ref_url: str = "
     resolves the product, persists block.product_id, and bakes the
     "product clearly visible" directive into the look's background_prompt, then
     dispatches this task. ``product_ref_url`` empty → no product ref (normal
-    identity-only render).
+    identity-only render). ``orientation`` ("portrait"/"landscape") matches
+    the cast's actual format so the reference frame's aspect ratio matches
+    the I2V engine's output canvas — see
+    _FLUX_KONTEXT_IMAGE_SIZE_BY_ORIENTATION.
     """
     ref = (product_ref_url or "").strip() or None
     asyncio.run(
@@ -132,6 +150,7 @@ def generate_action_frame_look_task(self, look_id: str, product_ref_url: str = "
             look_id,
             product_ref_url=ref,
             force_product_emphasis=bool(ref),
+            orientation=orientation if orientation in ("portrait", "landscape") else "portrait",
         )
     )
 
@@ -593,10 +612,15 @@ async def _dispatch_action_frame(block_id: str, kind: str, prompt: str) -> None:
         await session.refresh(look)
         look_id = look.id
 
+    _orientation = (
+        "landscape" if getattr(cast, "format_family", "vertical") == "horizontal"
+        else "portrait"
+    )
     await _generate_look_async(
         look_id,
         product_ref_url=product_ref_url,
         force_product_emphasis=force_product_emphasis,
+        orientation=_orientation,
     )
     await _auto_pin_action_look(block_id, kind, look_id)
 
@@ -651,7 +675,11 @@ async def _dispatch_body_motion_frame(block_id: str, kind: str, prompt: str) -> 
     # branch which renders a still from the avatar's face_ref_key plus the
     # supplied prompt. Our look_type ("body_motion_block_<id>_<kind>") is
     # neither 'tryon' nor 'body_motion' so it lands in the right place.
-    await _generate_look_async(look_id)
+    _orientation = (
+        "landscape" if getattr(cast, "format_family", "vertical") == "horizontal"
+        else "portrait"
+    )
+    await _generate_look_async(look_id, orientation=_orientation)
     await _auto_pin_action_look(block_id, kind, look_id)
 
 
@@ -660,6 +688,7 @@ async def _generate_look_async(
     look_id: str,
     product_ref_url: Optional[str] = None,
     force_product_emphasis: bool = False,
+    orientation: str = "portrait",
 ):
     from models.avatar import Avatar
     from models.avatar_look import AvatarLook
@@ -1195,7 +1224,9 @@ async def _generate_look_async(
                             "guidance_scale": flux_guidance,
                             "num_inference_steps": 28,
                             "output_format": "jpeg",
-                            "image_size": {"width": 1536, "height": 1536},
+                            "image_size": _FLUX_KONTEXT_IMAGE_SIZE_BY_ORIENTATION.get(
+                                orientation, _FLUX_KONTEXT_IMAGE_SIZE_BY_ORIENTATION["portrait"],
+                            ),
                         }
                         if use_product_ref and product_ref_path:
                             arguments["image_prompt_url"] = fal_client.upload_file(product_ref_path)

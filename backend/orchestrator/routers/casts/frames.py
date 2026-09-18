@@ -441,7 +441,16 @@ async def generate_action_frame(
         # product_ref_url already encodes whether the chosen/primary product
         # image should be passed to FLUX; force emphasis is baked into the
         # prompt above so the worker reliably renders the product.
-        generate_action_frame_look_task.delay(look.id, product_ref_url or "")
+        # Match the cast's actual format so the fallback FLUX Kontext path's
+        # reference frame isn't square — a square frame handed to the I2V
+        # engine as the start/end frame for a 9:16 (or 16:9) render gets
+        # padded with a blurred stretch baked into every output frame
+        # (confirmed on cst_31ffdbd70ecf blk_5417beaca6a2).
+        _orientation = (
+            "landscape" if getattr(cast, "format_family", "vertical") == "horizontal"
+            else "portrait"
+        )
+        generate_action_frame_look_task.delay(look.id, product_ref_url or "", _orientation)
     except Exception as e:
         sentry_sdk.capture_exception(e)
         look.status = "failed"

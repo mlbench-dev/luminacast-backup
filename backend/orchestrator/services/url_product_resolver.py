@@ -1362,12 +1362,34 @@ def _detect_source(url: str) -> str:
     return "generic"
 
 
+def _ensure_scheme(url: str) -> str:
+    """Default a schemeless URL to https://.
+
+    A URL pasted without "http(s)://" (e.g. copied from an address bar that
+    hid it, like "amazon.com/Samsung-.../dp/B0G4SW3XXP/...") parses with
+    urlparse().hostname == None — the whole string reads as a path, not a
+    host. That silently misroutes an Amazon/TikTok URL to the GENERIC
+    resolver (_detect_source can't match a host it never saw), which then
+    hard-fails with httpx.UnsupportedProtocol on the raw GET, surfacing as
+    a generic "couldn't import automatically" error for what was actually a
+    perfectly valid, resolvable product URL. Confirmed against a real case:
+    the exact Samsung Galaxy S26 Ultra URL resolved cleanly once "https://"
+    was added, both via urlparse and a live Apify junglee actor run.
+    """
+    stripped = (url or "").strip()
+    if stripped and not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", stripped):
+        return f"https://{stripped}"
+    return stripped
+
+
 async def resolve_product_url(url: str) -> ResolvedProduct:
     """Resolve any product URL into a normalised ResolvedProduct.
 
     Automatically detects the platform (TikTok, Amazon, or generic) and
-    delegates to the appropriate resolver.
+    delegates to the appropriate resolver. Defaults a missing scheme to
+    https:// first — see _ensure_scheme.
     """
+    url = _ensure_scheme(url)
     source = _detect_source(url)
     resolver = _HOST_RESOLVERS.get(source, _resolve_generic)
 

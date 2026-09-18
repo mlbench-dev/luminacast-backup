@@ -274,6 +274,39 @@ def test_speaking_bake_accepted_against_audio_despite_wrong_slot():
 
 
 @pytestmark_ffmpeg
+def test_speaking_bake_within_absolute_trailing_silence_allowance():
+    """REGRESSION GUARD (cst_294eeaf04af2 / rnd_e116aea4902c blocks
+    blk_8f8d99a88f8e, blk_1a61c93a5731): fal-ai/sync-lipsync/v3 declines to
+    render ~120-170ms of trailing near-silence off the end of the audio,
+    a roughly fixed absolute amount regardless of clip length. Confirmed via
+    ffmpeg silencedetect that this trim lands inside (or within ~30ms of) the
+    source audio's own trailing-silence region — no speech lost. A pure -2%
+    floor wrongly failed these short (~5s) blocks; the absolute allowance
+    must let a ~160ms shortfall on a short clip pass.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        audio_s = 4.839
+        bake_s = audio_s - 0.159  # matches the observed real-world trim
+        clip = os.path.join(tmp, "bake.mp4")
+        clip_bytes = _synth_clip(clip, duration_s=bake_s)
+        tl = _timeline_with_slot("blk", s=0.0, e=audio_s)
+        out = _run(
+            _enforce_speaking_tolerance(
+                clip_bytes,
+                timeline=tl,
+                block_id="blk",
+                render_id="r",
+                fallback_duration_s=audio_s,
+                audio_duration_s=audio_s,
+            )
+        )
+        # -159ms is inside [-max(2%, 0.25s), +5%] for a 4.839s reference
+        # (2% floor would be 4.742s — too tight; the 0.25s absolute
+        # allowance floors it at 4.589s instead) → accepted untouched.
+        assert out == clip_bytes
+
+
+@pytestmark_ffmpeg
 def test_speaking_bake_out_of_band_against_audio_raises():
     """A bake materially shorter than the AUDIO is still a defect."""
     from tasks.cast_render import SpeakingBlockOutOfTolerance

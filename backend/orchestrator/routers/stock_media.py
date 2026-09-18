@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database import get_db
 from models.user import User
+from models.user_photo import UserPhotoAsset
 from models.user_video import UserVideoAsset
 from routers.auth import get_current_user
+from routers.user_photos import _probe_image
 from services.pexels import get_pexels_client
 from services.r2_storage import get_r2_storage_service
 from services.stock_query import stockify_query
@@ -173,9 +175,10 @@ async def import_stock_media(
         _log("error", f"Failed to download stock media: {e}", url=payload.url)
         raise HTTPException(502, f"Failed to download media from Pexels: {str(e)[:200]}")
 
-    ext = "mp4" if payload.type == "video" else "jpg"
-    content_type = "video/mp4" if payload.type == "video" else "image/jpeg"
-    asset_id = f"uv_{uuid.uuid4().hex[:16]}"
+    is_photo = payload.type == "photo"
+    ext = "jpg" if is_photo else "mp4"
+    content_type = "image/jpeg" if is_photo else "video/mp4"
+    asset_id = f"{'up' if is_photo else 'uv'}_{uuid.uuid4().hex[:16]}"
     r2_key = f"user-videos/{user.id}/stock-imports/{asset_id}.{ext}"
 
     r2 = get_r2_storage_service()
@@ -212,15 +215,30 @@ async def import_stock_media(
                 sentry_sdk.capture_exception(e)
                 _log("warn", f"Stock video thumbnail upload failed: {e}")
 
-    asset = UserVideoAsset(
-        id=asset_id,
-        user_id=user.id,
-        name=payload.name or f"Pexels {payload.type} {payload.pexels_id}",
-        r2_key=r2_key,
-        thumbnail_r2_key=thumbnail_r2_key,
-        file_size_bytes=len(content),
-        original_filename=f"pexels_{payload.pexels_id}.{ext}",
-    )
+    name = payload.name or f"Pexels {payload.type} {payload.pexels_id}"
+    if is_photo:
+        probe = _probe_image(content)
+        asset = UserPhotoAsset(
+            id=asset_id,
+            user_id=user.id,
+            name=name,
+            r2_key=r2_key,
+            width=probe.get("width"),
+            height=probe.get("height"),
+            file_size_bytes=len(content),
+            content_type=content_type,
+            original_filename=f"pexels_{payload.pexels_id}.{ext}",
+        )
+    else:
+        asset = UserVideoAsset(
+            id=asset_id,
+            user_id=user.id,
+            name=name,
+            r2_key=r2_key,
+            thumbnail_r2_key=thumbnail_r2_key,
+            file_size_bytes=len(content),
+            original_filename=f"pexels_{payload.pexels_id}.{ext}",
+        )
     db.add(asset)
     await db.commit()
 
@@ -228,6 +246,9 @@ async def import_stock_media(
         "asset_id": asset_id,
         "r2_key": r2_key,
         "url": r2.get_public_url(r2_key),
-        "thumbnail": r2.get_public_url(thumbnail_r2_key) if thumbnail_r2_key else None,
+        "thumbnail": (
+            r2.get_public_url(r2_key) if is_photo
+            else (r2.get_public_url(thumbnail_r2_key) if thumbnail_r2_key else None)
+        ),
         "type": payload.type,
     }

@@ -335,6 +335,13 @@ export interface BlockMetadata {
       the product shot for this beat, then "done" or "failed". The Script tab
       shows a placeholder + polls while "generating". */
   ai_broll?: "generating" | "done" | "failed";
+  /** Set by refine_stock_media_from_script_task: "generating" while it
+      re-searches this block's b-roll against the FINAL script line (the
+      outline-time search only had key_points, a provisional framing that
+      can drift from what the block ends up actually saying), then "done"
+      or "failed". The Script tab polls while "generating", same pattern
+      as ai_broll above. */
+  broll_refining?: "generating" | "done" | "failed";
   /** Left by the outline b-roll normaliser when it retyped this beat because a
       single auto-picked clip would have covered the whole avatar_speaking
       shot. The Script tab surfaces this + a one-click revert. */

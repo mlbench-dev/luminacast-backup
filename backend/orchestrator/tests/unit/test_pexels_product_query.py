@@ -309,3 +309,167 @@ async def test_multi_angle_skipped_on_short_block(monkeypatch):
 
     assert not out[0].get("multi_angle")
     assert len(out[0]["parallel_media"]) == 1
+
+
+# ── (d) vision-generated AI queries take priority over text-based ones ────
+
+
+class _AIQuerySequencedClient:
+    """Records every query tried; only ``winning_query`` returns a hit."""
+
+    def __init__(self, winning_query: str):
+        self.winning_query = winning_query
+        self.queries: list[str] = []
+
+    async def safe_search_videos(self, query, per_page=3, orientation="portrait", **kw):
+        self.queries.append(query)
+        if query != self.winning_query:
+            return {"videos": []}
+        return {"videos": [{
+            "id": 1, "url": "https://pexels.com/video/1/",
+            "width": 1080, "height": 1920, "duration": 8,
+            "image": "https://img/1.jpg", "user": {"name": ""},
+            "video_files": [{"link": "https://player/1.mp4", "file_type": "video/mp4",
+                             "width": 1080, "height": 1920}],
+        }]}
+
+
+@pytest.mark.asyncio
+async def test_ai_stock_queries_tried_before_text_based_candidates(monkeypatch):
+    """AI-generated queries (from the product's own cover photo, cached on
+    Product.ai_stock_queries — see services/product_stock_queries.py) must
+    be tried BEFORE build_pexels_query's text-based candidates: a photo
+    distinguishes e.g. a saucepan from a fry pan more reliably than parsing
+    the product name string."""
+    monkeypatch.setenv("BROLL_RERANK_ENABLED", "false")
+    monkeypatch.setenv("MULTI_ANGLE_TEMPLATE_ENABLED", "0")
+    client = _AIQuerySequencedClient(winning_query="stainless steel saucepan")
+    outline = [{
+        "category": "avatar_speaking",
+        "stock_media_query": "cookware demo",
+        "estimated_duration_seconds": 8,
+    }]
+    products = [{
+        "name": "Amazon Basics Stainless Steel Saucepan with Lid",
+        "category": "cookware",
+        "ai_stock_queries": [
+            "stainless steel saucepan",
+            "cooking saucepan kitchen",
+            "sauce simmering on stove",
+        ],
+    }]
+
+    with patch.dict(
+        "sys.modules",
+        {"services.pexels": _fake_pexels_module(client)},
+    ):
+        out = await auto_populate_stock_media(outline, "cast1", products=products)
+
+    assert client.queries[0] == "stainless steel saucepan"
+    assert out[0]["stock_media_url"] == "https://player/1.mp4"
+
+
+@pytest.mark.asyncio
+async def test_no_ai_stock_queries_falls_back_to_text_based(monkeypatch):
+    """A product with no ai_stock_queries (not yet generated, or generation
+    failed) must behave exactly as before — build_pexels_query's candidates
+    alone, unaffected by this feature's absence."""
+    monkeypatch.setenv("BROLL_RERANK_ENABLED", "false")
+    monkeypatch.setenv("MULTI_ANGLE_TEMPLATE_ENABLED", "0")
+    client = _AIQuerySequencedClient(winning_query="headphones")
+    outline = [{
+        "category": "avatar_speaking",
+        "stock_media_query": "headphones demo",
+        "estimated_duration_seconds": 8,
+    }]
+    products = [{"name": "Sony WH-1000XM5", "category": "headphones"}]
+
+    with patch.dict(
+        "sys.modules",
+        {"services.pexels": _fake_pexels_module(client)},
+    ):
+        out = await auto_populate_stock_media(outline, "cast1", products=products)
+
+    assert out[0]["stock_media_url"] == "https://player/1.mp4"
+
+
+@pytest.mark.asyncio
+async def test_per_block_ai_query_wins_top_priority_over_product_level(monkeypatch):
+    """generate_block_stock_query (the product's cached visual description
+    combined with THIS block's own beat) must be tried BEFORE even the
+    generic per-product ai_stock_queries — it's the most targeted signal,
+    grounded in both the photo and this specific block's content."""
+    monkeypatch.setenv("BROLL_RERANK_ENABLED", "false")
+    monkeypatch.setenv("MULTI_ANGLE_TEMPLATE_ENABLED", "0")
+
+    import services.product_stock_queries as psq
+
+    async def _fake_block_query(visual_description, beat_text):
+        assert visual_description == "a stainless steel saucepan with a glass lid"
+        assert "boiling" in beat_text.lower()
+        return "water rapidly boiling pan"
+    monkeypatch.setattr(psq, "generate_block_stock_query", _fake_block_query)
+
+    client = _AIQuerySequencedClient(winning_query="water rapidly boiling pan")
+    outline = [{
+        "category": "avatar_voiceover",
+        "render_mode": "voiceover",
+        "stock_media_query": "cookware demo",
+        "key_points": ["boiling water quickly"],
+        "estimated_duration_seconds": 6,
+    }]
+    products = [{
+        "name": "Cooker King Sauce Pan",
+        "category": "cookware",
+        "ai_stock_queries": ["stainless steel saucepan", "cooking kitchen"],
+        "ai_visual_description": "a stainless steel saucepan with a glass lid",
+    }]
+
+    with patch.dict(
+        "sys.modules",
+        {"services.pexels": _fake_pexels_module(client)},
+    ):
+        out = await auto_populate_stock_media(outline, "cast1", products=products)
+
+    assert client.queries[0] == "water rapidly boiling pan"
+    assert out[0]["stock_media_url"] == "https://player/1.mp4"
+
+
+@pytest.mark.asyncio
+async def test_no_visual_description_skips_per_block_call(monkeypatch):
+    """A product with no ai_visual_description (not yet generated) must not
+    attempt the per-block call at all, and behave exactly as the earlier
+    ai_stock_queries-only tests — no regression for products without this
+    newer field populated yet."""
+    monkeypatch.setenv("BROLL_RERANK_ENABLED", "false")
+    monkeypatch.setenv("MULTI_ANGLE_TEMPLATE_ENABLED", "0")
+
+    import services.product_stock_queries as psq
+    called = {"n": 0}
+    async def _should_not_be_called(visual_description, beat_text):
+        called["n"] += 1
+        return "should not happen"
+    monkeypatch.setattr(psq, "generate_block_stock_query", _should_not_be_called)
+
+    client = _AIQuerySequencedClient(winning_query="stainless steel saucepan")
+    outline = [{
+        "category": "avatar_voiceover",
+        "render_mode": "voiceover",
+        "stock_media_query": "cookware demo",
+        "estimated_duration_seconds": 6,
+    }]
+    products = [{
+        "name": "Cooker King Sauce Pan",
+        "category": "cookware",
+        "ai_stock_queries": ["stainless steel saucepan"],
+        # no ai_visual_description key at all
+    }]
+
+    with patch.dict(
+        "sys.modules",
+        {"services.pexels": _fake_pexels_module(client)},
+    ):
+        out = await auto_populate_stock_media(outline, "cast1", products=products)
+
+    assert called["n"] == 0
+    assert out[0]["stock_media_url"] == "https://player/1.mp4"

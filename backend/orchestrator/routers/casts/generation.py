@@ -279,6 +279,33 @@ async def generate_outline(
         for cp in cast_products if cp.product
     ]
 
+    # Vision-generated Pexels queries from each product's own cover photo —
+    # cached on Product.ai_stock_queries, so this is free after the first
+    # generation. See services/product_stock_queries.py for why this is
+    # additive to (not a replacement for) build_pexels_query's text-based
+    # candidates.
+    if products:
+        from services.product_stock_queries import (
+            get_or_generate_product_ai_stock_queries,
+            get_or_generate_product_visual_description,
+        )
+        from services.r2_storage import get_r2_storage_service
+        _r2 = get_r2_storage_service()
+        _products_with_obj = [cp.product for cp in cast_products if cp.product]
+        _ai_query_lists, _ai_descriptions = await asyncio.gather(
+            asyncio.gather(
+                *(get_or_generate_product_ai_stock_queries(p, db, _r2) for p in _products_with_obj),
+                return_exceptions=True,
+            ),
+            asyncio.gather(
+                *(get_or_generate_product_visual_description(p, db, _r2) for p in _products_with_obj),
+                return_exceptions=True,
+            ),
+        )
+        for _p, _ai_qs, _ai_desc in zip(products, _ai_query_lists, _ai_descriptions):
+            _p["ai_stock_queries"] = _ai_qs if isinstance(_ai_qs, list) else []
+            _p["ai_visual_description"] = _ai_desc if isinstance(_ai_desc, str) else ""
+
     product_video_assets: list[dict] = []
     product_image_assets: list[dict] = []
     product_ids = [cp.product_id for cp in cast_products if cp.product_id]
@@ -650,6 +677,31 @@ async def generate_smart_outline_endpoint(
         }
         for cp in cast_products if cp.product
     ]
+
+    # Vision-generated Pexels queries from each product's own cover photo —
+    # cached on Product.ai_stock_queries. See services/product_stock_queries.py.
+    if products:
+        from services.product_stock_queries import (
+            get_or_generate_product_ai_stock_queries,
+            get_or_generate_product_visual_description,
+        )
+        from services.r2_storage import get_r2_storage_service
+        _r2 = get_r2_storage_service()
+        _products_with_obj = [cp.product for cp in cast_products if cp.product]
+        _ai_query_lists, _ai_descriptions = await asyncio.gather(
+            asyncio.gather(
+                *(get_or_generate_product_ai_stock_queries(p, db, _r2) for p in _products_with_obj),
+                return_exceptions=True,
+            ),
+            asyncio.gather(
+                *(get_or_generate_product_visual_description(p, db, _r2) for p in _products_with_obj),
+                return_exceptions=True,
+            ),
+        )
+        for _p, _ai_qs, _ai_desc in zip(products, _ai_query_lists, _ai_descriptions):
+            _p["ai_stock_queries"] = _ai_qs if isinstance(_ai_qs, list) else []
+            _p["ai_visual_description"] = _ai_desc if isinstance(_ai_desc, str) else ""
+
     # PR E — collect the bound products' uploaded VIDEO assets so the outline
     # can put the real product footage on screen (preferred over Pexels b-roll).
     # PR E — collect the bound products' uploaded video + image assets so the outline
@@ -1146,6 +1198,24 @@ async def generate_scripts(
 
     cast.status = CastStatus.SCRIPT_REVIEW
     await db.commit()
+
+    # Re-run b-roll selection using each block's REAL delivered line, now
+    # that it exists — outline-time search only had key_points (a
+    # provisional framing that can drift from what the block ends up
+    # actually saying). Fire-and-forget background task (mirrors
+    # repopulate_stock_media_task's dispatch in routers/casts/forking.py)
+    # so a slow Pexels/LLM pass can never make this request time out; the
+    # block already has SOME b-roll from the outline-time pass regardless.
+    # See tasks/smart_cast_tasks.py:refine_stock_media_from_script_task.
+    try:
+        from tasks.smart_cast_tasks import refine_stock_media_from_script_task
+        refine_stock_media_from_script_task.delay(cast_id)
+    except Exception as _refine_exc:
+        sentry_sdk.capture_exception(_refine_exc)
+        logger.warning(
+            "refine_stock_media_from_script dispatch failed for cast %s: %s",
+            cast_id, _refine_exc,
+        )
 
     # CHANGE 5.1 — auto-clip suggestions. Runs AFTER scripts are persisted
     # so the LLM sees the actual `script_text` per block. Wrapped in

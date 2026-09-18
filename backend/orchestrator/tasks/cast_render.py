@@ -154,6 +154,19 @@ _SPEAKING_TOLERANCE_UNDER_PCT = float(
 _SPEAKING_TOLERANCE_OVER_PCT = float(
     os.environ.get("SPEAKING_TOLERANCE_OVER_PCT", "0.05")
 )
+# fal-ai/sync-lipsync/v3 (post-bake refine) declines to render a trailing
+# near-silence tail below its own internal threshold, trimming a roughly
+# constant ~120-170ms regardless of clip length (confirmed on cst_294eeaf04af2
+# blocks blk_8f8d99a88f8e / blk_1a61c93a5731 via ffmpeg silencedetect: both
+# trims land at or within ~30ms of the source audio's own trailing-silence
+# start — no spoken content lost). A pure percentage floor disproportionately
+# fails *short* blocks for this fixed-size, benign behavior, so the lower
+# bound is whichever of the percentage or this absolute allowance is more
+# lenient; long clips still fall back to the percentage, which stays tight
+# in absolute terms there.
+_SPEAKING_TOLERANCE_UNDER_ABS_S = float(
+    os.environ.get("SPEAKING_TOLERANCE_UNDER_ABS_S", "0.25")
+)
 
 # Client report: "The voiceover doesn't match this clip's length — try
 # again" (SpeakingBlockOutOfTolerance) still shows up occasionally, mostly
@@ -760,6 +773,115 @@ async def resolve_voiceover_visual_source(
     """
     candidates = await resolve_voiceover_visual_sources(block_id, session, r2, cast_id)
     return candidates[0] if candidates else None
+
+
+async def _bake_voiceover_broll_sequence(
+    block_id: str,
+    session,
+    broll_s: float,
+    cw: int,
+    ch: int,
+    fps: int,
+) -> bytes | None:
+    """Bake a voiceover block's ``parallel_media`` as a real back-to-back
+    sequence instead of picking a single winner.
+
+    ``resolve_voiceover_visual_sources`` treats parallel_media as a
+    priority-ordered FALLBACK list (try clip 1; only move to clip 2 if clip
+    1 fails validation) — correct for that purpose, but when the script
+    engine attaches 2+ shots to the SAME beat with real ``start_offset_s`` /
+    ``duration_s`` (a genuine multi-shot cutaway — exactly what the editor
+    timeline shows as separate "B-roll 1" / "B-roll 2" chips,
+    editorStarterMapping.ts), using only the first one silently drops every
+    other shot from the final render even though nothing failed. This bakes
+    each entry to its own share of ``broll_s`` and concatenates them with a
+    hard cut (stream-copy, no re-encode at the seam), so the render matches
+    what the timeline visually promises.
+
+    Returns ``None`` (never raises) when there are fewer than 2 usable
+    entries, or when fewer than 2 end up baking successfully — the caller
+    then falls through to the existing single-candidate retry loop
+    unchanged, which already tries these same URLs individually.
+    """
+    from models.block import Block as _SeqBlock
+
+    try:
+        blk = await session.get(_SeqBlock, block_id)
+        parallel_media = getattr(blk, "parallel_media", None) if blk else None
+        if not isinstance(parallel_media, list):
+            return None
+        entries = [
+            pm for pm in parallel_media
+            if isinstance(pm, dict) and pm.get("url") and pm.get("kind") in ("video", "photo")
+        ]
+        if len(entries) < 2:
+            return None
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        return None
+
+    # Split broll_s across entries proportional to authored duration_s when
+    # EVERY entry has one (mirrors the editor's own placement); otherwise
+    # split evenly, matching that same file's `slot = dur / len(entries)`
+    # fallback for legacy/incomplete entries.
+    authored = [float(pm.get("duration_s") or 0) for pm in entries]
+    if all(d > 0 for d in authored):
+        total_authored = sum(authored)
+        shares = [d / total_authored for d in authored]
+    else:
+        shares = [1.0 / len(entries) for _ in entries]
+
+    from services import voiceover_broll
+
+    async def _bake_one(pm: dict, share: float) -> bytes | None:
+        sub_s = max(0.3, broll_s * share)
+        try:
+            if pm["kind"] == "video":
+                return await voiceover_broll.render_video_to_slot(
+                    video_url=pm["url"], slot_s=sub_s, width=cw, height=ch, fps=fps,
+                )
+            return await voiceover_broll.render_ken_burns_from_image(
+                image_url=pm["url"], slot_s=sub_s, width=cw, height=ch, fps=fps,
+            )
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            logger.warning(
+                "B-roll sequence entry failed for block %s (%s): %s",
+                block_id, pm.get("url"), e,
+            )
+            return None
+
+    baked = await asyncio.gather(*(_bake_one(pm, s) for pm, s in zip(entries, shares)))
+    ok_pairs = [(pm, s) for pm, s, b in zip(entries, shares, baked) if b is not None]
+
+    if len(ok_pairs) < 2:
+        return None
+
+    ok_clips: list[bytes]
+    if len(ok_pairs) == len(entries):
+        ok_clips = [b for b in baked if b is not None]
+    else:
+        # A failed entry's time isn't just dropped — re-bake the survivors
+        # at durations rescaled to still sum to broll_s exactly, so the
+        # final concatenated clip's length still matches the audio (the
+        # Phase 2 tolerance gate compares against audio_duration_s, not
+        # entry count).
+        survivor_shares_raw = [s for _, s in ok_pairs]
+        total = sum(survivor_shares_raw) or 1.0
+        rescaled = [s / total for s in survivor_shares_raw]
+        re_baked = await asyncio.gather(
+            *(_bake_one(pm, s) for (pm, _), s in zip(ok_pairs, rescaled))
+        )
+        if any(b is None for b in re_baked) or len(re_baked) < 2:
+            return None
+        ok_clips = [b for b in re_baked if b is not None]
+
+    try:
+        return await voiceover_broll.concat_video_clips(ok_clips)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        logger.warning("B-roll sequence concat failed for block %s: %s", block_id, e)
+        return None
 
 
 async def resolve_avatar_idle_image(
@@ -2884,7 +3006,7 @@ async def _enforce_speaking_tolerance(
     the slot so the gate still has a reference, but the band is always against
     audio when we have it.
 
-      * within ``[-2%, +5%]``  → accept as-is (no retime, no pad).
+      * within ``[-max(2%, 0.25s), +5%]``  → accept as-is (no retime, no pad).
       * long but within +5%    → END-trim the surplus with ``-t`` to the AUDIO
         end (drop the trailing closed-mouth / silent tail — safe, never
         re-pitches voice).
@@ -2927,7 +3049,10 @@ async def _enforce_speaking_tolerance(
                 # Can't prove a violation — let Phase 3 inspect it.
                 return video_bytes
 
-            lower = slot_s * (1.0 - _SPEAKING_TOLERANCE_UNDER_PCT)
+            lower = max(0.0, min(
+                slot_s * (1.0 - _SPEAKING_TOLERANCE_UNDER_PCT),
+                slot_s - _SPEAKING_TOLERANCE_UNDER_ABS_S,
+            ))
             upper = slot_s * (1.0 + _SPEAKING_TOLERANCE_OVER_PCT)
             delta = dur - slot_s
             pct = (delta / slot_s) if slot_s > 0 else 0.0
@@ -5655,7 +5780,66 @@ async def _render_async(task, render_id: str):
             video_bytes: bytes | None = None
             broll_source = "none"
             broll_error: str | None = None
-            for cand_idx, (kind, url) in enumerate(candidates):
+
+            # Try a genuine multi-shot SEQUENCE first when the block has 2+
+            # parallel_media entries with real timing — see
+            # _bake_voiceover_broll_sequence's docstring for why this is a
+            # separate path from the candidates loop below (that loop is a
+            # priority-ordered FALLBACK list — first success wins and covers
+            # the whole slot — not a sequence of distinct shots).
+            try:
+                async with factory() as _seq_session:
+                    seq_bytes = await _bake_voiceover_broll_sequence(
+                        block_id, _seq_session, broll_s, cw, ch, fps,
+                    )
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                seq_bytes = None
+
+            if seq_bytes is not None:
+                try:
+                    if audio_url:
+                        try:
+                            seq_bytes = await _mux_audio_into_clip(
+                                seq_bytes, audio_url, duration_s=broll_s,
+                            )
+                        except Exception as mux_e:
+                            sentry_sdk.capture_exception(mux_e)
+                            logger.warning(
+                                "Voiceover block %s sequence audio mux failed, "
+                                "padding silent: %s", block_id, mux_e,
+                            )
+                            seq_bytes = await _mux_silent_audio_into_clip(
+                                seq_bytes, duration_s=broll_s,
+                            )
+                    else:
+                        seq_bytes = await _mux_silent_audio_into_clip(
+                            seq_bytes, duration_s=broll_s,
+                        )
+
+                    seq_bytes = await _normalize_for_canvas(
+                        video_bytes=seq_bytes,
+                        timeline=timeline,
+                        block_id=block_id,
+                        render_id=render_id,
+                        fallback_duration_s=broll_s,
+                        r2=r2,
+                    )
+                    await _validate_baked_clip_bytes(
+                        seq_bytes, block_id=block_id, render_id=render_id,
+                        require_audio=bool(audio_url),
+                    )
+                    video_bytes = seq_bytes
+                    broll_source = "broll_sequence"
+                except Exception as e:
+                    sentry_sdk.capture_exception(e)
+                    logger.warning(
+                        "Voiceover block %s B-roll sequence failed post-bake "
+                        "validation (%s) — falling back to single-candidate "
+                        "selection", block_id, e,
+                    )
+
+            for cand_idx, (kind, url) in (enumerate(candidates) if video_bytes is None else []):
                 try:
                     if kind == "video":
                         cand_bytes = await voiceover_broll.render_video_to_slot(

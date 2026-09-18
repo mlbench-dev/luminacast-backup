@@ -280,6 +280,49 @@ async def render_video_to_slot(
             return fh.read()
 
 
+async def concat_video_clips(clips: list[bytes]) -> bytes:
+    """Stream-copy concatenate already-baked clips into one continuous video,
+    in order, with a plain hard cut at each seam.
+
+    Every clip must share the same codec/resolution/fps/pix_fmt — true of any
+    combination of ``render_video_to_slot`` / ``render_ken_burns_from_image``
+    output, since both always encode to the same canvas at
+    libx264/yuv420p/faststart. The concat DEMUXER used here (``-c copy``) is
+    a pure stream copy, not a re-encode — that's also what keeps the cut
+    clean: no re-encoded frame at the seam that could stutter, duplicate, or
+    freeze, just each clip's own frames back to back.
+    """
+    if not clips:
+        raise ValueError("concat_video_clips: no clips to concatenate")
+    if len(clips) == 1:
+        return clips[0]
+
+    timeout_s = max(60.0, len(clips) * 15.0)
+    with tempfile.TemporaryDirectory(prefix="vo_broll_concat_") as tmp:
+        lines = []
+        for i, clip_bytes in enumerate(clips):
+            clip_path = os.path.join(tmp, f"seg_{i}.mp4")
+            with open(clip_path, "wb") as fh:
+                fh.write(clip_bytes)
+            lines.append(f"file '{clip_path}'")
+        list_path = os.path.join(tmp, "list.txt")
+        with open(list_path, "w") as fh:
+            fh.write("\n".join(lines))
+
+        out_path = os.path.join(tmp, "out.mp4")
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", list_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+        await _run_ffmpeg(cmd, timeout_s=timeout_s, what="broll_sequence_concat")
+        with open(out_path, "rb") as fh:
+            return fh.read()
+
+
 async def _run_ffmpeg(cmd: list[str], *, timeout_s: float, what: str) -> None:
     def _run() -> subprocess.CompletedProcess:
         return subprocess.run(

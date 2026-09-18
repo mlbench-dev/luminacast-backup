@@ -338,6 +338,12 @@ export function LuminacastMediaPanel() {
             assetId, keepAspectRatio: true,
             borderRadius: 0, rotation: 0,
             cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0,
+            // No metadata.fit set here falls back to "cover" (croppable-layer.ts),
+            // which force-crops a mismatched-aspect clip around its center —
+            // this item IS the whole frame with nothing behind it, so use the
+            // same blurred-backdrop "contain" convention the auto-populated
+            // pipeline uses for solo stock clips (editorStarterMapping.ts).
+            metadata: { fit: "contain-blur" },
           };
           let s = addAssetToState({ state, asset });
           s = addItem({ state: s, item: videoItem, select: true, position: { type: "back" } });
@@ -367,6 +373,11 @@ export function LuminacastMediaPanel() {
             fadeInDurationInSeconds: 0, fadeOutDurationInSeconds: 0,
             borderRadius: 0, rotation: 0,
             cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0,
+            // See videoItem above: without this, croppable-layer.ts defaults
+            // to "cover" and center-crops a mismatched-aspect photo, cutting
+            // off its top/bottom (or sides) with no way to tell in advance
+            // which part gets lost.
+            metadata: { fit: "contain-blur" },
           };
           let s = addAssetToState({ state, asset });
           s = addItem({ state: s, item: imageItem, select: true, position: { type: "back" } });

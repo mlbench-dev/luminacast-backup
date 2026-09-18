@@ -51,6 +51,7 @@ const EditAvatarPage = named(() => import("@/pages/avatar/EditAvatarPage"), "Edi
 const AdminCostsPage = named(() => import("@/pages/admin/AdminCosts"), "AdminCostsPage");
 const ControlPanelPage = named(() => import("@/pages/admin/ControlPanel"), "ControlPanelPage");
 const PlaygroundPage = named(() => import("@/pages/admin/Playground"), "PlaygroundPage");
+const BrollPlaygroundPage = named(() => import("@/pages/admin/BrollPlayground"), "BrollPlaygroundPage");
 const MusicPage = named(() => import("@/pages/music/Music"), "MusicPage");
 const MyVideosPage = named(() => import("@/pages/media-library/MyVideos"), "MyVideosPage");
 const DashboardPage = named(() => import("@/pages/dashboard/Dashboard"), "DashboardPage");
@@ -176,6 +177,7 @@ export default function App() {
                 <Route path="/admin" element={<AdminPage />} />
                 <Route path="/control" element={<ControlPanelPage />} />
                 <Route path="/playground" element={<PlaygroundPage />} />
+                <Route path="/broll-playground" element={<BrollPlaygroundPage />} />
                 {/* Legacy route redirect */}
                 <Route path="/preadmin" element={<Navigate to="/control" replace />} />
               </Route>

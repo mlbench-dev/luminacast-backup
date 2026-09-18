@@ -98,6 +98,39 @@ def test_block_beat_text_combines_key_points_and_query():
     assert text.endswith("farmers market")
 
 
+def test_block_beat_text_prefers_real_script_over_key_points():
+    """Regression guard (cst_b1ea8f3c8e4c blk_362a9a55b436): key_points
+    implied "noisy library" but the shipped line was "I spent years chasing
+    that perfect studio sound...", producing library/bookshelf b-roll for a
+    line that isn't about libraries at all. Once the real script_text
+    exists (refine_stock_media_from_script_task), it must be what drives
+    the beat text, not the stale outline-time key_points."""
+    block = {
+        "key_points": ["campus is loud", "dorm noise, commute, library"],
+        "mood": "urgent",
+        "script_text": "I spent years chasing that perfect studio sound… and never quite got there.",
+    }
+    text = _block_beat_text(block, "wireless headphones closeup")
+    assert "studio sound" in text
+    assert "library" not in text
+    assert "campus is loud" not in text
+
+
+def test_block_beat_text_falls_back_to_key_points_when_no_script_yet():
+    """At outline-generation time script_text doesn't exist yet — must
+    behave exactly as before (unaffected by the new preference)."""
+    block = {"key_points": ["fresh produce", "morning market"], "mood": "warm", "script_text": None}
+    text = _block_beat_text(block, "farmers market")
+    assert "fresh produce" in text
+    assert text.endswith("farmers market")
+
+
+def test_block_beat_text_blank_script_text_falls_back():
+    block = {"key_points": ["fresh produce"], "script_text": "   "}
+    text = _block_beat_text(block, "farmers market")
+    assert "fresh produce" in text
+
+
 # ── (b) vision pick parses Opus reply and falls back on JSON error ────────
 
 

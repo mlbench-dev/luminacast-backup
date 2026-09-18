@@ -3082,9 +3082,26 @@ async def _vision_pick_video(
 
 def _block_beat_text(block: dict, query: str) -> str:
     """Build a short beat description from the outline block for the vision
-    re-rank. The final script text isn't written yet at this stage, so we
-    combine the block's key points / mood with the search query.
+    re-rank.
+
+    At outline-generation time the final script text isn't written yet, so
+    we combine the block's key points / mood with the search query — a
+    provisional framing that can drift from what the block ends up actually
+    saying (confirmed on a real cast: key_points implied "noisy library",
+    but the shipped line was "I spent years chasing that perfect studio
+    sound…", producing library/bookshelf b-roll for a line that isn't about
+    libraries at all). When a caller running AFTER script generation passes
+    the block's real ``script_text``, prefer it outright — it's the actual
+    delivered line, so there's no need to reconstruct intent from
+    key_points/mood once we have the real words.
     """
+    script_text = block.get("script_text")
+    if isinstance(script_text, str) and script_text.strip():
+        parts = [script_text.strip()]
+        if query:
+            parts.append(query)
+        return ". ".join(p.strip() for p in parts if p and p.strip())
+
     parts: list[str] = []
     key_points = block.get("key_points")
     if isinstance(key_points, list):
@@ -3424,6 +3441,92 @@ def _apply_preferred_broll(
     return claimed
 
 
+async def resolve_block_query_candidates(block: dict, product: dict | None) -> list[str]:
+    """Build the full, priority-ordered Pexels query candidate list for one
+    block — the exact ladder ``_fetch_for_block`` (inside
+    ``auto_populate_stock_media``) tries in order until one returns usable
+    results. Extracted as its own function so nothing (e.g. the b-roll
+    debug playground, ``routers/dev_broll_playground.py``) has to duplicate
+    this logic and risk drifting from what actually runs at generation time.
+
+    Priority (highest first), when ``product`` is set:
+      1. Per-block combined query — product's cached ``ai_visual_description``
+         (from its cover photo) + this block's own beat text (key_points /
+         mood, or ``script_text`` when present — see ``_block_beat_text``).
+      2. Product-level vision-generated queries (``product["ai_stock_queries"]``,
+         same 3 for every block on this product).
+      3. Text-based ``build_pexels_query`` candidates (product name/category
+         blended with this block's key_points/purpose).
+      4. The outline LLM's own ``stock_media_query`` — cleaned, shortened,
+         and raw, as trailing fallbacks.
+
+    When ``product`` is None, falls back to just the cleaned/raw
+    ``stock_media_query``. Returns ``[]`` when nothing usable exists.
+    """
+    base_query = (block.get("stock_media_query") or "").strip()
+
+    from services.stock_query import stockify_query
+    # Drop shot-style / aesthetic / filler words from the LLM's query
+    # ("hoodie flat lay charcoal" -> "charcoal hoodie") so Pexels searches
+    # the subject, not the framing — otherwise it degrades to unrelated
+    # flat-lay footage.
+    clean_base = stockify_query(base_query) if base_query else ""
+
+    if not product:
+        if not base_query:
+            return []
+        return list(dict.fromkeys(q for q in (clean_base, base_query) if q))
+
+    queries = build_pexels_query(product, block)
+    # Vision-generated queries (from the product's own cover photo — see
+    # services/product_stock_queries.py, cached on Product.ai_stock_queries
+    # and attached to this dict by the caller) go FIRST: a photo tells a
+    # saucepan from a fry pan at a glance, which build_pexels_query's
+    # text-only name/category parsing can't reliably do. Not a replacement —
+    # the text-based candidates below still carry this block's own script
+    # beat (key_points/purpose), which the product-level AI queries have no
+    # notion of, so they stay as the next tier down.
+    ai_queries = product.get("ai_stock_queries") if isinstance(product, dict) else None
+    if isinstance(ai_queries, list) and ai_queries:
+        cleaned_ai = [q.strip() for q in ai_queries if (q or "").strip()]
+        # De-dupe while preserving order — AI queries win ties since they're
+        # listed first.
+        seen_q: set[str] = set()
+        merged: list[str] = []
+        for q in cleaned_ai + queries:
+            key = q.lower()
+            if key not in seen_q:
+                seen_q.add(key)
+                merged.append(q)
+        queries = merged
+
+    # Highest priority of all: combine the product's cached visual
+    # description (what it looks like, from the photo) with THIS block's
+    # own beat (key_points/mood, or the real script_text once it exists)
+    # into one query grounded in both signals — e.g. "stainless steel
+    # saucepan" + "boiling speed" beat -> "water rapidly boiling pan", not
+    # just the product-level query alone. Cheap (text-only, no image) and
+    # runs once per block. See product_stock_queries.py.
+    visual_desc = product.get("ai_visual_description") if isinstance(product, dict) else None
+    if visual_desc:
+        from services.product_stock_queries import generate_block_stock_query
+        beat_text = _block_beat_text(block, "")
+        block_query = await generate_block_stock_query(visual_desc, beat_text)
+        if block_query and block_query.lower() not in {q.lower() for q in queries}:
+            queries.insert(0, block_query)
+
+    # The LLM's stock_media_query is often the FULL product name, which
+    # Pexels can't match (cst_d7424cfa4f36). Shorten it before using it as
+    # an extra fallback candidate.
+    if base_query:
+        short_base = shorten_stock_query(base_query) or base_query
+        for cand in (clean_base, short_base, base_query):
+            if cand and cand.lower() not in {q.lower() for q in queries}:
+                queries.append(cand)
+
+    return queries
+
+
 async def auto_populate_stock_media(
     outline: list[dict], cast_id: str, products: list[dict] | None = None,
     preferred_broll_urls: list[str] | None = None,
@@ -3442,7 +3545,11 @@ async def auto_populate_stock_media(
 
     When `products` is supplied, the search query is rebuilt around the product
     name + feature words (see `build_pexels_query`) so the b-roll matches the
-    PRODUCT instead of the brand or an incidental location.
+    PRODUCT instead of the brand or an incidental location. When a product
+    dict also carries `ai_stock_queries` (vision-generated queries from the
+    product's own cover photo, cached on Product.ai_stock_queries — see
+    services/product_stock_queries.py), those are tried FIRST, ahead of
+    build_pexels_query's text-based candidates.
     """
     # 1. Template Enforcement: Talking Head Hook / Zero-broll templates MUST NOT have stock b-roll
     is_talking_head = False
@@ -3542,38 +3649,11 @@ async def auto_populate_stock_media(
             block["stock_media_url"] = None
             return
 
-        base_query = (block.get("stock_media_query") or "").strip()
         bg_type = block.get("background_type") or ""
-
         wants_photo = category == "stock_photo" or bg_type == "stock_photo"
 
-        # Build product-relevant query candidates (specific→generic). For
-        # product casts this swaps the brand/topic query for product name +
-        # feature words; otherwise we fall back to the LLM's own query.
-        from services.stock_query import stockify_query
-        # Drop shot-style / aesthetic / filler words from the LLM's query
-        # ("hoodie flat lay charcoal" -> "charcoal hoodie") so Pexels searches
-        # the subject, not the framing — otherwise it degrades to unrelated
-        # flat-lay footage.
-        clean_base = stockify_query(base_query) if base_query else ""
-
         product = _product_for_block(block, products)
-        if product:
-            queries = build_pexels_query(product, block)
-            # The LLM's stock_media_query is often the FULL product name, which
-            # Pexels can't match (cst_d7424cfa4f36). Shorten it before using it
-            # as an extra fallback candidate.
-            if base_query:
-                short_base = shorten_stock_query(base_query) or base_query
-                for cand in (clean_base, short_base, base_query):
-                    if cand and cand.lower() not in {q.lower() for q in queries}:
-                        queries.append(cand)
-        elif base_query:
-            queries = [q for q in (clean_base, base_query) if q]
-            # de-dupe while preserving order
-            queries = list(dict.fromkeys(queries))
-        else:
-            return
+        queries = await resolve_block_query_candidates(block, product)
         if not queries:
             return
         query = queries[0]

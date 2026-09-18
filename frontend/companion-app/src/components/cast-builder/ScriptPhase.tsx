@@ -436,14 +436,20 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     queryKey: ["cast", cast.id],
     queryFn: () => castsApi.get(cast.id),
     refetchOnMount: true,
-    // Poll while AI-from-product b-roll is still generating so the "creating
-    // your product shot" tiles swap themselves out for the real shot with no
-    // manual refresh. Stops as soon as every b-roll block is done/failed.
+    // Poll while AI-from-product b-roll (ai_broll) or the final-script b-roll
+    // refinement pass (broll_refining) is still generating, so tiles swap
+    // themselves out for the real pick with no manual refresh. Stops as soon
+    // as every block is done/failed on both. ai_broll only ever runs for
+    // broll_media_source="ai_generated" casts; broll_refining runs on every
+    // cast after script generation, independent of that setting.
     refetchInterval: (q) => {
       const c = q.state.data as any;
-      if (!c || !String(c.broll_media_source || "").startsWith("ai_generated")) return false;
+      if (!c) return false;
+      const aiBrollActive = String(c.broll_media_source || "").startsWith("ai_generated");
       const anyGenerating = (c.blocks || []).some(
-        (b: any) => b?.metadata?.ai_broll === "generating",
+        (b: any) =>
+          (aiBrollActive && b?.metadata?.ai_broll === "generating") ||
+          b?.metadata?.broll_refining === "generating",
       );
       return anyGenerating ? 5000 : false;
     },
@@ -501,10 +507,11 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         });
         return sorted;
       }
-      // Same blocks, background refetch (e.g. the AI-b-roll poll). Keep local
-      // fields the user is editing (script text / category / product / look —
-      // may have unsaved changes) and only pull the fields the server updates
-      // out of band: b-roll media + AI-b-roll status + generated frame ids.
+      // Same blocks, background refetch (e.g. the AI-b-roll or b-roll-
+      // refinement poll). Keep local fields the user is editing (script
+      // text / category / product / look — may have unsaved changes) and
+      // only pull the fields the server updates out of band: b-roll media
+      // + ai_broll/broll_refining status + generated frame ids.
       const sById = new Map(sorted.map((sb) => [sb.id, sb]));
       return prev.map((pb) => {
         const sb = sById.get(pb.id);
@@ -512,11 +519,23 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
         return {
           ...pb,
           parallel_media: sb.parallel_media,
+          // stock_media_* isn't user-editable in this tab, so it's always
+          // safe to pull from the server — needed for broll_refining's
+          // updates to actually reach the UI (stock_photo/stock_video
+          // blocks show their B-roll via stock_media_url, not
+          // parallel_media).
+          stock_media_url: sb.stock_media_url,
+          stock_media_thumbnail: sb.stock_media_thumbnail,
+          stock_media_kind: sb.stock_media_kind,
           image_asset_id: sb.image_asset_id,
           video_asset_id: sb.video_asset_id,
           body_motion_start_look_id: sb.body_motion_start_look_id,
           body_motion_end_look_id: sb.body_motion_end_look_id,
-          metadata: { ...(pb.metadata || {}), ai_broll: (sb.metadata as any)?.ai_broll },
+          metadata: {
+            ...(pb.metadata || {}),
+            ai_broll: (sb.metadata as any)?.ai_broll,
+            broll_refining: (sb.metadata as any)?.broll_refining,
+          },
         } as Block;
       });
     });
@@ -2022,10 +2041,21 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
             // so keeping them here until every clip is actually ready (not
             // just the Finalize button, further downstream) is where they'd
             // naturally come back to review or regenerate one anyway.
+            // Same reasoning applies to refine_stock_media_from_script_task
+            // (metadata.broll_refining) — it re-searches b-roll against the
+            // final script line right after this same generate-scripts
+            // call, so a render triggered before it finishes could grab a
+            // b-roll clip that's about to be replaced.
             const brollGeneratingBlocks = blocks.filter(
-              (b) => (b as any).metadata?.ai_broll === "generating",
+              (b) =>
+                (b as any).metadata?.ai_broll === "generating" ||
+                (b as any).metadata?.broll_refining === "generating",
             );
             const brollGeneratingCount = brollGeneratingBlocks.length;
+            const onlyRefining = brollGeneratingBlocks.every(
+              (b) => (b as any).metadata?.broll_refining === "generating"
+                && (b as any).metadata?.ai_broll !== "generating",
+            );
             return (
             <div className="flex items-center justify-between pt-4 border-t border-white/10">
               <Button variant="outline" onClick={generateOutline} className="border-white/20 text-white/70">
@@ -2035,8 +2065,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                 {brollGeneratingCount > 0 && (
                   <span className="text-[11px] text-fuchsia-200/80 flex items-center gap-1.5">
                     <Loader2 className="w-3 h-3 animate-spin" />
-                    Waiting on {brollGeneratingCount} AI video{brollGeneratingCount === 1 ? "" : "s"} to
-                    finish — review them in "Visual b-roll" above once ready.
+                    {onlyRefining
+                      ? `Updating ${brollGeneratingCount} b-roll clip${brollGeneratingCount === 1 ? "" : "s"} to match your final script — review them in "Visual b-roll" above once ready.`
+                      : `Waiting on ${brollGeneratingCount} AI video${brollGeneratingCount === 1 ? "" : "s"} to finish — review them in "Visual b-roll" above once ready.`}
                   </span>
                 )}
                 <Button
@@ -2044,7 +2075,9 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                   disabled={generateAudioMutation.isPending || blocks.length === 0 || brollGeneratingCount > 0}
                   title={
                     brollGeneratingCount > 0
-                      ? "AI video generation is still running for this cast — wait for it to finish so the render doesn't fall back to a Pexels placeholder."
+                      ? onlyRefining
+                        ? "B-roll is still being updated to match your final script — wait for it to finish so the render doesn't grab a clip that's about to be replaced."
+                        : "AI video generation is still running for this cast — wait for it to finish so the render doesn't fall back to a Pexels placeholder."
                       : undefined
                   }
                   onClick={async () => {

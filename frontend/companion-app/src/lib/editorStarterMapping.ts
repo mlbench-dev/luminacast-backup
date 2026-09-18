@@ -1078,7 +1078,14 @@ export function castToEditorStarterTimeline(
           id: sAssetId,
           filename: `Stock \u2014 Block ${blockNum}`,
           size: 0,
-          remoteUrl: stockMediaThumb || stockMediaUrl,
+          // Full-res URL first: stockMediaThumb is a small, Pexels-server-side
+          // *pre-cropped* preview (its own URL carries `fit=crop&h=200&w=280`),
+          // so using it as the actual display asset bakes in a second crop
+          // before our own contain/cover logic ever runs — this is what was
+          // cutting off the top/bottom of the source photo regardless of the
+          // item's own `fit` setting. stockMediaThumb is only a fallback for
+          // when the full-res URL is missing.
+          remoteUrl: stockMediaUrl || stockMediaThumb,
           remoteFileKey: null,
           mimeType: "image/jpeg",
           width: canvas.width,

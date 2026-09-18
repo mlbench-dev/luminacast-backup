@@ -18,6 +18,7 @@ import {
   DollarSign,
   ClipboardCheck,
   FlaskConical,
+  SearchCode,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useAuthStore } from "@/stores/authStore";
@@ -55,6 +56,7 @@ const adminItems = [
   { to: "/admin", label: "Admin Panel", icon: ShieldCheck },
   { to: "/control", label: "Control Panel", icon: Settings2 },
   { to: "/playground", label: "Model Playground", icon: FlaskConical },
+  { to: "/broll-playground", label: "B-roll Playground", icon: SearchCode },
 ];
 
 function NavItem({

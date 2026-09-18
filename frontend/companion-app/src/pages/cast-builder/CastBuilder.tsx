@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, AlertCircle, RefreshCw, ArrowLeft, Trash2, Rocket, MoreVertical, Copy, ChevronLeft, CheckCircle2 } from "lucide-react";
@@ -527,13 +528,36 @@ export function CastBuilderPage() {
   }, [cast, navigate]);
 
   const [kebabOpen, setKebabOpen] = useState(false);
+  const [kebabMenuPos, setKebabMenuPos] = useState<{ top: number; right: number } | null>(null);
   const kebabRef = useRef<HTMLDivElement>(null);
+  const kebabMenuRef = useRef<HTMLDivElement>(null);
 
-  // Click-outside close for kebab menu
+  // The menu is portaled to <body> (see render below) so it always paints
+  // above sticky/positioned siblings like RenderLockBanner — a plain nested
+  // z-index loses to those regardless of value once an ancestor stacking
+  // context traps it. Position is computed from the trigger button's rect
+  // since the portaled content is no longer a positioned descendant of it.
+  const toggleKebab = useCallback(() => {
+    setKebabOpen((v) => {
+      const next = !v;
+      if (next && kebabRef.current) {
+        const rect = kebabRef.current.getBoundingClientRect();
+        setKebabMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+      }
+      return next;
+    });
+  }, []);
+
+  // Click-outside close for kebab menu. The portaled menu is a real DOM
+  // descendant of <body>, not of kebabRef, so it needs its own ref check.
   useEffect(() => {
     if (!kebabOpen) return;
     const handler = (e: MouseEvent) => {
-      if (kebabRef.current && !kebabRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        kebabRef.current && !kebabRef.current.contains(target) &&
+        kebabMenuRef.current && !kebabMenuRef.current.contains(target)
+      ) {
         setKebabOpen(false);
       }
     };
@@ -704,14 +728,18 @@ export function CastBuilderPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setKebabOpen(v => !v)}
+                      onClick={toggleKebab}
                       className="text-white/60 hover:text-white p-1"
                       data-testid="cast-kebab-menu"
                     >
                       <MoreVertical className="w-4 h-4" />
                     </Button>
-                    {kebabOpen && (
-                      <div className="absolute right-0 top-full mt-1 bg-[#1a1a2e] border border-white/10 rounded-lg shadow-xl min-w-[200px] z-50 py-1">
+                    {kebabOpen && kebabMenuPos && createPortal(
+                      <div
+                        ref={kebabMenuRef}
+                        style={{ position: "fixed", top: kebabMenuPos.top, right: kebabMenuPos.right }}
+                        className="bg-[#1a1a2e] border border-white/10 rounded-lg shadow-xl min-w-[200px] z-[9999] py-1"
+                      >
                         <button
                           onClick={handleDuplicateAs}
                           className="w-full text-left px-4 py-2 text-sm text-white/80 hover:bg-white/10 flex items-center gap-2"
@@ -730,7 +758,8 @@ export function CastBuilderPage() {
                             Delete cast
                           </button>
                         )}
-                      </div>
+                      </div>,
+                      document.body
                     )}
                   </div>
                 </div>
