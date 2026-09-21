@@ -4,6 +4,7 @@ import tempfile
 import subprocess
 import requests
 import logging
+import concurrent.futures
 
 try:
     import sentry_sdk
@@ -312,11 +313,42 @@ def _derive_tracks_from_timeline(timeline: dict, baked_urls: dict) -> tuple[list
 
 
 def _download(url: str, dest: str, timeout: float) -> int:
-    resp = requests.get(url, timeout=timeout, allow_redirects=True)
-    resp.raise_for_status()
-    with open(dest, "wb") as f:
-        f.write(resp.content)
-    return len(resp.content)
+    """Download url to dest with a hard wall-clock deadline and one retry.
+
+    requests' own `timeout=` only bounds gaps *between* socket reads, not
+    total request time — a connection that trickles the odd byte (observed
+    repeatedly on media.luminacast.com from inside this container) can
+    evade it for 4-11+ minutes despite a 60s timeout, stalling the whole
+    render with no error. Running the request in a worker thread and
+    bounding `future.result()` with the same timeout enforces a real
+    deadline regardless of what the socket is doing; the abandoned thread
+    (Python can't force-kill it) is left to die on its own. One retry
+    because these stalls have been observed to clear immediately on a
+    second attempt.
+    """
+    def _do_request():
+        resp = requests.get(url, timeout=timeout, allow_redirects=True)
+        resp.raise_for_status()
+        return resp.content
+
+    last_exc: Exception = RuntimeError("_download: no attempts made")
+    for attempt in range(2):
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_do_request)
+        try:
+            content = future.result(timeout=timeout)
+        except Exception as ex:
+            last_exc = ex
+            logger.warning(
+                "_download attempt %d/2 failed for %s: %s", attempt + 1, url, ex,
+            )
+            executor.shutdown(wait=False)
+            continue
+        executor.shutdown(wait=False)
+        with open(dest, "wb") as f:
+            f.write(content)
+        return len(content)
+    raise last_exc
 
 
 def _run(cmd: list[str], timeout: float, label: str) -> subprocess.CompletedProcess:
@@ -399,6 +431,28 @@ def _probe_duration_s(path: str, timeout: float = 15.0) -> float:
     except (subprocess.TimeoutExpired, ValueError) as e:
         sentry_sdk.capture_exception(e)
         return 0.0
+
+
+def _atempo_chain(rate: float) -> str:
+    """Build an ffmpeg ``atempo`` filter chain for an arbitrary positive rate.
+
+    ``atempo`` only accepts [0.5, 2.0] per instance — chain multiple to
+    reach factors outside that range (e.g. 3.0x -> ``atempo=2.0,atempo=1.5``).
+    Used to speed up/slow down a bonded avatar clip's voice track to match
+    its paired video's playbackRate, so lips stay in sync instead of
+    drifting when only the video was sped up.
+    """
+    if rate <= 0 or abs(rate - 1.0) < 1e-6:
+        return ""
+    parts: list[str] = []
+    remaining = rate
+    while remaining < 0.5 or remaining > 2.0:
+        step = 2.0 if remaining > 2.0 else 0.5
+        parts.append(f"atempo={step}")
+        remaining /= step
+    if abs(remaining - 1.0) > 1e-6:
+        parts.append(f"atempo={remaining:.6f}")
+    return ",".join(parts)
 
 
 def _build_overlay_filter_parts(overlay_elements, current_label):
@@ -1001,12 +1055,16 @@ def _run_ffmpeg_compose(req):
                 )
             except Exception as ex:
                 sentry_sdk.capture_exception(ex)
-                logger.warning(
-                    "compose %s: failed to download video block %s (%s); "
-                    "leaving the slot as canvas background",
+                logger.error(
+                    "compose %s: failed to download video block %s after retry (%s)",
                     render_id, block_id, ex,
                 )
-                continue
+                raise RuntimeError(
+                    f"compose {render_id}: video block {block_id} failed to "
+                    f"download after retry ({ex}) — refusing to ship a render "
+                    f"with a missing block instead of silently leaving it "
+                    f"blank"
+                ) from ex
 
             norm = os.path.join(tmpdir, f"norm_v_{block_id or len(normalized_videos)}.mp4")
             # Clips arrive already trimmed to exactly their slot by the
@@ -1020,13 +1078,55 @@ def _run_ffmpeg_compose(req):
             src_dur = _probe_duration_s(raw)
             if src_dur <= 0:
                 src_dur = slot_dur
-            overshoot_s = max(0.0, src_dur - slot_dur)
+
+            # Playback rate + fade in/out on the avatar/talking-head clip
+            # itself — previously only ever applied to plain overlay
+            # (b-roll/product) clips (see the fade_in_s/fade_out_s handling
+            # a few hundred lines below in the overlay pass), never to this
+            # bonded-clip normalize step, so those editor controls silently
+            # did nothing to the avatar's own video on render.
+            try:
+                rate = float(vt.get("playback_rate") or 1.0)
+            except (TypeError, ValueError):
+                rate = 1.0
+            if rate <= 0:
+                rate = 1.0
+            try:
+                fade_in_s = max(0.0, float(vt.get("fade_in_s") or 0))
+            except (TypeError, ValueError):
+                fade_in_s = 0.0
+            try:
+                fade_out_s = max(0.0, float(vt.get("fade_out_s") or 0))
+            except (TypeError, ValueError):
+                fade_out_s = 0.0
+
+            # A rate change alters how much wall-clock time the source
+            # content occupies once played back (2x -> plays in half the
+            # time) — the existing head-trim overshoot must be computed
+            # against that RATE-ADJUSTED duration, not the raw source
+            # duration, or it trims the wrong amount.
+            effective_src_dur = src_dur / rate
+            overshoot_s = max(0.0, effective_src_dur - slot_dur)
+            rate_filter = f"setpts={(1.0 / rate):.6f}*PTS," if rate != 1.0 else ""
+
+            # Fade filters run AFTER setpts=PTS-STARTPTS below, so `st=` is
+            # relative to this clip's own local 0-based timebase (this
+            # ffmpeg invocation only ever sees one clip, not the full
+            # composed timeline) — matches the overlay pass's use of a
+            # timeline-relative `st=` for the same reason, just local here.
+            fade_filter = ""
+            if fade_in_s > 0:
+                fade_filter += f",fade=t=in:st=0:d={fade_in_s:.3f}"
+            if fade_out_s > 0:
+                fade_out_start = max(0.0, slot_dur - fade_out_s)
+                fade_filter += f",fade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}"
+
             v_prep = (
-                f"[0:v]fps={canvas_fps},"
+                f"[0:v]{rate_filter}fps={canvas_fps},"
                 f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease,"
                 f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
                 f"trim=start={overshoot_s:.3f}:duration={slot_dur:.3f},"
-                f"setpts=PTS-STARTPTS[vout]"
+                f"setpts=PTS-STARTPTS{fade_filter}[vout]"
             )
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "warning", "-i", raw,
@@ -1180,12 +1280,15 @@ def _run_ffmpeg_compose(req):
                 )
             except Exception as ex:
                 sentry_sdk.capture_exception(ex)
-                logger.warning(
-                    "compose %s: failed to download audio block %s (%s); "
-                    "skipping",
+                logger.error(
+                    "compose %s: failed to download audio block %s after retry (%s)",
                     render_id, block_id, ex,
                 )
-                continue
+                raise RuntimeError(
+                    f"compose {render_id}: audio block {block_id} failed to "
+                    f"download after retry ({ex}) — refusing to ship a render "
+                    f"with missing audio instead of silently dropping it"
+                ) from ex
 
             # Non-mic-on blocks get the lo-fi "recorded on a phone" VO texture
             # prepended to the normalize chain; mic-on blocks stay clean.
@@ -1195,6 +1298,17 @@ def _run_ffmpeg_compose(req):
             af = "aresample=48000:async=1000,aformat=channel_layouts=stereo,apad"
             if phone_mic_filter_enabled() and not block_is_mic_on(at):
                 af = f"{phone_mic_filter_chain()},{af}"
+            # Match the paired V1 element's playbackRate (see
+            # tasks.cast_render's pre-pass that copies it onto this audio
+            # track) — without this the voice stays at normal speed while
+            # the video speeds up/slows down, and the lips drift out of sync.
+            try:
+                _rate = float(at.get("playback_rate") or 1.0)
+            except (TypeError, ValueError):
+                _rate = 1.0
+            _tempo = _atempo_chain(_rate)
+            if _tempo:
+                af = f"{_tempo},{af}"
 
             norm = os.path.join(tmpdir, f"norm_a_{block_id or len(normalized_audios)}.m4a")
             cmd = [

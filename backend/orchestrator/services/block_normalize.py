@@ -289,6 +289,7 @@ def normalize_baked_block(
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k",
                 "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart",
                 *t_flag,
                 out_path,
             ]
@@ -312,6 +313,7 @@ def normalize_baked_block(
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k",
                 "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart",
                 *t_flag,
                 out_path,
             ]

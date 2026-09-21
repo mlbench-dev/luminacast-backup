@@ -17,6 +17,7 @@ import {
 	CAPTION_PRESETS as RAW_CAPTION_PRESETS,
 	CAPTION_PRESET_IDS,
 	DEFAULT_CAPTION_PRESET_ID,
+	presetPositionFraction,
 	type CaptionPreset as RawCaptionPreset,
 } from '@/lib/captionPresets';
 
@@ -99,16 +100,33 @@ export const CAPTION_PRESET_LIST: CaptionPreset[] = CAPTION_PRESET_IDS.map(
  * Apply a preset to a single caption item, preserving timing + assetId
  * + position metadata. The preset_override flag, if set, is also
  * preserved so per-block locks survive a preset switch.
+ *
+ * `canvasHeight`, when provided, also moves the item's own `top` to match
+ * the NEW preset's real vertical position (top_center=0.1 / center=0.5 /
+ * bottom_center=0.72 of canvas height). Without this, switching presets in
+ * the live editor left the caption box exactly where it was — only the
+ * BACKEND render (which computes positionY fresh from metadata.caption_
+ * preset at save time, never from this item's `top`) actually moved,
+ * so a "center" preset rendered dead-center in the final video while the
+ * editor preview kept showing it in the lower third. Optional (rather than
+ * required) because a couple of call sites patch items outside a live
+ * canvas context where canvas height isn't available — those keep the
+ * pre-existing (if incomplete) behavior rather than being forced to thread
+ * a value they don't have.
  */
 export function applyPresetToCaptionItem(
 	item: CaptionsItem,
 	presetId: CaptionPresetId,
+	canvasHeight?: number,
 ): CaptionsItem {
 	const preset = CAPTION_PRESETS[presetId];
 	if (!preset) return item;
 	return {
 		...item,
 		...preset.patch,
+		...(canvasHeight
+			? {top: Math.round(canvasHeight * presetPositionFraction(preset.raw))}
+			: null),
 		metadata: {
 			...item.metadata,
 			caption_preset: presetId,

@@ -217,8 +217,14 @@ def apply_framing(source_image_bytes: bytes, framing: str) -> bytes:
         # is wanted back as a distinct look.
         out = img
     elif key == MEDIUM_WIDE:
-        # More torso + headroom: shrink to 0.72x, keep face high-center.
-        out = _zoom_about(img, 0.72, face_xy, (0.5, 0.42))
+        # Previously shrunk to 0.72x with a blurred edge-pad backdrop filling
+        # the empty space — disabled per user report (cast cst_36d7b532400f
+        # block blk_6e2d68793c8b): the blur backdrop reads as a distorted
+        # blob rather than a clean background, and — same root issue as
+        # CLOSE above — the editor preview never showed this shrink/blur at
+        # all, so the render looked broken by comparison. MEDIUM_WIDE now
+        # matches MEDIUM (no crop) for the same reason CLOSE does.
+        out = img
     elif key == WIDE:
         # Full upper body, lots of space: shrink to 0.55x.
         out = _zoom_about(img, 0.55, face_xy, (0.5, 0.45))

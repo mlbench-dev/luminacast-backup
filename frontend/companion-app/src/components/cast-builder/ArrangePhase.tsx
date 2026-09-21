@@ -20,6 +20,7 @@ import {
   computeBlockRegions,
   getCanvasSize,
   needsAspectFitRebuild,
+  patchMarginallyStaleBlockDurations,
 } from "@/lib/editorStarterMapping";
 import type { UndoableState } from "@/components/cast-builder/editor-starter/state/types";
 import { applyAspectFit } from "@/lib/aspectFit";
@@ -68,30 +69,17 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
   const changeCountRef = useRef(0);
   const latestStateRef = useRef<UndoableState | null>(null);
 
-  // ── Background-music volume (Arrange-tab slider) ──────────────────────
-  // `musicVolume` is passed live into <LuminacastEditor>; the editor's
-  // ContextProvider reconciles the timeline's music item(s) to it on every
-  // change WITHOUT remounting, so the bed volume updates while the preview
-  // keeps playing. The PATCH just persists it (debounced) for the renderer
-  // and for the next fresh load.
+  // ── Background-music volume ────────────────────────────────────────────
+  // Volume is set per-item, from the music clip's own Audio inspector (like
+  // every other audio item) rather than a separate top-of-timeline slider.
+  // `musicVolume` is still passed once into <LuminacastEditor> on load so
+  // its ContextProvider can heal a stale saved timeline whose music item
+  // predates the volume stamp (no metadata.volume set yet) — it's a seed
+  // value, not a live control.
   const hasMusic = !!cast.background_music_url && (cast.music_track_choice ?? "auto") !== "off";
-  const [musicVolume, setMusicVolume] = useState<number>(
+  const [musicVolume] = useState<number>(
     typeof cast.music_volume === "number" ? cast.music_volume : AUDIBLE_MUSIC_BED_DEFAULT,
   );
-  const musicVolTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const handleMusicVolumeChange = useCallback((next: number) => {
-    setMusicVolume(next); // live — flows into the editor immediately
-    if (musicVolTimerRef.current) clearTimeout(musicVolTimerRef.current);
-    musicVolTimerRef.current = setTimeout(() => {
-      castsApi.patch(cast.id, { music_volume: next })
-        .then(() => onEdited?.())
-        .catch((e) => {
-          console.error("music_volume patch failed:", e);
-          toast({ title: "Couldn't save music volume", variant: "destructive" });
-        });
-    }, 500);
-  }, [cast.id, onEdited]);
 
   /** Build the save payload from current editor state */
   const buildSavePayload = useCallback((state: UndoableState) => {
@@ -299,6 +287,15 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
             // A small epsilon avoids flagging floating-point noise as stale.
             const MARGINAL_SHORTFALL_EPSILON_S = 0.01;
             const staleBlocks: string[] = [];
+            // Blocks whose ONLY problem is a small (marginal) audio-duration
+            // shortfall — a real bonded audio item already exists, it's just
+            // a few hundred ms shorter than the current TTS. These are safe
+            // to patch in place (extend the block's own bonded items + shift
+            // everything after it) instead of discarding the WHOLE saved
+            // timeline — see patchMarginallyStaleBlocks below. A block with
+            // NO saved audio at all, or one grossly short (>65% off), needs
+            // more than a duration nudge and still forces a full rebuild.
+            const marginallyStaleLiveDurS = new Map<string, number>();
             for (const b of currentBlocks) {
               const savedDurS = savedAudioDurationS.get(b.id);
               const liveVariant = (b.variants || []).find((v: any) => v.is_active !== false) || b.variants?.[0];
@@ -317,8 +314,10 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
               const staleThresholdS = Math.max(STALE_DURATION_FLOOR_S, liveDurS * STALE_DURATION_RATIO);
               const isGrosslyStale = liveDurS > 0 && savedDurS < staleThresholdS;
               const isMarginallyShort = liveDurS > 0 && savedDurS < liveDurS - MARGINAL_SHORTFALL_EPSILON_S;
-              if (isGrosslyStale || isMarginallyShort) {
+              if (isGrosslyStale) {
                 staleBlocks.push(b.id);
+              } else if (isMarginallyShort) {
+                marginallyStaleLiveDurS.set(b.id, liveDurS);
               }
             }
 
@@ -360,11 +359,17 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
               allCurrentInSaved && currentBlocks.length > 0 &&
               staleBlocks.length === 0 && !orientationStale && !fitMetadataStale
             ) {
-              restoredState = savedTimeline.editor_state as UndoableState;
+              restoredState = marginallyStaleLiveDurS.size > 0
+                ? patchMarginallyStaleBlockDurations(
+                    savedTimeline.editor_state as UndoableState,
+                    marginallyStaleLiveDurS,
+                  )
+                : savedTimeline.editor_state as UndoableState;
               console.log("RESTORED saved editor state:", {
                 savedItemCount: Object.keys(items).length,
                 currentBlockCount: currentBlocks.length,
                 savedAt: savedTimeline.saved_at,
+                patchedForMarginalStaleness: Array.from(marginallyStaleLiveDurS.keys()),
               });
             } else if (fitMetadataStale) {
               console.log("Saved editor state predates the aspect-fit fix — rebuilding fresh.");
@@ -652,30 +657,6 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
               +{siblings.length - 1} more
             </span>
           )}
-        </div>
-      )}
-      {/* Background-music volume — the auto/generated bed plays under the
-          narration in both the preview and the final render. Dragging updates
-          the preview live (the editor reconciles its music item to this
-          value without remounting); the value is persisted, debounced, to
-          cast.music_volume for the renderer. */}
-      {hasMusic && (
-        <div className="flex items-center gap-3 bg-white/[0.03] border-b border-white/10 px-4 py-2 text-xs text-white/60 shrink-0">
-          <span className="shrink-0 font-medium text-white/70">Music volume</span>
-          <input
-            type="range"
-            min={0}
-            max={0.6}
-            step={0.01}
-            value={musicVolume}
-            onChange={(e) => handleMusicVolumeChange(Number(e.target.value))}
-            className="flex-1 max-w-xs accent-accent"
-            aria-label="Background music volume"
-          />
-          <span className="shrink-0 tabular-nums w-10 text-right text-white/50">
-            {Math.round((musicVolume / 0.6) * 100)}%
-          </span>
-          <span className="shrink-0 text-white/30">Applies to preview &amp; render</span>
         </div>
       )}
       <div className="flex-1 min-h-0 overflow-hidden">

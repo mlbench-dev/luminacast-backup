@@ -84,7 +84,7 @@ const CaptionsInspectorUnmemoized: React.FC<{
 			setState({
 				update: (state) =>
 					changeItem(state, item.id, (i) => {
-						const next = applyPresetToCaptionItem(i as CaptionsItem, presetId);
+						const next = applyPresetToCaptionItem(i as CaptionsItem, presetId, state.undoableState.compositionHeight);
 						return {
 							...next,
 							metadata: {

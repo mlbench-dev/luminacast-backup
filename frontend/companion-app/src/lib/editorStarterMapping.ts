@@ -32,7 +32,7 @@ import type { EditorStarterAsset, ImageAsset, AudioAsset, VideoAsset, CaptionAss
 import type { ItemMetadata } from "@/components/cast-builder/editor-starter/items/shared";
 import type { CaptionsItem } from "@/components/cast-builder/editor-starter/items/captions/captions-item-type";
 import type { Caption } from "@remotion/captions";
-import { CAPTION_PRESETS, presetPositionFraction } from "./captionPresets";
+import { CAPTION_PRESETS, DEFAULT_CAPTION_PRESET_ID, getCaptionPreset, presetPositionFraction } from "./captionPresets";
 import { cdnUrl } from "./cdn";
 import { getCategoryInfo, blockOwnsItsVisual } from "@/lib/blockCategories";
 
@@ -1399,11 +1399,21 @@ export function castToEditorStarterTimeline(
       };
       assets[capAssetId] = capAsset;
 
-      // Caption box: bottom 15% of canvas, full “safe” width.
+      // Caption box: full "safe" width, vertical position from the
+      // default preset's own placement — was hardcoded to 0.78 (bottom
+      // third) regardless of preset, so a preset whose real position is
+      // "center" (0.5) or "top_center" (0.1) showed in the wrong spot in
+      // the live editor even though the backend render (which computes
+      // positionY fresh from the preset at save time, not from this box)
+      // correctly used the preset's real position — editor preview and
+      // render silently disagreed. See applyPresetToCaptionItem in
+      // caption-presets.ts for the matching fix on preset SWITCH.
       const capWidth = Math.round(canvas.width * 0.85);
       const capHeight = 120;
       const capLeft = Math.round((canvas.width - capWidth) / 2);
-      const capTop = Math.round(canvas.height * 0.78);
+      const capTop = Math.round(
+        canvas.height * presetPositionFraction(getCaptionPreset(DEFAULT_CAPTION_PRESET_ID)),
+      );
 
       const capItemId = `cap_${block.id}`;
       const capItem: CaptionsItem = {
@@ -1460,8 +1470,14 @@ export function castToEditorStarterTimeline(
           locked_to_source: true,
           stale: false,
           // Caption Fix 2 — default preset for fresh casts; the style bar
-          // can re-apply any of the five built-in presets.
-          caption_preset: "modern_pop",
+          // can re-apply any of the built-in presets. Was hardcoded to the
+          // string "modern_pop", a preset id that no longer exists in
+          // lib/captionPresets.ts's CAPTION_PRESETS (renamed/removed at
+          // some point) — every freshly-built cast's captions silently
+          // matched no chip in the style bar, showing none selected even
+          // though a value was set. Use the real single-source-of-truth
+          // default instead of a string literal so this can't drift again.
+          caption_preset: DEFAULT_CAPTION_PRESET_ID,
         },
       };
       items[capItemId] = capItem;
@@ -1707,6 +1723,111 @@ export function needsAspectFitRebuild(state: Pick<UndoableState, "items">): bool
     }
   }
   return false;
+}
+
+/**
+ * Extend the bonded audio/video/caption items of each MARGINALLY-stale
+ * block (a real saved slot exists, it's just a few hundred ms shorter than
+ * the block's current TTS duration) to the live duration, and shift every
+ * later item to make room — instead of discarding the WHOLE saved editor
+ * state and rebuilding fresh from cast.blocks.
+ *
+ * Bug this fixes: ArrangePhase's restore-vs-rebuild check is all-or-nothing
+ * — ANY block with a stale audio slot (even a single ~150ms drift left over
+ * from an unrelated regeneration) forced a full fresh rebuild, silently
+ * discarding every OTHER edit on the whole cast: caption style, added
+ * effects (fade/rate/position), added b-roll, even deliberately deleted
+ * blocks (a fresh rebuild always re-derives every active block from
+ * cast.blocks, so a cut block reappeared). Only genuinely broken blocks —
+ * grossly-stale or missing a saved audio item entirely — still need a full
+ * rebuild; a small duration shortfall on an otherwise-intact block doesn't.
+ *
+ * Scope/limitations (documented, not silently glossed over): only items
+ * tagged with the stale block's own `metadata.block_id` that span (close
+ * to) its full old slot are extended — the bonded audio/video pair and the
+ * per-block caption item. A shorter mid-block cutaway (e.g. a b-roll
+ * cutaway inside a speaking block) keeps its own length, simply ending a
+ * bit before the new, slightly longer slot boundary instead of exactly at
+ * the old one — cosmetically negligible, and safer than guessing whether a
+ * partial-slot item was meant to stretch. Items with NO `block_id` at all
+ * (e.g. background music spanning the whole cast) are shifted only if they
+ * start after the affected slot; one already in progress across it is left
+ * alone, which can leave a few frames of silence at the very end of the
+ * cast — imperceptible next to losing every other edit on the timeline.
+ */
+export function patchMarginallyStaleBlockDurations(
+  state: UndoableState,
+  liveDurationSByBlockId: Map<string, number>,
+): UndoableState {
+  if (liveDurationSByBlockId.size === 0) return state;
+  const fps = state.fps || 30;
+  let items: Record<string, EditorStarterItem> = {...state.items};
+  // A caption item's word-by-word highlight timing does NOT live on the
+  // item — it lives on a separate CaptionAsset (state.assets[item.assetId]
+  // .captions), as ABSOLUTE milliseconds independent of the item's own
+  // `from`. Shifting a caption item's `from` alone moves when the caption
+  // BOX appears but leaves each word's own highlight clock pointing at its
+  // old position — confirmed on cast cst_36d7b532400f render
+  // rnd_b3fe748c5fe9: after an earlier block's duration got patched, every
+  // later block's caption text appeared on time but highlighted the wrong
+  // word throughout, worsening block over block as shifts accumulated.
+  let assets: Record<string, EditorStarterAsset> = {...state.assets};
+
+  const targets = Array.from(liveDurationSByBlockId.entries())
+    .map(([blockId, liveDurS]) => {
+      const audioItem = Object.values(items).find(
+        (it) => it.type === "audio" && (it.metadata as any)?.bonded && (it.metadata as any)?.block_id === blockId,
+      ) as any;
+      if (!audioItem) return null;
+      const newDurationFrames = Math.ceil(liveDurS * fps);
+      if (newDurationFrames <= audioItem.durationInFrames) return null;
+      return {blockId, from: audioItem.from as number, oldDuration: audioItem.durationInFrames as number, newDurationFrames};
+    })
+    .filter((t): t is {blockId: string; from: number; oldDuration: number; newDurationFrames: number} => t !== null)
+    // Earliest-starting block first, so a later block's own boundary
+    // calculation already reflects any shift an earlier block applied.
+    .sort((a, b) => a.from - b.from);
+
+  for (const {blockId, from, oldDuration, newDurationFrames} of targets) {
+    const delta = newDurationFrames - oldDuration;
+    const oldEnd = from + oldDuration;
+    const nextItems: Record<string, EditorStarterItem> = {};
+    for (const [id, it] of Object.entries(items)) {
+      const anyIt = it as any;
+      if (anyIt.metadata?.block_id === blockId) {
+        const spansFullSlot = anyIt.from <= from + 1 && anyIt.from + anyIt.durationInFrames >= oldEnd - 1;
+        nextItems[id] = spansFullSlot
+          ? {...anyIt, durationInFrames: anyIt.durationInFrames + delta}
+          : anyIt;
+      } else if (anyIt.from >= oldEnd - 1) {
+        nextItems[id] = {...anyIt, from: anyIt.from + delta};
+        if (anyIt.type === "captions" && anyIt.assetId && assets[anyIt.assetId]) {
+          const deltaMs = Math.round((delta / fps) * 1000);
+          const asset = assets[anyIt.assetId] as any;
+          const captions = asset?.captions;
+          if (Array.isArray(captions)) {
+            assets = {
+              ...assets,
+              [anyIt.assetId]: {
+                ...asset,
+                captions: captions.map((tok: any) => ({
+                  ...tok,
+                  startMs: tok.startMs + deltaMs,
+                  endMs: tok.endMs + deltaMs,
+                  timestampMs: tok.timestampMs + deltaMs,
+                })),
+              },
+            };
+          }
+        }
+      } else {
+        nextItems[id] = anyIt;
+      }
+    }
+    items = nextItems;
+  }
+
+  return {...state, items, assets};
 }
 
 // ─── F.5.2 editorStarterToLuminacastSnapshot ──────────────────────

@@ -1123,6 +1123,7 @@ async def _mux_audio_into_clip(
             "-t", f"{video_dur:.3f}",
             "-map", "0:v:0",
             "-map", "1:a:0",
+            "-movflags", "+faststart",
             out_path,
         ]
         try:
@@ -1182,6 +1183,7 @@ async def _mux_silent_audio_into_clip(
             "-t", f"{video_dur:.3f}",
             "-map", "0:v:0",
             "-map", "1:a:0",
+            "-movflags", "+faststart",
             out_path,
         ]
         result = subprocess.run(
@@ -1250,6 +1252,47 @@ def _slot_duration_for_block(timeline: dict, block_id: str, fallback_s: float) -
     if fallback_match is not None:
         return fallback_match[1] - fallback_match[0]
     return float(fallback_s or 0)
+
+
+def _voiceover_broll_edit_props(timeline: dict, block_id: str) -> tuple[float, float, float]:
+    """Return (fade_in_s, fade_out_s, playback_rate) for a voiceover block's
+    b-roll, from its ``parallel_media``-tagged timeline item (``pm_<block_id>_*``).
+
+    A voiceover block's V1 is an invisible placeholder image (no avatar
+    face), so the block's real bake source is resolved fresh from
+    ``Block.stock_media_url``/``parallel_media`` at bake time — the actual
+    VISIBLE content the user sees in the editor is this parallel_media item,
+    not anything already in ``baked_urls``. Its fade/rate props previously
+    saved correctly but were never read back here, so they silently did
+    nothing on render. Returns (0.0, 0.0, 1.0) when no such item exists
+    (legacy timelines, or a block that never got auto-populated b-roll).
+    """
+    if not timeline or not isinstance(timeline, dict):
+        return (0.0, 0.0, 1.0)
+    for track in timeline.get("tracks") or []:
+        if not isinstance(track, dict):
+            continue
+        for el in track.get("elements") or []:
+            if not isinstance(el, dict):
+                continue
+            meta = el.get("metadata") or {}
+            if meta.get("track_type") != "parallel_media" or meta.get("block_id") != block_id:
+                continue
+            props = el.get("props") or {}
+            try:
+                fade_in_s = max(0.0, float(props.get("fadeInDurationInSeconds") or 0))
+            except (TypeError, ValueError):
+                fade_in_s = 0.0
+            try:
+                fade_out_s = max(0.0, float(props.get("fadeOutDurationInSeconds") or 0))
+            except (TypeError, ValueError):
+                fade_out_s = 0.0
+            try:
+                rate = float(props.get("playbackRate") or 1.0)
+            except (TypeError, ValueError):
+                rate = 1.0
+            return (fade_in_s, fade_out_s, rate if rate > 0 else 1.0)
+    return (0.0, 0.0, 1.0)
 
 
 def _canvas_dims_for_render(timeline: dict) -> tuple[int, int, int]:
@@ -2310,6 +2353,7 @@ async def _post_compose_audio_remux(
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k",
             "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart",
             "-t", f"{expected_duration:.3f}",
             out_path,
         ])
@@ -3989,6 +4033,29 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
     rejected_malformed = 0
     rejected_preview_candidate = 0
 
+    # Block ids whose bonded V1 element is a PIP/corner-window layout (not
+    # fullscreen) — a PIP block's own full-frame background clip is tagged
+    # track_type="parallel_media" too (the same tag used for voiceover-block
+    # b-roll CANDIDATE previews, rejected below), so without this exemption
+    # it gets thrown out before ever reaching the PIP background-matching
+    # step in the compose-track builder, and the PIP window renders over
+    # flat black instead of its background. Mirrors the render_mode/
+    # pip_position legacy fallback in this file's own _effective_pip_layout.
+    from services.timeline_builder import is_pip_layout as _is_pip_layout_check
+    _pip_block_ids: set[str] = set()
+    for _track in tracks:
+        for _el in _track.get("elements", []):
+            _meta = _el.get("metadata") or {}
+            if not _meta.get("bonded"):
+                continue
+            _pl = _meta.get("pip_layout")
+            if not _pl and _meta.get("render_mode") == "pip":
+                _pl = "pip_quarter_bl" if _meta.get("pip_position") == "bottom_left" else "pip_quarter_br"
+            if _pl and _is_pip_layout_check(_pl):
+                _bid = _meta.get("block_id")
+                if _bid:
+                    _pip_block_ids.add(_bid)
+
     for track in tracks:
         for el in track.get("elements", []):
             meta = el.get("metadata") or {}
@@ -4011,7 +4078,12 @@ def extract_overlay_elements(timeline: dict, render_width: int = 480, render_hei
             # "image on image" / mismatched-blur-backdrop bug (cst_294eeaf04af2
             # block blk_990214163387: pm_blk_990214163387_0/_1 overlaid on
             # top of v1_blk_990214163387 for the entire 11.07s-19.23s slot).
-            if meta.get("track_type") == "parallel_media":
+            #
+            # EXCEPT for a PIP block's own background clip (same tag, a
+            # totally different purpose — see _pip_block_ids above): that
+            # one must survive into overlay_elements so the compose-track
+            # builder's full-frame match can find and use it.
+            if meta.get("track_type") == "parallel_media" and meta.get("block_id") not in _pip_block_ids:
                 rejected_preview_candidate += 1
                 continue
 
@@ -5859,17 +5931,30 @@ async def _render_async(task, render_id: str):
                         "selection", block_id, e,
                     )
 
+            _vo_fade_in_s, _vo_fade_out_s, _vo_playback_rate = _voiceover_broll_edit_props(
+                timeline, block_id,
+            )
+            # render_s deliberately overshoots broll_s by 0.5s (see comment
+            # above) — the later mux/normalize step trims that padding back
+            # off the TAIL. A fade-out timed against render_s would land
+            # inside that soon-to-be-discarded padding and never actually
+            # show in the final muxed clip; shifting fade_out_s by the same
+            # 0.5s overshoot re-anchors it to broll_s, the clip's true end.
+            _vo_fade_out_s_padded = _vo_fade_out_s + (render_s - broll_s) if _vo_fade_out_s > 0 else 0.0
             for cand_idx, (kind, url) in (enumerate(candidates) if video_bytes is None else []):
                 try:
                     if kind == "video":
                         cand_bytes = await voiceover_broll.render_video_to_slot(
                             video_url=url, slot_s=render_s,
                             width=cw, height=ch, fps=fps,
+                            playback_rate=_vo_playback_rate,
+                            fade_in_s=_vo_fade_in_s, fade_out_s=_vo_fade_out_s_padded,
                         )
                     else:
                         cand_bytes = await voiceover_broll.render_ken_burns_from_image(
                             image_url=url, slot_s=render_s,
                             width=cw, height=ch, fps=fps,
+                            fade_in_s=_vo_fade_in_s, fade_out_s=_vo_fade_out_s_padded,
                         )
 
                     if audio_url:
@@ -8178,6 +8263,48 @@ async def _render_async(task, render_id: str):
         )
         baked_urls.pop(_eid, None)
 
+    def _effective_pip_layout(_meta: dict) -> str:
+        """``pip_layout`` with a legacy-aware fallback.
+
+        Some blocks are unambiguously PIP (``render_mode == "pip"``) but
+        only ever got the older ``pip_position``/``pip_scale`` pair written
+        to metadata, never a ``pip_layout`` key — confirmed on cast
+        cst_36d7b532400f's blk_cc629d168fba. Plain
+        ``_meta.get("pip_layout") or "fullscreen"`` silently treated that as
+        FULLSCREEN: the small baked PIP clip got composited full-frame
+        instead of as a corner window, and its full-frame b-roll (matched
+        below via _bg_by_block) was never used as its background either,
+        since ``is_pip_layout("fullscreen")`` is False. Mirrors the
+        equivalent fallback already added to
+        services/cast_ffmpeg_composer.py (that module's own copy of this
+        logic, exercised only by unit tests — this one, in the actual
+        compose-track builder, is what production renders through).
+        """
+        layout = _meta.get("pip_layout")
+        if layout:
+            return layout
+        if _meta.get("render_mode") == "pip":
+            return "pip_quarter_bl" if _meta.get("pip_position") == "bottom_left" else "pip_quarter_br"
+        return "fullscreen"
+
+    # playbackRate lives only on the V1 (video) element's props in the
+    # editor — the paired A1 (voice) audio has no rate control of its own,
+    # but must speed up/slow down by the SAME factor or the lips drift out
+    # of sync with the voice. Collect it once per block_id here so the A1
+    # branch below can look it up when it builds compose_audio_tracks.
+    _v1_playback_rate_by_block: dict[str, float] = {}
+    for _track in (timeline or {}).get("tracks") or []:
+        for _el in (_track or {}).get("elements") or []:
+            _m = _el.get("metadata") or {}
+            if _m.get("bonded") and _m.get("paired_audio_element_id"):
+                _bid = _m.get("block_id") or ""
+                if _bid:
+                    try:
+                        _rate = float((_el.get("props") or {}).get("playbackRate") or 1.0)
+                    except (TypeError, ValueError):
+                        _rate = 1.0
+                    _v1_playback_rate_by_block[_bid] = _rate if _rate > 0 else 1.0
+
     compose_video_tracks: list[dict] = []
     compose_audio_tracks: list[dict] = []
     for _track in (timeline or {}).get("tracks") or []:
@@ -8203,6 +8330,15 @@ async def _render_async(task, render_id: str):
                         render_id, _block_id, _vurl[:80],
                     )
                     continue
+                _v1_props = _el.get("props") or {}
+                try:
+                    _fade_in_s = float(_v1_props.get("fadeInDurationInSeconds") or 0)
+                except (TypeError, ValueError):
+                    _fade_in_s = 0.0
+                try:
+                    _fade_out_s = float(_v1_props.get("fadeOutDurationInSeconds") or 0)
+                except (TypeError, ValueError):
+                    _fade_out_s = 0.0
                 compose_video_tracks.append({
                     "url": _vurl,
                     "s": _s, "e": _e,
@@ -8210,7 +8346,15 @@ async def _render_async(task, render_id: str):
                     # Carry the block's PIP layout so the compose worker knows
                     # to shrink this clip into a corner window (it otherwise
                     # renders every baked clip full-frame).
-                    "pip_layout": _meta.get("pip_layout") or "fullscreen",
+                    "pip_layout": _effective_pip_layout(_meta),
+                    # Fade + playback rate on the avatar/talking-head clip
+                    # itself — previously only applied to plain overlay
+                    # (b-roll/product) clips, never to bonded V1 elements, so
+                    # these editor controls silently did nothing on render
+                    # for an avatar clip.
+                    "fade_in_s": max(0.0, _fade_in_s),
+                    "fade_out_s": max(0.0, _fade_out_s),
+                    "playback_rate": _v1_playback_rate_by_block.get(_block_id, 1.0),
                 })
             elif _meta.get("paired_video_element_id"):
                 _src = (_el.get("props") or {}).get("src") or ""
@@ -8219,6 +8363,11 @@ async def _render_async(task, render_id: str):
                         "url": _src,
                         "s": _s, "e": _e,
                         "block_id": _block_id,
+                        # Matches the paired V1 element's rate — see the
+                        # pre-pass above. Applied via atempo so the voice
+                        # speeds up/slows down with the video instead of
+                        # drifting out of lipsync.
+                        "playback_rate": _v1_playback_rate_by_block.get(_block_id, 1.0),
                     })
 
     # ── PIP / talking-head geometry for the compose worker ──────────────────

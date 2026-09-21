@@ -51,6 +51,7 @@ export const FloatingPresetToolbar: React.FC = () => {
 						newItems[id] = applyPresetToCaptionItem(
 							it as CaptionsItem,
 							presetId,
+							state.undoableState.compositionHeight,
 						);
 					}
 					return {

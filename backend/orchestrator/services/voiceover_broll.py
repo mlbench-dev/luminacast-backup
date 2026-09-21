@@ -157,12 +157,20 @@ async def render_ken_burns_from_image(
     width: int,
     height: int,
     fps: int,
+    fade_in_s: float = 0.0,
+    fade_out_s: float = 0.0,
 ) -> bytes:
     """Render a slot-length Ken-Burns pan-zoom clip from a single image.
 
     Returns silent MP4 bytes (the dispatcher muxes the narration audio).
     Raises on download / ffmpeg failure so the caller can fall through to
     the next source in the priority list.
+
+    No ``playback_rate`` param — there's no source playback speed for a
+    still image; "rate" would mean speeding up/slowing down the pan/zoom
+    motion itself, a different change to ``_ken_burns_filter``'s own
+    per-frame zoom math, out of scope here (this block's b-roll is always a
+    real video in the confirmed case this fixes).
     """
     timeout_s = _derive_timeout_s(slot_s)
     with tempfile.TemporaryDirectory(prefix="vo_broll_img_") as tmp:
@@ -198,6 +206,13 @@ async def render_ken_burns_from_image(
             )
 
         vf = _ken_burns_filter(width, height, fps, slot_s)
+        fade_filter = ""
+        if fade_in_s > 0:
+            fade_filter += f",fade=t=in:st=0:d={fade_in_s:.3f}"
+        if fade_out_s > 0:
+            fade_out_start = max(0.0, slot_s - fade_out_s)
+            fade_filter += f",fade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}"
+        vf = f"{vf}{fade_filter}"
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1",
@@ -221,16 +236,28 @@ async def render_video_to_slot(
     width: int,
     height: int,
     fps: int,
+    playback_rate: float = 1.0,
+    fade_in_s: float = 0.0,
+    fade_out_s: float = 0.0,
 ) -> bytes:
     """Loop / trim a source video to exactly fill the slot.
 
     A product video shorter than the slot is looped (``-stream_loop -1``)
-    then bounded by ``-t``; a longer one is simply trimmed. The result is
-    crop-cover scaled to the canvas so compose treats it like any other
-    baked block. Returns silent MP4 bytes (audio is dropped — the block's
-    narration is the audio source of truth and is muxed by the caller).
+    then bounded by a ``trim`` filter; a longer one is simply trimmed. The
+    result is crop-cover scaled to the canvas so compose treats it like any
+    other baked block. Returns silent MP4 bytes (audio is dropped — the
+    block's narration is the audio source of truth and is muxed by the
+    caller — so ``playback_rate`` only affects this VISUAL b-roll, never the
+    narration; unlike an avatar talking-head clip there's no lipsync to keep
+    in step with).
+
+    ``playback_rate``/``fade_in_s``/``fade_out_s`` come from the editor's
+    per-clip settings on this block's b-roll timeline item — previously
+    read and saved correctly but never actually reaching this bake step, so
+    they silently did nothing on render.
     """
     timeout_s = _derive_timeout_s(slot_s)
+    rate = playback_rate if playback_rate and playback_rate > 0 else 1.0
     with tempfile.TemporaryDirectory(prefix="vo_broll_vid_") as tmp:
         src_path = os.path.join(tmp, "src.mp4")
         out_path = os.path.join(tmp, "out.mp4")
@@ -255,18 +282,40 @@ async def render_video_to_slot(
         # to merge a blurred backdrop with a contain-fit foreground, which
         # -vf's simple linear chain can't express — use -filter_complex
         # with an explicit -map instead (works for both branches).
+        #
+        # Rate change goes BEFORE the conform step (setpts scales how much
+        # wall-clock time the source occupies) and the exact-duration trim
+        # + fades go AFTER it, in the conformed stream's own coordinates —
+        # mirrors the same rate-then-conform-then-trim-then-fade ordering
+        # used for avatar/talking-head clips in worker_ffmpeg_compose.py.
+        # No explicit input `-t` anymore: `-stream_loop -1` makes the input
+        # effectively infinite and the `trim` filter below is what actually
+        # bounds the output, which composes correctly with a rate change
+        # (an input-side `-t` would instead cut off after slot_s of RAW
+        # source time, before rate-scaling had a chance to apply).
+        rate_prefix = f"setpts={(1.0 / rate):.6f}*PTS," if rate != 1.0 else ""
+        fade_filter = ""
+        if fade_in_s > 0:
+            fade_filter += f",fade=t=in:st=0:d={fade_in_s:.3f}"
+        if fade_out_s > 0:
+            fade_out_start = max(0.0, slot_s - fade_out_s)
+            fade_filter += f",fade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}"
+
         from services.aspect_conform import build_conform_filter
         filter_complex = build_conform_filter(
-            in_label="0:v", out_label="vout",
+            in_label="0:v", out_label="conformed",
             target_w=width, target_h=height,
             src_w=src_w, src_h=src_h,
-            extra_pre=f"fps={fps},",
+            extra_pre=f"{rate_prefix}fps={fps},",
+        )
+        filter_complex += (
+            f";[conformed]trim=duration={slot_s:.3f},"
+            f"setpts=PTS-STARTPTS{fade_filter}[vout]"
         )
         cmd = [
             "ffmpeg", "-y",
             "-stream_loop", "-1",
             "-i", src_path,
-            "-t", f"{slot_s:.3f}",
             "-an",
             "-filter_complex", filter_complex,
             "-map", "[vout]",

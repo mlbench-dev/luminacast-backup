@@ -109,6 +109,7 @@ export const CaptionStyleBar: React.FC = () => {
 						newItems[it.id] = applyPresetToCaptionItem(
 							it as CaptionsItem,
 							presetId,
+							state.undoableState.compositionHeight,
 						);
 						changed = true;
 					}
