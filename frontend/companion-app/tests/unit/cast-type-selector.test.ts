@@ -72,9 +72,14 @@ describe("Stage 1 — hero cast-type toggle", () => {
   it("sends the new LIVE POST fields", () => {
     expect(setup).toContain("user_video_ids");
     expect(setup).toContain("live_mode_defaults");
-    expect(setup).toContain('primary_track: "avatar_voiceover"');
-    expect(setup).toContain("request_user_videos: true");
-    expect(setup).toContain("b_roll_enabled: true");
+    // Keys must match what _build_live_defaults_section (engine/cast_generator.py)
+    // actually reads — voiceover / broll / max_duration_seconds. The previous
+    // keys asserted here (primary_track/request_user_videos/b_roll_enabled)
+    // didn't match anything the backend looked for, so live_mode_defaults was
+    // silently ignored for every LIVE cast until this was fixed.
+    expect(setup).toContain("voiceover: true");
+    expect(setup).toContain("broll: true");
+    expect(setup).toContain("max_duration_seconds");
   });
 
   it("contains no engine names in user-facing strings", () => {
