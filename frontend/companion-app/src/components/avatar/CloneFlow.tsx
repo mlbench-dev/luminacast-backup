@@ -857,10 +857,12 @@ function CloneRecordSubPhase({
   avatarId,
   ensureAvatarId,
   onComplete,
+  layout,
 }: {
   avatarId?: string | null;
   ensureAvatarId: () => Promise<string>;
   onComplete: (result: UploadPhaseResult) => void;
+  layout?: string;
 }) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
@@ -1598,7 +1600,7 @@ function CloneSourcePhase({
             <CloneUploadSubPhase avatarId={avatarId} ensureAvatarId={ensureAvatarId} onComplete={handleUploadComplete} onFaceReady={handleFaceReady} existingFace={candidates[selectedFaceIdx ?? 0] ?? null} layout={layout} />
           )}
           {method === "record" && (
-            <CloneRecordSubPhase avatarId={avatarId} ensureAvatarId={ensureAvatarId} onComplete={handleUploadComplete} />
+            <CloneRecordSubPhase avatarId={avatarId} ensureAvatarId={ensureAvatarId} onComplete={handleUploadComplete} layout={layout} />
           )}
         </div>
 

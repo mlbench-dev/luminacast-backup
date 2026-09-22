@@ -1101,7 +1101,7 @@ export function castToEditorStarterTimeline(
           // cutting off the top/bottom of the source photo regardless of the
           // item's own `fit` setting. stockMediaThumb is only a fallback for
           // when the full-res URL is missing.
-          remoteUrl: stockMediaUrl || stockMediaThumb,
+          remoteUrl: stockMediaUrl || stockMediaThumb || null,
           remoteFileKey: null,
           mimeType: "image/jpeg",
           width: canvas.width,

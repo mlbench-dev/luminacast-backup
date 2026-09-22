@@ -5,7 +5,11 @@ step with a pure crop/pad/perspective transform on the avatar's canonical
 portrait. These tests assert the contract the render pipeline depends on:
 
   * every framing preserves the exact source canvas dimensions,
-  * different framings produce different bitmaps (the whole point of the fix),
+  * WIDE/ANGLE_LEFT_3Q/ANGLE_RIGHT_3Q each produce distinct bitmaps from
+    MEDIUM and each other; CLOSE and MEDIUM_WIDE are deliberate no-ops that
+    pass through as MEDIUM (the in-browser editor preview never applies
+    per-block framing, so a non-MEDIUM framing at render time looked
+    zoomed/blurred relative to what the editor showed),
   * MEDIUM is a (re-encoded) pass-through of the canonical portrait,
   * the transform is deterministic (same input -> same bytes),
   * it works whether or not OpenCV face detection is available.
@@ -65,17 +69,27 @@ def test_returns_decodable_jpeg(framing):
 
 
 def test_all_framings_are_distinct():
+    # CLOSE and MEDIUM_WIDE are both no-ops that pass through as MEDIUM (see
+    # apply_framing's docstring / test_close_equals_medium below) — the
+    # editor preview never applies per-block framing, so any non-MEDIUM
+    # framing looked "wrong" (zoomed/blurred) compared to what the editor
+    # showed. Only the genuinely distinct framings need to differ from
+    # each other here.
+    distinct_framings = [MEDIUM, WIDE, ANGLE_LEFT_3Q, ANGLE_RIGHT_3Q]
     src = _portrait_bytes()
-    outputs = {f: apply_framing(src, f) for f in ALL_FRAMINGS}
+    outputs = {f: apply_framing(src, f) for f in distinct_framings}
     seen: dict[bytes, str] = {}
     for framing, data in outputs.items():
         assert data not in seen, f"{framing} produced identical bytes to {seen.get(data)}"
         seen[data] = framing
 
 
-def test_close_differs_from_medium():
+def test_close_equals_medium():
+    # CLOSE was disabled (made a no-op matching MEDIUM) — the in-browser
+    # editor preview never applies per-block framing, so a non-MEDIUM
+    # framing at render time looked zoomed/wrong compared to the editor.
     src = _portrait_bytes()
-    assert apply_framing(src, CLOSE) != apply_framing(src, MEDIUM)
+    assert apply_framing(src, CLOSE) == apply_framing(src, MEDIUM)
 
 
 def test_angle_left_differs_from_angle_right():
@@ -136,7 +150,7 @@ def test_works_without_opencv(monkeypatch):
     close = apply_framing(src, CLOSE)
     medium = apply_framing(src, MEDIUM)
     assert _decode(close).size == CANVAS
-    assert close != medium
+    assert close == medium
 
 
 def test_non_default_canvas_size_preserved():
