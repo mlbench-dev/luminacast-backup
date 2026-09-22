@@ -456,7 +456,6 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      if (musicVolTimerRef.current) clearTimeout(musicVolTimerRef.current);
     };
   }, []);
 

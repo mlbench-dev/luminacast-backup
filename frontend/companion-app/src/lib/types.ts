@@ -504,6 +504,9 @@ export interface Cast {
   platform_target?: string;
   /** Production level — quick | standard | premium */
   production_level?: string;
+  /** Whether "Auto Cast" was on when this cast was created. Null for casts
+   *  created before this field existed. */
+  auto_cast?: boolean | null;
   // Phase 2.4 — Cross-format cast support
   format_family?: string;
   parent_cast_id?: string | null;
@@ -549,6 +552,9 @@ export interface CastCreate {
   platform_target?: string;
   /** Production level — quick | standard | premium */
   production_level?: string;
+  /** Whether "Auto Cast" is on — recorded once at creation for SetupPhase
+   *  to restore the toggle correctly on later visits. */
+  auto_cast?: boolean;
   /** "off" | "auto" | "custom" | "track_id:<id>" (legacy) */
   music_track_choice?: string;
   /** Set together with music_track_choice="custom" — a real library track
@@ -560,10 +566,6 @@ export interface CastCreate {
   broll_media_source?: string; // "stock" | "ai_generated" | "ai_generated:<modelId>"
   products?: ProductCreate[];
   blocks?: BlockCreate[];
-  /** Dev-only avatar-layout-fix A/B tool — pins this cast's face reference
-   *  to a pre-generated crop/generate candidate. Never set outside that
-   *  tool. See routers/dev_avatar_layout_fix.py. */
-  debug_face_ref_override_key?: string;
 }
 
 /** Stage-1 creative template summary returned by GET /api/casts/templates. */

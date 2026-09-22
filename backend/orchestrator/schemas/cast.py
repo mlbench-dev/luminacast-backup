@@ -75,11 +75,6 @@ class CastCreate(BaseModel):
     products: Optional[List[ProductCreate]] = None
     blocks: Optional[List[BlockCreate]] = None
     effects_config: Optional[dict] = None
-    # Dev-only (routers/dev_avatar_layout_fix.py's A/B comparison tool):
-    # pins this cast's talking-head/PIP face reference to a specific
-    # pre-generated R2 key, bypassing normal resolution. Passthrough only —
-    # never set by the normal Setup flow.
-    debug_face_ref_override_key: Optional[str] = None
     script_direction: Optional[str] = None
     cast_type: Optional[str] = "recorded"
     description: Optional[str] = None
@@ -112,6 +107,12 @@ class CastCreate(BaseModel):
     # of UserVideoAsset ids the user picked as preferred b-roll sources.
     live_mode_defaults: Optional[dict] = None
     user_video_ids: Optional[List[str]] = None
+    # Whether the user had the "Auto Cast" toggle on at creation time (AI
+    # decides avatar/PIP split + auto Pexels vs. plain manually-edited
+    # blocks). Purely a record of the one-time creation choice — it isn't
+    # read back by anything on the backend, only stored so the Setup page
+    # can show the toggle in the state the user actually left it in.
+    auto_cast: Optional[bool] = None
 
 
 class CastResponse(BaseModel):
@@ -149,6 +150,7 @@ class CastResponse(BaseModel):
     default_avatar_look_id: Optional[str] = None
     live_mode_defaults: Optional[dict] = None
     user_video_ids: Optional[List[str]] = None
+    auto_cast: Optional[bool] = None
     avatar_thumbnail_url: Optional[str] = None
     avatar_name: Optional[str] = None
     render_status: Optional[str] = None

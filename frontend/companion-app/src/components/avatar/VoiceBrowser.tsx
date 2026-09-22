@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Play, Pause, Loader2, Filter, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -62,6 +62,18 @@ export function VoiceBrowser({ avatarId, onSelectVoice, onClose }: VoiceBrowserP
     setAudioEl(audio);
     setPlayingId(voiceId);
   }, [playingId, audioEl]);
+
+  // Preview audio is a raw Audio object outside React's DOM tree — closing
+  // the dialog unmounts this component but never tells that object to stop,
+  // so a preview kept playing in the background with no UI left to reach it
+  // (only a page refresh killed it). Pause whatever's playing whenever the
+  // current audioEl changes (a new preview replacing it) and, via the same
+  // cleanup, when the component unmounts.
+  useEffect(() => {
+    return () => {
+      audioEl?.pause();
+    };
+  }, [audioEl]);
 
   return (
     <div className="space-y-4" data-testid="voice-browser">

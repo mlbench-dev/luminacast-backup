@@ -83,14 +83,6 @@ class Cast(Base):
     output_format = Column(String(10), default="9:16", nullable=False, server_default="9:16")
     r2_manifest_key = Column(String, nullable=True)
 
-    # Dev-only escape hatch (routers/dev_avatar_layout_fix.py): when set, the
-    # render pipeline uses this R2 key directly as the talking-head/PIP face
-    # reference for this cast, bypassing normal resolution entirely. Lets two
-    # test casts be pinned to two different avatar-layout-fix candidates for
-    # a real side-by-side render comparison. Never set by normal cast
-    # creation/update flows.
-    debug_face_ref_override_key = Column(String(500), nullable=True)
-
     layout_config = Column(JSON, default=None)
     effects_config = Column(JSON, default=None)
 
@@ -192,6 +184,15 @@ class Cast(Base):
     # standard = mixed shots + b-roll, premium = full mix incl. motion +
     # effects. Picked at SetupPhase; replaces the legacy AI-plan chip preview.
     production_level = Column(String(20), nullable=False, server_default="standard", default="standard")
+
+    # Whether the user had the "Auto Cast" toggle on at creation time. Set
+    # once, at creation, from the same choice that decides whether the
+    # initial outline is built via generateSmartOutline (AI picks avatar/PIP
+    # split) or generateOutline (plain manual blocks) — never read by any
+    # backend logic afterward, only stored so SetupPhase can restore the
+    # toggle to what the user actually left it as. Nullable: existing casts
+    # created before this column existed have no recorded value.
+    auto_cast = Column(Boolean, nullable=True, default=None)
 
     # Phase 2.4 — Cross-format cast support (Pattern C)
     format_family = Column(String(20), default="vertical", nullable=False, server_default="vertical", index=True)

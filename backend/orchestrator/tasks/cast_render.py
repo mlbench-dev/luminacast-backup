@@ -5522,26 +5522,6 @@ async def _render_async(task, render_id: str):
                     block_id, _cf_exc,
                 )
 
-        # Dev-only avatar-layout-fix A/B tool (routers/dev_avatar_layout_fix.py).
-        # When a test cast has this set, it wins over every resolution step
-        # above — lets two test casts be pinned to two different
-        # crop-vs-AI-generate candidates for a real render comparison.
-        # Never set outside that dev tool; a no-op (one cheap null-check
-        # query) for every normal cast.
-        try:
-            from database import async_session_factory as _dbg_sf
-            from models.cast import Cast as _DbgCast
-            async with _dbg_sf() as _dbg_db:
-                _dbg_cast = await _dbg_db.get(_DbgCast, cast_id)
-            if _dbg_cast is not None and _dbg_cast.debug_face_ref_override_key:
-                face_ref_url = r2.get_public_url(_dbg_cast.debug_face_ref_override_key)
-                logger.info(
-                    "Block %s: using dev debug_face_ref_override_key for cast %s",
-                    block_id, cast_id,
-                )
-        except Exception as _dbg_exc:
-            sentry_sdk.capture_exception(_dbg_exc)
-
         pending_jobs.append((idx, block_id, v1_element, a1_element, baked_key, duration_s,
                              face_ref_url, audio_url, motion_prompt))
 
@@ -5603,14 +5583,26 @@ async def _render_async(task, render_id: str):
             )
             _real_audio = _audio_probe_results.get(_bid, 0.0)
             # The bonded pair's length is driven by its voice. When the real
-            # audio meaningfully overruns the slot (stale/short slot), use the
-            # audio — the user rule allows extensions, never a silent cut.
-            # Fixed-length beats keep their slot (the video fills it instead).
-            if _real_audio > _slot_dur + 0.15 and not _is_fixed:
+            # audio meaningfully diverges from the slot — either direction —
+            # reflow to match it, instead of only ever extending. The Arrange
+            # slot is set once, early, from a TTS estimate taken before the
+            # real/final voice take exists; when the real take lands shorter,
+            # keeping the old (larger) slot used to leave a gap that the
+            # per-block trim step would pad by bouncing the last ~0.5s of
+            # footage forward/backward — visibly repeating the avatar's last
+            # word 2-3 times. Reflowing here closes the gap before it's ever
+            # created, so there's nothing left to pad. Extending was already
+            # covered (user rule: never truncate real speech); this adds the
+            # symmetric shrink case. Fixed-length beats keep their slot (the
+            # video fills it instead) — never reflowed either direction.
+            if _is_fixed or _real_audio <= 0:
+                _dur = _slot_dur
+            elif abs(_real_audio - _slot_dur) > 0.15:
                 logger.info(
                     "Block %s: reflowing slot %.2fs -> real voice %.2fs "
-                    "(stale/short Arrange slot)",
+                    "(stale Arrange slot; %s)",
                     _bid, _slot_dur, _real_audio,
+                    "extending" if _real_audio > _slot_dur else "shrinking",
                 )
                 _dur = _real_audio
             else:

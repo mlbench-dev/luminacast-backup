@@ -467,6 +467,12 @@ export function CastBuilderPage() {
           description: "Your timeline has no content blocks. Add audio and video elements first.",
           variant: "destructive",
         });
+      } else if (detail.includes("still generating")) {
+        toast({
+          title: "Audio still generating",
+          description: "Give it a moment to finish, then try rendering again.",
+          variant: "destructive",
+        });
       } else {
         toast({
           title: "Render failed to start",

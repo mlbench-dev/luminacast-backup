@@ -224,13 +224,11 @@ async def create_cast(
         # user looks of the avatar they picked, so a malicious payload
         # would just make the renderer fall back to the avatar default.
         default_avatar_look_id=req.default_avatar_look_id,
-        # Dev-only avatar-layout-fix A/B tool (routers/dev_avatar_layout_fix.py).
-        # Passthrough only — never set by the normal Setup flow.
-        debug_face_ref_override_key=req.debug_face_ref_override_key,
         # Production level: quick / standard / premium. Persisted on the
         # cast for the outline generator. Wiring into the prompt itself is
         # a follow-up — column lands now so client + DB are in sync.
         production_level=req.production_level or "standard",
+        auto_cast=req.auto_cast,
         # Music handling: "off" | "auto" | "custom" | "track_id:<id>". "custom"
         # carries an explicit picked track in the fields below.
         music_track_choice=req.music_track_choice or "auto",
@@ -923,6 +921,7 @@ class CastPatchRequest(BaseModel):
     avatar_id: Optional[str] = None
     cast_type: Optional[str] = None
     production_level: Optional[str] = None
+    auto_cast: Optional[bool] = None
     template_id: Optional[str] = None
     product_ids: Optional[List[str]] = None
     target_platforms: Optional[List[str]] = None
@@ -1100,6 +1099,9 @@ async def patch_cast(
 
         if req.production_level is not None:
             cast.production_level = req.production_level
+
+        if req.auto_cast is not None:
+            cast.auto_cast = req.auto_cast
 
         if req.template_id is not None:
             # "" / unknown id → Auto (no template), mirroring create_cast.

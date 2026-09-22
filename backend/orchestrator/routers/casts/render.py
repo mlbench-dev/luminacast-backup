@@ -187,6 +187,23 @@ async def finalize_cast(
     if not cast:
         raise HTTPException(404, "Cast not found")
 
+    # Refuse to finalize while the cast's own background script/audio
+    # generation is still running. finalize_cast has no way to know whether
+    # generate_cast_tts_task has finished writing every block's variant —
+    # it just grabs whatever timeline_json happens to be saved right now.
+    # Without this check, a render started mid-generation snapshots a
+    # partial state (some blocks' TTS/captions not yet written back), and
+    # the task keeps overwriting variants in the background afterward —
+    # confirmed on a real render where the last block's audio finished
+    # regenerating 5 minutes after the render had already started, landing
+    # a mismatched (too-short) clip against a slot sized for the old audio.
+    if cast.status in (CastStatus.GENERATING_TTS, CastStatus.GENERATING):
+        raise HTTPException(
+            409,
+            "Audio is still generating for this cast — please wait for it "
+            "to finish before rendering.",
+        )
+
     # Build or load the timeline snapshot
     stored = (cast.timeline_json or {}).get("default", {}).get("twick_data")
     if not stored:

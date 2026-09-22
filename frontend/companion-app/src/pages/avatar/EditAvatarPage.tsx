@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { avatarApi, avatarLooksApi, queryClient } from "@/lib/api";
-import { api } from "@/lib/apiClient";
 import { AvatarStatus, AvatarType, type Avatar, type AvatarLook } from "@/lib/types";
 import { toast } from "@/hooks/useToast";
 import { cdnUrl } from "@/lib/cdn";
@@ -603,14 +602,6 @@ export function EditAvatarPage() {
             </CardContent>
           </Card>
 
-          {/* Layout fix (testing) — dev-only A/B comparison of two fixes for
-              an avatar photo that doesn't match a cast's layout: cropping
-              vs. AI-generating (Nano Banana Pro outpaint) a conformed
-              version. Deliberately separate from the real Scenes/Body
-              Motion/Try-On tabs above — this is experimental, not a shipped
-              feature yet. See routers/dev_avatar_layout_fix.py. */}
-          <AvatarLayoutFixPanel avatarId={avatarId!} />
-
           {/* Style DNA — paste 1-3 creator video URLs and clone their
               voice + editing style for future cast generations. */}
           <StyleDNA
@@ -910,119 +901,3 @@ function ProfileRegenerateOverlay({
   );
 }
 
-// ── Layout fix (testing) — dev-only crop-vs-generate A/B comparison ──
-// See backend/orchestrator/routers/dev_avatar_layout_fix.py for the two
-// strategies and root-cause context. Not part of the real avatar-look
-// system (Scenes/Body Motion/Try-On above) — a throwaway comparison tool.
-
-interface LayoutFixCandidate {
-  id: string;
-  format_family: "vertical" | "horizontal";
-  strategy: "crop" | "generate";
-  r2_key: string;
-  url: string | null;
-  created_at: string | null;
-}
-
-function AvatarLayoutFixPanel({ avatarId }: { avatarId: string }) {
-  const [formatFamily, setFormatFamily] = useState<"vertical" | "horizontal">("vertical");
-  const [running, setRunning] = useState<"" | "crop" | "generate">("");
-  const [candidates, setCandidates] = useState<LayoutFixCandidate[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadCandidates = useCallback(async () => {
-    try {
-      const r = await api.get(`/dev/avatar-layout-fix/${avatarId}`);
-      setCandidates(r.data.candidates || []);
-    } catch {
-      // Non-critical — panel just starts empty.
-    }
-  }, [avatarId]);
-
-  useEffect(() => {
-    loadCandidates();
-  }, [loadCandidates]);
-
-  const run = useCallback(async (strategy: "crop" | "generate") => {
-    setRunning(strategy);
-    setError(null);
-    try {
-      await api.post("/dev/avatar-layout-fix/run", {
-        avatar_id: avatarId,
-        format_family: formatFamily,
-        strategy,
-      });
-      await loadCandidates();
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || e.message);
-    } finally {
-      setRunning("");
-    }
-  }, [avatarId, formatFamily, loadCandidates]);
-
-  const shown = candidates.filter((c) => c.format_family === formatFamily);
-  const cropResult = shown.find((c) => c.strategy === "crop");
-  const generateResult = shown.find((c) => c.strategy === "generate");
-
-  return (
-    <div className="rounded-xl border border-dashed border-amber-400/40 bg-amber-500/5 p-5 space-y-3">
-      <div>
-        <h3 className="text-sm font-semibold text-amber-200/90">Layout fix (testing)</h3>
-        <p className="text-xs text-text-muted mt-0.5">
-          Experimental — compares two ways to fix this avatar's photo when it
-          doesn't match a cast's layout: a plain crop vs. an AI-generated,
-          layout-extended version. Not a shipped feature yet.
-        </p>
-      </div>
-
-      <div className="flex items-center gap-2">
-        {(["vertical", "horizontal"] as const).map((f) => (
-          <button
-            key={f}
-            onClick={() => setFormatFamily(f)}
-            className={`px-3 py-1.5 text-xs rounded-full transition-colors ${
-              formatFamily === f
-                ? "bg-accent text-white"
-                : "bg-surface text-text-muted hover:text-text"
-            }`}
-          >
-            {f === "vertical" ? "Portrait (9:16)" : "Landscape (16:9)"}
-          </button>
-        ))}
-      </div>
-
-      {error && (
-        <div className="text-xs text-red-400 bg-red-500/10 rounded-md px-2 py-1.5">{error}</div>
-      )}
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-2">
-          <Button
-            size="sm" variant="outline" className="w-full text-xs"
-            disabled={running !== ""}
-            onClick={() => run("crop")}
-          >
-            {running === "crop" ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
-            Try crop version
-          </Button>
-          {cropResult?.url && (
-            <img src={cropResult.url} alt="Cropped candidate" className="w-full rounded-lg border border-border object-cover aspect-[9/16]" />
-          )}
-        </div>
-        <div className="space-y-2">
-          <Button
-            size="sm" variant="outline" className="w-full text-xs"
-            disabled={running !== ""}
-            onClick={() => run("generate")}
-          >
-            {running === "generate" ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
-            Try AI-generated version
-          </Button>
-          {generateResult?.url && (
-            <img src={generateResult.url} alt="AI-generated candidate" className="w-full rounded-lg border border-border object-cover aspect-[9/16]" />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
