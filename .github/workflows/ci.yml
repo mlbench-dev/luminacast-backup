@@ -67,6 +67,7 @@ jobs:
 
       - name: Upload test results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: backend-test-results
@@ -100,6 +101,7 @@ jobs:
 
       - name: Upload test results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: frontend-test-results
@@ -133,6 +135,7 @@ jobs:
 
       - name: Upload E2E report
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
