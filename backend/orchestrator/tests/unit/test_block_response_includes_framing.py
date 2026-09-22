@@ -18,7 +18,9 @@ from __future__ import annotations
 from pathlib import Path
 
 ORCH_ROOT = Path(__file__).resolve().parents[2]
-CASTS_ROUTER_PATH = ORCH_ROOT / "routers" / "casts.py"
+# routers/casts.py was split into the routers/casts/ package — the block
+# GET-response serializer now lives in crud.py.
+CASTS_ROUTER_PATH = ORCH_ROOT / "routers" / "casts" / "crud.py"
 LOOKS_ROUTER_PATH = ORCH_ROOT / "routers" / "avatar_looks.py"
 
 

@@ -19,7 +19,7 @@ ORCH_ROOT = Path(__file__).resolve().parents[2]
 GENERATE_CAST_PATH = ORCH_ROOT / "tasks" / "generate_cast.py"
 CAST_RENDER_PATH = ORCH_ROOT / "tasks" / "cast_render.py"
 AVATAR_LOOKS_PATH = ORCH_ROOT / "tasks" / "avatar_looks.py"
-CASTS_ROUTER_PATH = ORCH_ROOT / "routers" / "casts.py"
+CASTS_ROUTER_PATH = ORCH_ROOT / "routers" / "casts" / "generation.py"
 
 
 def _read(path: Path) -> str:

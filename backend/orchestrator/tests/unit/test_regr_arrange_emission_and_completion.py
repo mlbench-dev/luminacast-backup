@@ -70,7 +70,9 @@ class _Cast:
 # ── Bug 2: auto_arrange_cast_timeline emits a stock track ─────────────────────
 
 def _run_arrange(cast):
-    from routers import casts as casts_mod
+    # routers/casts.py was split into the routers/casts/ package —
+    # auto_arrange_cast_timeline now lives in timeline.py.
+    from routers.casts import timeline as casts_mod
 
     db = AsyncMock()
     exec_result = MagicMock()
@@ -133,6 +135,8 @@ def test_arrange_emits_no_stock_track_when_no_stock_blocks():
 
 
 def test_arrange_uses_selected_output_format_for_canvas_size():
+    from routers.casts import timeline as casts_mod
+
     blocks = [_Block(bid="b0", position=0)]
     cast = _Cast(blocks)
     cast.output_format = "16:9"

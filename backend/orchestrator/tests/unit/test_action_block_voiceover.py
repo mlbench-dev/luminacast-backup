@@ -39,7 +39,13 @@ if "sentry_sdk" not in sys.modules:
 # tests/unit/<this file>  → parents[2] is the orchestrator root
 ORCH_ROOT = Path(__file__).resolve().parents[2]
 CAST_RENDER_PATH = ORCH_ROOT / "tasks" / "cast_render.py"
-ROUTERS_CASTS_PATH = ORCH_ROOT / "routers" / "casts.py"
+# routers/casts.py was split into the routers/casts/ package — update_block's
+# metadata whitelist now lives in blocks.py, the block-dict response
+# serialization (where voiceover_enabled is surfaced top-level) in crud.py,
+# and _action_block_metadata_from_scene in generation.py.
+ROUTERS_CASTS_BLOCKS_PATH = ORCH_ROOT / "routers" / "casts" / "blocks.py"
+ROUTERS_CASTS_CRUD_PATH = ORCH_ROOT / "routers" / "casts" / "crud.py"
+ROUTERS_CASTS_GENERATION_PATH = ORCH_ROOT / "routers" / "casts" / "generation.py"
 
 
 def _read(path: Path) -> str:
@@ -173,16 +179,17 @@ def test_routers_update_block_accepts_voiceover_enabled_metadata():
     persist the user's choice. Anything outside the whitelist is dropped
     silently, so this guard documents the contract.
     """
-    src = _read(ROUTERS_CASTS_PATH)
-    # The metadata whitelist branch.
-    assert '"voiceover_enabled" in metadata' in src, (
+    # The metadata whitelist branch (update_block, routers/casts/blocks.py).
+    blocks_src = _read(ROUTERS_CASTS_BLOCKS_PATH)
+    assert '"voiceover_enabled" in metadata' in blocks_src, (
         "update_block must whitelist voiceover_enabled in the metadata "
         "JSON column — otherwise the Script toggle is silently dropped."
     )
-    # The block dict serialization surfaces it.
+    # The block dict serialization surfaces it (routers/casts/crud.py).
+    crud_src = _read(ROUTERS_CASTS_CRUD_PATH)
     assert (
-        '"voiceover_enabled": (' in src
-        and 'block_metadata' in src
+        '"voiceover_enabled": (' in crud_src
+        and 'block_metadata' in crud_src
     ), (
         "block dict response must surface voiceover_enabled at the top "
         "level for the frontend"
@@ -207,7 +214,7 @@ def test_action_block_metadata_helper_from_llm_scene():
 
     # The helper has no DB / framework deps — it's pure dict shaping.
     # We import it via a lightweight execution of the relevant block.
-    src = _read(ROUTERS_CASTS_PATH)
+    src = _read(ROUTERS_CASTS_GENERATION_PATH)
     fn_match = re.search(
         r"def _action_block_metadata_from_scene\(.*?\n(?=def |\Z)",
         src, flags=re.DOTALL,

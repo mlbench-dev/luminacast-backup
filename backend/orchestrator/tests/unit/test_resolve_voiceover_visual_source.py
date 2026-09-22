@@ -434,7 +434,10 @@ import re as _re
 from pathlib import Path as _Path
 
 _ORCH_ROOT = _Path(__file__).resolve().parents[2]
-_CASTS_ROUTER_PATH = _ORCH_ROOT / "routers" / "casts.py"
+# routers/casts.py was split into the routers/casts/ package — both
+# script-generation category->render_mode mapping blocks now live in
+# generation.py.
+_CASTS_ROUTER_PATH = _ORCH_ROOT / "routers" / "casts" / "generation.py"
 
 
 def test_casts_router_maps_stock_categories_to_voiceover():
@@ -443,7 +446,7 @@ def test_casts_router_maps_stock_categories_to_voiceover():
     # to the voiceover (B-roll) bake path, not the avatar_full default.
     matches = _re.findall(
         r'elif (?:scene_)?category in \("stock_photo", "stock_video"\):\s*\n'
-        r'(?:[^\n]*\n)*?\s*render_mode = "voiceover"',
+        r'(?:[^\n]*\n)*?\s*(?:block_)?render_mode = "voiceover"',
         src,
     )
     assert len(matches) >= 2, (

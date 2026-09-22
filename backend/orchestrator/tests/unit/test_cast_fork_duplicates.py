@@ -120,7 +120,9 @@ def test_patched_lookup_returns_single_row_unchanged():
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CASTS_ROUTER = (
-    Path(__file__).resolve().parents[2] / "routers" / "casts.py"
+    # routers/casts.py was split into the routers/casts/ package —
+    # fork_cast now lives in forking.py.
+    Path(__file__).resolve().parents[2] / "routers" / "casts" / "forking.py"
 )
 
 
@@ -134,7 +136,7 @@ def test_fork_cast_does_not_use_scalar_one_or_none_for_cast_version_lookup():
     # Find the fork_cast function body. Locate the def and read until
     # the next top-level def or @router decorator at column 0.
     m = re.search(r"^async def fork_cast\(", src, flags=re.MULTILINE)
-    assert m, "fork_cast not found in routers/casts.py — test out of date"
+    assert m, "fork_cast not found in routers/casts/forking.py — test out of date"
     start = m.start()
     rest = src[start:]
     end_match = re.search(r"\n@router\.|\n(?:async )?def [a-zA-Z_]", rest[1:])
