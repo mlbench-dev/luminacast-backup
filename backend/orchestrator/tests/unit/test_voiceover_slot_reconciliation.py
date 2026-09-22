@@ -123,10 +123,13 @@ def test_voiceover_branch_registers_real_duration_unconditionally():
     branch = src[start:end]
 
     assert "voiceover_real_durations[block_id] = broll_s" in branch
-    # It must be registered before the "if src is not None" resolve/render
-    # attempt, i.e. unconditional on whether baking succeeds.
+    # It must be registered before the FIRST bake attempt — originally a
+    # single "if src is not None:" resolve/render step; the branch has
+    # since grown a multi-shot sequence attempt (_bake_voiceover_broll_sequence)
+    # tried before the priority-ordered candidates loop, so that's now the
+    # earliest bake attempt to check against.
     reg_pos = branch.find("voiceover_real_durations[block_id] = broll_s")
-    resolve_pos = branch.find("if src is not None:")
+    resolve_pos = branch.find("_bake_voiceover_broll_sequence(")
     assert 0 <= reg_pos < resolve_pos, (
         "duration must be registered before the bake attempt, so it's "
         "recorded even if baking subsequently fails"

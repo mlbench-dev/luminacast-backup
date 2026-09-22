@@ -86,11 +86,19 @@ def _run_arrange(cast):
     user = MagicMock()
     user.id = "usr_test"
 
+    # auto_arrange_cast_timeline reads ctx.workspace_owner_id directly (not
+    # through FastAPI's DI, which only resolves Depends(...) when the route
+    # is actually invoked over HTTP) — calling it as a plain function needs
+    # a real ctx stand-in or that attribute access hits the literal Depends
+    # marker object.
+    ctx = MagicMock()
+    ctx.workspace_owner_id = "usr_test"
+
     with patch("services.r2_storage.get_r2_storage_service", return_value=r2), \
          patch("services.audit_log.record", new=AsyncMock()), \
          patch("sqlalchemy.orm.attributes.flag_modified"):
         asyncio.run(
-            casts_mod.auto_arrange_cast_timeline(cast.id, user=user, db=db)
+            casts_mod.auto_arrange_cast_timeline(cast.id, user=user, ctx=ctx, db=db)
         )
 
     return cast.timeline_json["default"]["twick_data"]
@@ -152,12 +160,14 @@ def test_arrange_uses_selected_output_format_for_canvas_size():
 
     user = MagicMock()
     user.id = "usr_test"
+    ctx = MagicMock()
+    ctx.workspace_owner_id = "usr_test"
 
     with patch("services.r2_storage.get_r2_storage_service", return_value=r2), \
          patch("services.audit_log.record", new=AsyncMock()), \
          patch("sqlalchemy.orm.attributes.flag_modified"):
         asyncio.run(
-            casts_mod.auto_arrange_cast_timeline(cast.id, user=user, db=db)
+            casts_mod.auto_arrange_cast_timeline(cast.id, user=user, ctx=ctx, db=db)
         )
 
     twick = cast.timeline_json["default"]["twick_data"]

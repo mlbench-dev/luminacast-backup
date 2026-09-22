@@ -20,7 +20,7 @@ ffmpeg_available = pytest.mark.skipif(
 
 from main import app
 from database import get_db
-from routers.auth import get_current_user
+from routers.auth import get_current_user, get_workspace_context, WorkspaceContext
 
 AVATAR_ID = "avt_corpus_test"
 USER = SimpleNamespace(id="usr_corpus_test", email="c@test.com", role="creator")
@@ -93,6 +93,17 @@ def _fake_fish(voice_id="voice_cloned_42"):
 async def _call(session, body):
     app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[get_current_user] = lambda: USER
+    # clone-voice-from-corpus is gated by require_role(CREATOR), which
+    # depends on get_workspace_context — a separate dependency from
+    # get_current_user that isn't satisfied by overriding get_current_user
+    # alone. Without this override every request 403s before reaching the
+    # route body.
+    app.dependency_overrides[get_workspace_context] = lambda: WorkspaceContext(
+        workspace_owner_id=USER.id,
+        actor_user_id=USER.id,
+        actor_team_role=None,
+        is_owner=True,
+    )
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

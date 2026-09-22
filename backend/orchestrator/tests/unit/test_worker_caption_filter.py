@@ -84,7 +84,13 @@ def test_caption_uses_textfile_not_inlined_text(tmp_path):
         assert fragment not in graph
 
     txt = (tmp_path / "caption_0.txt").read_text(encoding="utf-8")
-    assert "it's soft" in txt
+    # "it's soft" as a literal substring is wrap-position-fragile — the line
+    # wrap can legitimately land between the two words, same as any other
+    # word pair. The apostrophe itself surviving intact (not corrupted by
+    # escaping) is what actually matters, and txt.split() == OFFENDING.split()
+    # below already rigorously covers every word (including "it's") being
+    # preserved in order with no corruption.
+    assert "it's" in txt
     assert "'\\''" not in txt  # no shell-style escaping in the file
     assert "\\," not in txt  # no filtergraph comma-escaping in the file
     assert "\n" in txt  # wrapped onto >1 line

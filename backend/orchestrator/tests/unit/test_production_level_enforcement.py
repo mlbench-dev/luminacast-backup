@@ -205,20 +205,20 @@ def test_avatar_ratio_none_without_template():
 
 
 def test_avatar_ratio_standard_matches_template_bias():
-    # Demo Heavy broll=0.7 -> avatar side = 0.3, unchanged from the template.
-    assert abs(_production_level_avatar_ratio(DEMO_HEAVY, "standard") - 0.3) < 1e-9
+    # Demo Heavy broll=0.5 -> avatar side = 0.5, unchanged from the template.
+    assert abs(_production_level_avatar_ratio(DEMO_HEAVY, "standard") - 0.5) < 1e-9
 
 
 def test_avatar_ratio_quick_raises_avatar_share():
     # Quick pulls broll DOWN by 0.15 -> avatar share goes UP.
     ratio = _production_level_avatar_ratio(DEMO_HEAVY, "quick")
-    assert abs(ratio - 0.45) < 1e-9  # 1 - (0.7 - 0.15)
+    assert abs(ratio - 0.65) < 1e-9  # 1 - (0.5 - 0.15)
 
 
 def test_avatar_ratio_premium_lowers_avatar_share():
     # Premium pushes broll UP by 0.15 -> avatar share goes DOWN.
     ratio = _production_level_avatar_ratio(DEMO_HEAVY, "premium")
-    assert abs(ratio - 0.15) < 1e-9  # 1 - (0.7 + 0.15)
+    assert abs(ratio - 0.35) < 1e-9  # 1 - (0.5 + 0.15)
 
 
 def test_enforce_template_broll_ratio_noop_without_template():
@@ -239,7 +239,11 @@ def test_enforce_template_broll_ratio_demotes_surplus_avatar_blocks():
     demoted = [s for s in out if s.get("ratio_demoted")]
     assert len(demoted) > 0
     for s in demoted:
-        assert s["category"] == "avatar_voiceover"
+        # Demoted to talking-head PIP (not avatar_voiceover) — the script
+        # survives as active narration while the avatar keeps speaking in a
+        # corner PIP window over the block's b-roll, per
+        # _enforce_template_broll_ratio's demotion comment.
+        assert s["category"] == "pip_talking_head"
 
 
 def test_enforce_template_broll_ratio_protects_hook_and_cta():
@@ -257,4 +261,4 @@ def test_enforce_template_broll_ratio_applies_regardless_of_duration():
     scenes = [_scene("avatar_speaking") for _ in range(10)]
     out = _enforce_template_broll_ratio(scenes, DEMO_HEAVY, "standard", cast_id="cst_x")
     avatar_blocks = [s for s in out if s["category"] in _AVATAR_RATIO_CATEGORIES]
-    assert len(avatar_blocks) == 3  # round(0.3 * 10), same math regardless of "duration"
+    assert len(avatar_blocks) == 5  # round(0.5 * 10), same math regardless of "duration"

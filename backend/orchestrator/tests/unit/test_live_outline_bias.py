@@ -140,11 +140,14 @@ def test_enforce_live_ratios_demotes_surplus_avatar_blocks(monkeypatch):
     avatar_blocks = [s for s in out if s["category"] in _AVATAR_RATIO_CATEGORIES]
     # Cap is round(0.2 * 10) = 2.
     assert len(avatar_blocks) == 2
-    # Demoted blocks became voiceover narrating over stock.
+    # Demoted blocks became talking-head PIP: the script survives as active
+    # narration while the avatar keeps speaking in a corner PIP window over
+    # the block's b-roll (shared demotion helper — see its comment above
+    # _enforce_live_ratios in engine/cast_generator.py).
     demoted = [s for s in out if s.get("ratio_demoted")]
     assert len(demoted) == 8
     for s in demoted:
-        assert s["category"] == "avatar_voiceover"
+        assert s["category"] == "pip_talking_head"
         assert s["background_type"] == "stock_video"
     # Block count unchanged.
     assert len(out) == 10

@@ -14,7 +14,7 @@ from httpx import AsyncClient, ASGITransport
 
 from main import app
 from database import get_db
-from routers.auth import get_current_user
+from routers.auth import get_current_user, get_workspace_context, WorkspaceContext
 from services.url_product_resolver import (
     ResolvedProduct,
     TikTokBlockedError,
@@ -64,9 +64,24 @@ def _override_user():
     return SimpleNamespace(id="usr_test_block", email="b@test.com", role="creator")
 
 
+def _override_workspace_context():
+    # /from-url is gated by require_role(CREATOR), which depends on
+    # get_workspace_context — a separate dependency from get_current_user
+    # that isn't satisfied by overriding get_current_user alone. Without
+    # this override the real get_workspace_context runs against the fake
+    # session and every request 403s before reaching the route body.
+    return WorkspaceContext(
+        workspace_owner_id="usr_test_block",
+        actor_user_id="usr_test_block",
+        actor_team_role=None,
+        is_owner=True,
+    )
+
+
 def _make_client(session):
     app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[get_current_user] = _override_user
+    app.dependency_overrides[get_workspace_context] = _override_workspace_context
     transport = ASGITransport(app=app)
     return AsyncClient(transport=transport, base_url="http://test")
 
