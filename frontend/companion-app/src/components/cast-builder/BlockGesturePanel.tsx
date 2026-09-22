@@ -14,6 +14,7 @@ import type { AvatarLook } from "@/lib/types";
 import { BodyMotionFrameCarousel } from "./BodyMotionFrameCarousel";
 import { ActionFrameCarousel } from "./ActionFrameCarousel";
 
+
 const MOTION_PRESETS = [
   "Walking",
   "Pointing at product",
