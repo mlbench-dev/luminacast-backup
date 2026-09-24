@@ -19,22 +19,34 @@ DEFAULT_MODEL_ID = "k25"
 # Ordered BEST -> WORST (which is also, here, roughly most -> least expensive).
 AI_BROLL_MODELS: list[dict] = [
     {
+        # id kept as "veo3" (not "veo31") so casts with an already-stored
+        # broll_media_source="ai_generated:veo3" keep resolving correctly —
+        # only the underlying endpoint/label moved to 3.1.
         "id": "veo3",
-        "label": "Google Veo 3",
+        "label": "Google Veo 3.1",
         "rank": 1,
-        "cost_note": "~$2.50 / clip", "cost_usd": 2.5,
-        "blurb": "Best quality — cinematic, native audio. Slow and pricey.",
-        "t2v": "fal-ai/veo3",
-        "i2v": "fal-ai/veo3/image-to-video",
+        # fal-ai/veo3 and fal-ai/veo3/fast are deprecated ("no longer
+        # supported" per fal.ai) — migrated to the 3.1 endpoints 2026-09.
+        # Live-call-verified access (real fal_client.subscribe succeeded).
+        # 5s clip, audio disabled (generate_audio=False — Veo's own audio is
+        # never used, the cast's TTS voiceover replaces it) at the verified
+        # $0.20/s audio-off, 720p/1080p rate. See cost_rates.py's fal/veo_3.
+        "cost_note": "~$1.00 / clip", "cost_usd": 1.0,
+        "blurb": "Best quality — cinematic. Slow and pricey.",
+        "t2v": "fal-ai/veo3.1",
+        "i2v": "fal-ai/veo3.1/image-to-video",
     },
     {
         "id": "veo3f",
-        "label": "Google Veo 3 — Fast",
+        "label": "Google Veo 3.1 — Fast",
         "rank": 2,
+        # Migrated to 3.1/fast (see veo3 entry above for why). 5s clip,
+        # audio disabled, at the verified $0.10/s audio-off, 720p/1080p
+        # rate. See cost_rates.py's fal/veo_3_fast.
         "cost_note": "~$0.50 / clip", "cost_usd": 0.5,
         "blurb": "Near-Veo quality at a fraction of the cost.",
-        "t2v": "fal-ai/veo3/fast",
-        "i2v": "fal-ai/veo3/fast/image-to-video",
+        "t2v": "fal-ai/veo3.1/fast",
+        "i2v": "fal-ai/veo3.1/fast/image-to-video",
     },
     {
         "id": "k25",

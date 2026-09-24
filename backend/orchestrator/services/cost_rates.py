@@ -28,9 +28,29 @@ COST_RATES = {
     "fal/wan_2.5_t2v":                 0.05,       # $0.05 per second of video output
     "fal/wan_2.2_t2v":                 0.10,       # $0.10 per second (older model)
     "fal/wan_2.2_i2v":                 0.10,       # $0.10 per second
-    "fal/kling_2.5_turbo_pro":         0.07,       # $0.07 per second of video
-    "fal/kling_2.1_master_t2v":        0.28,       # ~$0.28 per 5s text-to-video clip (scene b-roll)
-    "fal/veo_3":                       0.40,       # $0.40 per second of video
+    # Kling 2.5 Turbo Pro / 2.1 Master: verified 2026-09 directly against
+    # fal.ai's own model pages ("For 5s video your request will cost $X.
+    # For every additional second you will be charged $Y" — X/5 == Y in
+    # both cases, confirming a flat per-second rate).
+    # Source: https://fal.ai/models/fal-ai/kling-video/v2.5-turbo/pro/text-to-video
+    "fal/kling_2.5_turbo_pro":         0.07,       # $0.07/s ($0.35 for 5s)
+    # Source: https://fal.ai/models/fal-ai/kling-video/v2.1/master/text-to-video
+    "fal/kling_2.1_master_t2v":        0.28,       # $0.28/s ($1.40 for 5s)
+    # Veo 3 (fal-ai/veo3, fal-ai/veo3/fast): both DEPRECATED by fal.ai
+    # ("This model is no longer supported") — migrated the app's real call
+    # sites to Veo 3.1 (fal-ai/veo3.1, fal-ai/veo3.1/fast) 2026-09. Live
+    # access confirmed via a real fal_client.subscribe call (returned a
+    # working video URL). Rates re-verified directly against fal.ai's
+    # current pages 2026-09 — the earlier $0.50/$0.75 figures on this line
+    # were wrong (over by 2.5x); correct 720p/1080p audio-off/on rates are
+    # $0.20/$0.40 per second for Standard, $0.10/$0.15 for Fast. The app
+    # explicitly passes generate_audio=False (see services/ai_broll.py /
+    # product_ai_media.py) since Veo's own audio is always discarded in
+    # favor of the cast's own TTS voiceover, so audio-off is correct here.
+    # 4K is available on 3.1 (not used by the app) at $0.40/$0.30 off.
+    # Source: https://fal.ai/models/fal-ai/veo3.1, .../veo3.1/fast
+    "fal/veo_3":                       0.20,       # $0.20/s, audio off, Standard ($1.60 for 8s)
+    "fal/veo_3_fast":                  0.10,       # $0.10/s, audio off, Fast ($0.80 for 8s)
     "fal/flux_kontext_pro":            0.04,       # $0.04 per image
     "fal/flux_kontext_max":            0.10,       # ~$0.10 per image
     # Nano Banana Pro (Google Gemini 3 Pro Image). fal list price, verified
@@ -49,7 +69,9 @@ COST_RATES = {
     "fal/sync_lipsync_v2_pro":         0.05,       # sync.so lipsync v2 pro
     "fal/sync_lipsync_v3":             0.07,       # sync.so lipsync v3
     "fal/kling_elements_v3_pro":       0.30,       # Kling v3 Pro Elements (product bake)
-    "wavespeed/infinitalk":            0.04,       # WaveSpeed InfiniteTalk lip-sync
+    # Verified 2026-09 against wavespeed.ai's own pricing page.
+    # Source: https://wavespeed.ai/pricing
+    "wavespeed/infinitalk":            0.03,       # WaveSpeed InfiniteTalk lip-sync
 
     # ── Music ──
     "mubert/startup_plan":             199.00,     # $199/mo for 5,000 tracks

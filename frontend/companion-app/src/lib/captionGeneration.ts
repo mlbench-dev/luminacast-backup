@@ -36,6 +36,13 @@ export interface CaptionGenerationSegment {
   audioUrl: string;
   /** The block_id from metadata */
   blockId: string;
+  /**
+   * The Variant row this audio belongs to. When present, the backend
+   * persists the transcription onto Variant.caption_words/caption_segments
+   * (the render pipeline's actual source of truth) instead of only
+   * returning tokens for the editor preview.
+   */
+  variantId?: string;
 }
 
 export interface CaptionGenerationResult {
@@ -66,6 +73,7 @@ export async function generateCaptionsForBlocks(
     block_id: seg.blockId,
     audio_element_id: seg.audioItem.id,
     start_offset_s: 0, // Whisper runs on each audio individually; offset is 0 per segment
+    ...(seg.variantId ? { variant_id: seg.variantId } : {}),
   }));
 
   const response = await castsApi.editorGenerateCaptions(castId, audioSegments);
@@ -200,10 +208,11 @@ export async function regenerateCaptionForBlock(
   audioUrl: string,
   blockId: string,
   fps: number,
+  variantId?: string,
 ): Promise<CaptionGenerationResult | null> {
   const results = await generateCaptionsForBlocks(
     castId,
-    [{ audioItem, audioUrl, blockId }],
+    [{ audioItem, audioUrl, blockId, variantId }],
     fps,
   );
   return results[0] ?? null;

@@ -56,7 +56,7 @@ def test_unknown_id_uses_default_endpoints():
 
 
 def test_cost_for():
-    assert cost_for("veo3") == 2.5
+    assert cost_for("veo3") == 1.0
     assert cost_for("k16") == 0.20
     assert cost_for("unknown") == cost_for(DEFAULT_MODEL_ID)
 

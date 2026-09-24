@@ -150,6 +150,12 @@ function renderFitFor(metaFit: "cover" | "contain" | "contain-blur" | undefined)
 export interface CastToEditorOptions {
   avatarFaceKey?: string;
   avatarName?: string;
+  /** Avatar.layout ("9:16" | "16:9" | "1:1" | "4:5"), when known. Used to
+   *  decide whether the avatar placeholder actually needs the blurred-
+   *  backdrop pad treatment (see placeholderNeedsBlurPad below) — undefined
+   *  for legacy avatars with no recorded layout, treated conservatively as
+   *  a possible mismatch. */
+  avatarLayout?: string;
   activeVariantPerBlock?: Record<string, string>;
   fps?: number;
   captionsEnabled?: boolean;
@@ -172,6 +178,18 @@ export function castToEditorStarterTimeline(
   const fps = options.fps ?? DEFAULT_FPS;
   const canvas = getCanvasSize(cast.output_format);
   const avatarLabel = options.avatarName || "Avatar";
+  // The avatar placeholder (real video hasn't baked yet — see
+  // is_motion_placeholder below) only needs the blurred-backdrop pad
+  // treatment when the avatar's photo genuinely doesn't match the cast's
+  // canvas shape (e.g. a portrait avatar reference on a horizontal cast).
+  // Avatar creation now has the user pick a matching layout up front (and
+  // cast Setup only offers matching avatars), so a real mismatch should be
+  // rare going forward — but this used to apply the blur pad to EVERY
+  // avatar unconditionally, even a properly-matching one, since it never
+  // actually checked. Legacy avatars with no recorded layout (undefined)
+  // are treated conservatively as a possible mismatch, same as before.
+  const placeholderNeedsBlurPad =
+    !options.avatarLayout || options.avatarLayout !== cast.output_format;
 
   const blocks = (cast.blocks || [])
     .filter((b: any) => b.is_active !== false)
@@ -316,8 +334,8 @@ export function castToEditorStarterTimeline(
                   : "full",
           // Same portrait-reference-photo-on-a-fullscreen-box issue as the
           // main V1 item below — this "no audio yet" placeholder is full
-          // canvas too.
-          ...(phIsPip ? {} : { fit: "contain-blur" as const }),
+          // canvas too, and only needs the blur pad on an actual mismatch.
+          ...(phIsPip || !placeholderNeedsBlurPad ? {} : { fit: "contain-blur" as const }),
         },
       };
       items[phItemId] = phItem;
@@ -606,11 +624,14 @@ export function castToEditorStarterTimeline(
               : {}),
             // Fullscreen avatar box = the whole canvas. The avatar's own
             // baked clip (or, before a render, its reference photo) is
-            // authored PORTRAIT regardless of the cast's output format —
-            // on a horizontal cast that got force-cropped/zoomed to cover
-            // the wide box (the reported bug). A PIP corner box is small
-            // and MEANT to be filled edge-to-edge, so it keeps "cover".
-            ...(isAnyPip ? {} : { fit: "contain-blur" as const }),
+            // authored in the avatar's OWN layout, which only needs the
+            // blur pad here if that layout doesn't actually match the
+            // cast's canvas (placeholderNeedsBlurPad) — a matching avatar
+            // (the now-default case: layout picked at creation time) fills
+            // the box natively with no pad needed. A PIP corner box is
+            // small and MEANT to be filled edge-to-edge, so it keeps
+            // "cover" regardless.
+            ...(isAnyPip || !placeholderNeedsBlurPad ? {} : { fit: "contain-blur" as const }),
           },
         };
         items[snapshotItemId] = videoItem;
@@ -675,11 +696,12 @@ export function castToEditorStarterTimeline(
             ...(isPipFromMeta
               ? { feather: 12, drop_shadow: { blur: 10, alpha: 0.5 } }
               : {}),
-            // This is always the avatar's PORTRAIT reference photo (no
-            // render has happened yet) — on a horizontal cast it would
-            // otherwise cover-crop/zoom into the wide box every time, not
-            // just before the first render. See the video branch above.
-            ...(isAnyPip ? {} : { fit: "contain-blur" as const }),
+            // This is always the avatar's reference photo (no render has
+            // happened yet) — only needs the blur pad when its layout
+            // doesn't actually match the cast's canvas (placeholderNeedsBlurPad),
+            // e.g. a mismatched horizontal cast would otherwise cover-crop/
+            // zoom into the wide box. See the video branch above.
+            ...(isAnyPip || !placeholderNeedsBlurPad ? {} : { fit: "contain-blur" as const }),
             // This block's real avatar video hasn't been generated yet (that
             // only happens at Finalize & Render) — we're standing in with a
             // static face photo so captions/overlays/timing can still be

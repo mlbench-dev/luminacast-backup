@@ -920,12 +920,37 @@ async def _generate_tts_only(cast_id: str, user_id: str, force: bool = False):
                 FalWhisperProvider,
             )
 
+            # Diagnostic: this whole stage has been observed shipping with
+            # EVERY variant's caption_words left completely unset (not even
+            # the per-variant fallback below, which DOES populate something)
+            # — meaning `pending` came back empty despite audio existing on
+            # every variant moments later. Since `blocks` are the same
+            # in-memory ORM objects the TTS loop above just wrote audio_key
+            # onto (same session, no re-query), that should be impossible
+            # in a normal single linear run — log enough here to catch
+            # exactly what state each variant was actually in when this
+            # ran, next time it happens.
+            _audio_key_debug = [
+                (v.id, bool(v.audio_key)) for b in blocks for v in getattr(b, "variants", [])
+            ]
             pending: list[tuple[object, str]] = []
             for block in blocks:
                 for variant in getattr(block, 'variants', []):
                     if not variant.audio_key:
                         continue
                     pending.append((variant, r2.get_public_url(variant.audio_key)))
+            logger.info(
+                "[caption-align] cast=%s pending=%d/%d variants (audio_key present=%s)",
+                cast_id, len(pending), len(_audio_key_debug),
+                [vid for vid, has_key in _audio_key_debug if not has_key] or "all",
+            )
+            if not pending and _audio_key_debug:
+                sentry_sdk.capture_message(
+                    f"[caption-align] cast {cast_id}: caption alignment skipped — "
+                    f"pending list empty despite {len(_audio_key_debug)} variant(s) "
+                    f"existing; audio_key snapshot={_audio_key_debug}",
+                    level="warning",
+                )
 
             async def _transcribe_one(audio_url: str, variant_id: str):
                 return await try_chain(
@@ -947,8 +972,9 @@ async def _generate_tts_only(cast_id: str, user_id: str, force: bool = False):
                     if isinstance(result, Exception):
                         sentry_sdk.capture_exception(result)
                         logger.warning(
-                            "Caption alignment failed for variant %s: %s",
-                            variant.id, result,
+                            "[caption-align] cast=%s variant=%s failed (%s): %r — "
+                            "falling back to evenly-spaced word timing",
+                            cast_id, variant.id, type(result).__name__, result,
                         )
                         if variant.script_text and variant.tts_duration_seconds:
                             from utils.script_cleaning import clean_script_tokens, strip_script_markers
@@ -1004,7 +1030,15 @@ async def _generate_tts_only(cast_id: str, user_id: str, force: bool = False):
                 )
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            logger.warning("Caption generation step failed (non-fatal): %s", e)
+            # logger.exception (not .warning) so the full traceback lands in
+            # the celery-worker log, not just str(e) — a failure at the top
+            # of this try (e.g. the imports, or building `pending` itself)
+            # would otherwise skip alignment for EVERY variant in the cast
+            # with only a one-line, traceback-free warning to go on.
+            logger.exception(
+                "[caption-align] cast=%s: caption generation step failed (non-fatal): %s",
+                cast_id, e,
+            )
 
         # Bump to 80% (TTS + alignment done) before the final tally pass.
         cast.generation_progress = STAGE_TTS_WEIGHT + STAGE_ALIGN_WEIGHT  # 0.80

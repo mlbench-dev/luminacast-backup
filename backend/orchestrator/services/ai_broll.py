@@ -111,6 +111,7 @@ async def generate_scene_broll_video(
     dur = "10" if int(duration_seconds) >= 10 else "5"
     prompt = _clean_prompt(prompt_query)
     model = (model_endpoint or "").strip() or _model()
+    _is_veo = "veo" in model
 
     try:
         import asyncio
@@ -118,15 +119,18 @@ async def generate_scene_broll_video(
 
         def _run():
             os.environ["FAL_KEY"] = app_settings.FAL_API_KEY
-            return fal_client.subscribe(
-                model,
-                arguments={
-                    "prompt": prompt,
-                    "duration": dur,
-                    "aspect_ratio": aspect_ratio,
-                    "negative_prompt": "text, watermark, logo, caption, distortion, blur",
-                },
-            )
+            args = {
+                "prompt": prompt,
+                "duration": dur,
+                "aspect_ratio": aspect_ratio,
+                "negative_prompt": "text, watermark, logo, caption, distortion, blur",
+            }
+            if _is_veo:
+                # Veo's own audio track is never used — the cast's own TTS
+                # voiceover replaces it — and generate_audio defaults to
+                # true on fal.ai's side, which costs extra for nothing.
+                args["generate_audio"] = False
+            return fal_client.subscribe(model, arguments=args)
 
         result = await asyncio.to_thread(_run)
         video_url = (result or {}).get("video", {}).get("url")

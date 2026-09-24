@@ -124,6 +124,7 @@ const BlockScriptEditorUnmemoized: React.FC<{
 
           // Phase 2.3 — apply bonded chain shift if duration changed
           // Phase 2.6.4 — also get stale captions for auto-regeneration
+          const regenTargets: { captionItemId: string; sourceAudioId: string; blockId: string; variantId?: string }[] = [];
           if (deltaFrames !== 0) {
             const shiftResult = applyBondedShiftWithCaptions(
               newState.undoableState,
@@ -136,17 +137,48 @@ const BlockScriptEditorUnmemoized: React.FC<{
               undoableState: shiftResult.state,
             };
 
-            // Phase 2.6.4 — trigger async caption auto-regeneration for locked captions
-            const lockedCaptions = shiftResult.staleCaptionsForRegen.filter(
-              (c) => c.lockedToSource,
+            // Phase 2.6.4 — downstream captions whose SLOT shifted (this
+            // covers other blocks pushed later in time by the duration
+            // change, not necessarily this block's own caption).
+            regenTargets.push(
+              ...shiftResult.staleCaptionsForRegen.filter((c) => c.lockedToSource),
             );
-            if (lockedCaptions.length > 0) {
-              // Fire-and-forget: regenerate captions in the background
-              // We don't await this — the UI updates immediately, captions regen async
-              setTimeout(() => {
-                triggerCaptionAutoRegen(lockedCaptions);
-              }, 0);
-            }
+          }
+
+          // This block's OWN caption must always be re-aligned to the
+          // fresh audio, regardless of whether its duration changed — the
+          // regenerated audio can carry entirely different words/timing
+          // even at the same length, and regenerate-audio's backend never
+          // runs real transcription itself (see its code comment: "this
+          // per-block path has no transcription step"). Without this, a
+          // single-block "Regenerate Audio" silently left the OLD caption
+          // timing in place — confirmed via orchestrator logs showing only
+          // the regenerate-audio call, never a follow-up
+          // editor-generate-captions call.
+          const ownCaptionItem = Object.values(newState.undoableState.items).find(
+            (it) => it.type === "captions" && (it.metadata as any)?.block_id === blockId,
+          );
+          if (
+            ownCaptionItem &&
+            !regenTargets.some((t) => t.captionItemId === ownCaptionItem.id)
+          ) {
+            regenTargets.push({
+              captionItemId: ownCaptionItem.id,
+              sourceAudioId: item.id,
+              blockId,
+              // Lets triggerCaptionAutoRegen persist the fresh transcription
+              // onto this Variant.caption_words (render's source of truth),
+              // not just the editor preview — see the comment above.
+              variantId,
+            });
+          }
+
+          if (regenTargets.length > 0) {
+            // Fire-and-forget: regenerate captions in the background
+            // We don't await this — the UI updates immediately, captions regen async
+            setTimeout(() => {
+              triggerCaptionAutoRegen(regenTargets);
+            }, 0);
           }
 
           return newState;
@@ -162,7 +194,7 @@ const BlockScriptEditorUnmemoized: React.FC<{
    * Runs asynchronously after bonded shift completes.
    */
   const triggerCaptionAutoRegen = useCallback(
-    async (staleCaptions: { captionItemId: string; sourceAudioId: string; blockId: string }[]) => {
+    async (staleCaptions: { captionItemId: string; sourceAudioId: string; blockId: string; variantId?: string }[]) => {
       for (const staleCaption of staleCaptions) {
         try {
           // Find the source audio item to get its URL
@@ -179,6 +211,7 @@ const BlockScriptEditorUnmemoized: React.FC<{
             audioUrl,
             staleCaption.blockId,
             fps,
+            staleCaption.variantId,
           );
 
           if (result && result.captions.length > 0) {

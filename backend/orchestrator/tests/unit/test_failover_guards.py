@@ -457,6 +457,84 @@ def test_real_durations_no_scaling_when_fits():
         expected_cursor = v["e"]
 
 
+def test_real_durations_captions_shift_not_scale():
+    """Caption elements carry REAL word-level timing (Whisper transcription
+    of the actual final audio) — unlike a block's bonded V1/A1 slot, that
+    timing was never a stale guess, so a block-duration reflow must SHIFT a
+    caption (move it by however far its block moved) rather than
+    proportionally SCALE it. Scaling an already-correct caption span by the
+    stale-slot-to-real-duration ratio drags it out of sync with the audio —
+    confirmed root cause of a real "editor preview is synced, rendered
+    video is not" report. This mirrors the fixture shape used in
+    test_real_durations_no_scaling_when_fits, adding a captions track.
+    """
+    for mod in (
+        "sqlalchemy", "sqlalchemy.ext", "sqlalchemy.ext.asyncio",
+        "sqlalchemy.orm", "sqlalchemy.orm.attributes",
+    ):
+        sys.modules.setdefault(mod, types.ModuleType(mod))
+    sys.modules.setdefault(
+        "config", types.SimpleNamespace(settings=types.SimpleNamespace()),
+    )
+    timeline = {
+        "tracks": [
+            {
+                "type": "video",
+                "elements": [
+                    {
+                        "id": "v1_blk_0",
+                        # Stale Arrange-slot estimate: 3s. Real audio (below)
+                        # is actually 5s — the mismatch that triggers reflow.
+                        "s": 0.0, "e": 3.0,
+                        "metadata": {
+                            "block_id": "blk_0", "bonded": True,
+                            "track_type": "video_face",
+                        },
+                    },
+                ],
+            },
+            {
+                "type": "captions",
+                "elements": [
+                    {
+                        "id": "cap_blk_0",
+                        # Caption's OWN span comes from real Whisper word
+                        # timing on the real (5s) audio — already correct,
+                        # and already longer than the stale 3s slot above.
+                        "s": 0.2, "e": 4.8,
+                        "type": "captions",
+                        "metadata": {"block_id": "blk_0"},
+                    },
+                ],
+            },
+        ],
+    }
+    real = {"blk_0": 5.0}
+    from tasks.cast_render import _apply_real_block_durations
+    new_tl, rewritten, dropped = _apply_real_block_durations(
+        timeline, block_durations=real, render_id="rnd_cap_shift", fps=30,
+    )
+    assert rewritten is True
+    assert dropped == []
+
+    video_el = new_tl["tracks"][0]["elements"][0]
+    cap_el = new_tl["tracks"][1]["elements"][0]
+
+    # Block's own window still reflows to the real 5s duration.
+    assert abs(video_el["s"] - 0.0) < 1e-3
+    assert abs(video_el["e"] - 5.0) < 1e-3
+
+    # Caption must be SHIFTED (block start didn't move: delta=0), so its
+    # own already-correct span is untouched — NOT proportionally scaled
+    # (the bug: 0.2/3*5=0.33, 4.8/3*5=8.0 — which would push the caption's
+    # end 3s past the block's own real 5s duration).
+    assert abs(cap_el["s"] - 0.2) < 1e-3
+    assert abs(cap_el["e"] - 4.8) < 1e-3
+    assert cap_el["e"] <= video_el["e"] + 1e-3, (
+        "caption end must not run past the block's own real duration"
+    )
+
+
 def test_real_durations_never_drop_blocks_even_when_sum_far_exceeds_any_target():
     """PR #75: even when the sum of real block durations FAR exceeds any
     hypothetical script-writer target, the render pipeline must keep

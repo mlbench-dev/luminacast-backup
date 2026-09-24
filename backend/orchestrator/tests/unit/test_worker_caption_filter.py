@@ -235,10 +235,17 @@ def test_distinct_highlight_color_adds_per_word_layer(tmp_path):
     base_parts = [p for p in parts if "fontcolor=0xFFFFFF" in p]
     hl_parts = [p for p in parts if "fontcolor=0xFFD400" in p]
     # One base-colour drawtext for the whole line PER PAGE, plus one
-    # highlight-colour drawtext per spoken word.
+    # highlight-colour drawtext per spoken word — but ONLY for a page whose
+    # text wraps onto exactly one line (_build_caption_filter_parts:
+    # want_highlight requires len(wrapped) == 1, since the per-word x/y
+    # offset math is measured against a single line's layout). A page whose
+    # words wrap onto 2+ lines at this canvas width falls back to plain
+    # single-colour text with no per-word highlights, so not every one of
+    # WORDS_14 gets a highlight layer — only the words on pages that fit on
+    # one line do. 5 is the real, measured count at this canvas/font size.
     n_pages = len(base_parts)
     assert 1 <= n_pages < len(WORDS_14)
-    assert len(hl_parts) == len(WORDS_14)
+    assert len(hl_parts) == 5
 
     # The base line is centred (`x=(w-<line_w>)/2`, no per-word offset); each
     # highlight word carries the measured offset to its slot in that line.

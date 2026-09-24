@@ -129,6 +129,12 @@ _FAL_VIDEO_ALIASES = (
     ("wan_2.2",     "fal/wan_2.2_t2v"),
     ("kling-2.5",   "fal/kling_2.5_turbo_pro"),
     ("kling_2.5",   "fal/kling_2.5_turbo_pro"),
+    # "fast" variants must precede the bare veo-3/veo_3 aliases below —
+    # first-match-wins, and "veo-3-fast" also contains "veo-3".
+    ("veo-3-fast",  "fal/veo_3_fast"),
+    ("veo_3_fast",  "fal/veo_3_fast"),
+    ("veo3-fast",   "fal/veo_3_fast"),
+    ("veo3_fast",   "fal/veo_3_fast"),
     ("veo-3",       "fal/veo_3"),
     ("veo_3",       "fal/veo_3"),
 )

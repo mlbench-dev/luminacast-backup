@@ -324,7 +324,7 @@ export const castsApi = {
     ).then(r => r.data),
 
   // Phase 2.6 — Editor caption generation (multi-block, word-level)
-  editorGenerateCaptions: (castId: string, audioSegments: { audio_url: string; block_id: string; audio_element_id: string; start_offset_s: number }[]) =>
+  editorGenerateCaptions: (castId: string, audioSegments: { audio_url: string; block_id: string; audio_element_id: string; start_offset_s: number; variant_id?: string }[]) =>
     api.post<{
       results: {
         block_id: string;

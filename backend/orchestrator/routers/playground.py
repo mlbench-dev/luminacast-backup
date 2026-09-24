@@ -110,7 +110,12 @@ def _th_sadtalker(p, img, aud):
 
 
 def _vid_veo(p, img):
-    a = {"prompt": p, "aspect_ratio": "9:16", "duration": "8s"}
+    # generate_audio defaults to true on fal.ai's Veo 3.1 endpoints and costs
+    # extra ($0.40/s vs $0.20/s flagship, $0.15/s vs $0.10/s fast, at
+    # 720p/1080p) — the app always replaces it with its own TTS voiceover,
+    # so Veo's own audio track is never actually used. Disabled to avoid
+    # paying for audio that gets discarded.
+    a = {"prompt": p, "aspect_ratio": "9:16", "duration": "8s", "generate_audio": False}
     if img:
         a["image_url"] = img
     return a
@@ -142,19 +147,33 @@ _MODELS: list[dict] = [
      "est_cost_usd": 0.35, "build": _vid_kling_t2v, "note": "Current scene b-roll model."},
     {"id": "kling_21_t2v", "label": "Kling 2.1 Master — Text→Video", "provider": "Kuaishou",
      "kind": "video", "input": "text", "endpoint": "fal-ai/kling-video/v2.1/master/text-to-video",
-     "est_cost_usd": 0.35, "build": _vid_kling_t2v, "note": "Previous scene b-roll model."},
+     # Verified 2026-09 against fal.ai's own model page: $1.40 for 5s
+     # ($0.28/s) — was showing 0.35 (4x under). See services/cost_rates.py.
+     "est_cost_usd": 1.40, "build": _vid_kling_t2v, "note": "Previous scene b-roll model."},
     {"id": "kling_15_i2v", "label": "Kling 1.5 Pro — Image→Video", "provider": "Kuaishou",
      "kind": "video", "input": "text+image", "endpoint": "fal-ai/kling-video/v1.5/pro/image-to-video",
-     "est_cost_usd": 0.25, "build": _vid_kling_i2v, "note": "Current product b-roll model (animates the product photo)."},
+     # Verified 2026-09: $0.50 for 5s ($0.10/s) — was showing 0.25 (2x under).
+     "est_cost_usd": 0.50, "build": _vid_kling_i2v, "note": "Current product b-roll model (animates the product photo)."},
     {"id": "kling_16_i2v", "label": "Kling 1.6 Standard — Image→Video", "provider": "Kuaishou",
      "kind": "video", "input": "text+image", "endpoint": "fal-ai/kling-video/v1.6/standard/image-to-video",
-     "est_cost_usd": 0.20, "build": _vid_kling_i2v, "note": "Cheaper image→video tier."},
-    {"id": "veo3_fast", "label": "Google Veo 3 — Fast", "provider": "Google",
-     "kind": "video", "input": "text+image", "image_optional": True, "endpoint": "fal-ai/veo3/fast",
-     "est_cost_usd": 0.50, "build": _vid_veo, "note": "8s, 9:16, native audio. Image optional (used as first frame)."},
-    {"id": "veo3", "label": "Google Veo 3", "provider": "Google",
-     "kind": "video", "input": "text+image", "image_optional": True, "endpoint": "fal-ai/veo3",
-     "est_cost_usd": 2.50, "build": _vid_veo, "note": "Flagship. 8s, 9:16, native audio. Slow + pricey."},
+     # Verified 2026-09: $0.28 for 5s ($0.056/s) — was showing 0.20 (under).
+     "est_cost_usd": 0.28, "build": _vid_kling_i2v, "note": "Cheaper image→video tier."},
+    {"id": "veo3_fast", "label": "Google Veo 3.1 — Fast", "provider": "Google",
+     # fal-ai/veo3/fast is deprecated ("no longer supported") — migrated to
+     # 3.1/fast 2026-09; live access confirmed via a real subscribe call.
+     # image_optional dropped: veo3.1's base endpoint schema has no
+     # image_url field (image-to-video is fal-ai/veo3.1/fast/image-to-video,
+     # a separate endpoint, unlike the old veo3's single-endpoint shape).
+     "kind": "video", "input": "text", "endpoint": "fal-ai/veo3.1/fast",
+     # Verified 2026-09 directly against fal.ai's veo3.1/fast page: $0.10/s
+     # with audio off at 720p/1080p — 8s clip = $0.80.
+     "est_cost_usd": 0.80, "build": _vid_veo, "note": "8s, 9:16, audio disabled (unused — cast's own TTS replaces it)."},
+    {"id": "veo3", "label": "Google Veo 3.1", "provider": "Google",
+     "kind": "video", "input": "text", "endpoint": "fal-ai/veo3.1",
+     # Verified 2026-09 directly against fal.ai's veo3.1 page: $0.20/s with
+     # audio off at 720p/1080p — 8s clip = $1.60. See
+     # services/cost_rates.py's fal/veo_3 entry.
+     "est_cost_usd": 1.60, "build": _vid_veo, "note": "Flagship. 8s, 9:16, audio disabled (unused)."},
     # ── talking head (image + audio -> lip-synced video) ──
     {"id": "hallo", "label": "Hallo — portrait lip-sync", "provider": "fal",
      "kind": "talking_head", "input": "image+audio", "endpoint": "fal-ai/hallo",

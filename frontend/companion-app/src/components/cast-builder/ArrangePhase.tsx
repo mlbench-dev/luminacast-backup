@@ -403,21 +403,24 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
         // No saved state or outdated — build fresh from blocks
         let avatarFaceKey: string | undefined;
         let avatarName: string | undefined;
+        let avatarLayout: string | undefined;
         const avatarId = freshCast.avatar_id || cast.avatar_id;
         if (avatarId) {
           try {
             const avatar = await avatarApi.status(avatarId);
             avatarFaceKey = avatar?.face_ref_key ?? undefined;
             avatarName = avatar?.name ?? undefined;
+            avatarLayout = avatar?.layout ?? undefined;
           } catch (err) {
             console.warn("Failed to fetch avatar face_ref_key:", err);
           }
         }
 
-        console.log("BRIDGE INPUT (fresh build):", { avatarFaceKey, avatarName, castId: freshCast.id, blockCount: freshCast.blocks?.length });
+        console.log("BRIDGE INPUT (fresh build):", { avatarFaceKey, avatarName, avatarLayout, castId: freshCast.id, blockCount: freshCast.blocks?.length });
         const { state } = castToEditorStarterTimeline(freshCast, {
           avatarFaceKey,
           avatarName,
+          avatarLayout,
           fps: 30,
         });
         // Re-fit product media to its real aspect ratio (probes asset
@@ -434,14 +437,16 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
         // Fallback: build from prop cast data
         let avatarFaceKey: string | undefined;
         let avatarName: string | undefined;
+        let avatarLayout: string | undefined;
         if (cast.avatar_id) {
           try {
             const avatar = await avatarApi.status(cast.avatar_id);
             avatarFaceKey = avatar?.face_ref_key ?? undefined;
             avatarName = avatar?.name ?? undefined;
+            avatarLayout = avatar?.layout ?? undefined;
           } catch { /* ignore */ }
         }
-        const { state } = castToEditorStarterTimeline(cast, { avatarFaceKey, avatarName, fps: 30 });
+        const { state } = castToEditorStarterTimeline(cast, { avatarFaceKey, avatarName, avatarLayout, fps: 30 });
         await applyAspectFit(state);
         if (!cancelled) {
           setInitialState(state);
@@ -552,17 +557,20 @@ export const ArrangePhase = forwardRef<ArrangePhaseHandle, ArrangePhaseProps>(fu
       // Rebuild the editor state with updated cast data
       let avatarFaceKey: string | undefined;
       let avatarName: string | undefined;
+      let avatarLayout: string | undefined;
       if (cast.avatar_id) {
         try {
           const avatar = await avatarApi.status(cast.avatar_id);
           avatarFaceKey = avatar?.face_ref_key ?? undefined;
           avatarName = avatar?.name ?? undefined;
+          avatarLayout = avatar?.layout ?? undefined;
         } catch { /* ignore */ }
       }
-      console.log("BRIDGE INPUT:", { avatarFaceKey, avatarName, castId: refreshed.id, blockCount: refreshed.blocks?.length });
+      console.log("BRIDGE INPUT:", { avatarFaceKey, avatarName, avatarLayout, castId: refreshed.id, blockCount: refreshed.blocks?.length });
       const { state } = castToEditorStarterTimeline(refreshed, {
         avatarFaceKey,
         avatarName,
+        avatarLayout,
         fps: 30,
       });
       await applyAspectFit(state);

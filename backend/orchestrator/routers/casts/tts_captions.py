@@ -344,6 +344,16 @@ async def editor_generate_captions(
     remapped to each block's timeline offset.
 
     Returns Remotion-compatible caption tokens with per-block metadata.
+
+    When a segment includes ``variant_id``, the transcription is ALSO
+    persisted onto that ``Variant.caption_words``/``caption_segments`` —
+    not just returned for the browser preview. Without this, a caller like
+    the per-block "Regenerate Audio" flow only ever updated the editor's
+    in-memory preview state; the render pipeline reads captions from
+    ``variant.caption_words`` in the DB (see ``tasks/cast_render.py``'s
+    ``_load_caption_overlays``), which this endpoint never used to touch —
+    so captions looked perfectly synced in the editor but were stale/wrong
+    in the actual rendered video.
     """
     from services.gpu_server import get_gpu_server_client
 
@@ -378,6 +388,7 @@ async def editor_generate_captions(
         )
 
     caption_results = []
+    variants_to_commit = False
     if pending_segs:
         gathered = await asyncio.gather(
             *(_transcribe_seg(seg["audio_url"]) for seg in pending_segs),
@@ -386,6 +397,7 @@ async def editor_generate_captions(
         for seg, outcome in zip(pending_segs, gathered):
             block_id = seg.get("block_id", "")
             audio_element_id = seg.get("audio_element_id", "")
+            variant_id = seg.get("variant_id", "")
             start_offset_s = float(seg.get("start_offset_s", 0))
 
             if isinstance(outcome, Exception):
@@ -429,5 +441,35 @@ async def editor_generate_captions(
                 "words": remapped_words,
                 "word_count": len(words),
             })
+
+            if variant_id:
+                variant_result = await db.execute(
+                    select(Variant)
+                    .join(Block, Variant.block_id == Block.id)
+                    .where(Variant.id == variant_id, Block.cast_id == cast_id)
+                )
+                variant = variant_result.scalar_one_or_none()
+                if variant is None:
+                    logger.warning(
+                        "editor-generate-captions: variant_id=%s not found under cast=%s — "
+                        "preview updated but render source-of-truth was NOT persisted",
+                        variant_id, cast_id,
+                    )
+                else:
+                    variant.caption_words = [
+                        {
+                            "word": w.get("word", "").strip(),
+                            "start": round(w.get("start", 0), 3),
+                            "end": round(w.get("end", 0), 3),
+                            "probability": w.get("probability", 0),
+                        }
+                        for w in words
+                    ]
+                    variant.caption_segments = outcome.get("segments", [])
+                    _realign_sfx(variant)
+                    variants_to_commit = True
+
+    if variants_to_commit:
+        await db.commit()
 
     return {"results": caption_results}

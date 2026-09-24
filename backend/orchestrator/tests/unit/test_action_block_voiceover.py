@@ -215,8 +215,13 @@ def test_action_block_metadata_helper_from_llm_scene():
     # The helper has no DB / framework deps — it's pure dict shaping.
     # We import it via a lightweight execution of the relevant block.
     src = _read(ROUTERS_CASTS_GENERATION_PATH)
+    # Stop at the next top-level def OR async def — the function is now
+    # followed by `async def _propagate_product_to_blocks(...)` in
+    # generation.py, and the old (?=def |\Z) lookahead doesn't match
+    # "async def", so it overshot into unrelated route-handler code that
+    # references names (like `router`) not available in this bare exec().
     fn_match = re.search(
-        r"def _action_block_metadata_from_scene\(.*?\n(?=def |\Z)",
+        r"def _action_block_metadata_from_scene\(.*?\n(?=(?:async )?def |\Z)",
         src, flags=re.DOTALL,
     )
     assert fn_match, "could not locate _action_block_metadata_from_scene"

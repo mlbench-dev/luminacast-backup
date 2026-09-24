@@ -259,6 +259,11 @@ async def generate_ai_video_asset(
                 kling_args["aspect_ratio"] = aspect_ratio
             if not model_endpoint and kling_tier in _KLING_CFG_SCALE:
                 kling_args["cfg_scale"] = _KLING_CFG_SCALE[kling_tier]
+            if _is_veo:
+                # Veo's own audio track is never used for product b-roll —
+                # generate_audio defaults to true on fal.ai's side and
+                # costs extra for nothing here.
+                kling_args["generate_audio"] = False
             return fal_client.subscribe(kling_model, arguments=kling_args)
 
         result = await asyncio.to_thread(_run_kling)

@@ -23,8 +23,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-CANVAS_W = 480
-CANVAS_H = 848
+CANVAS_W = 1080
+CANVAS_H = 1920
 
 
 # ── fakes ────────────────────────────────────────────────────────────────────

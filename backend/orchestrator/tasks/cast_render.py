@@ -1699,6 +1699,7 @@ def _apply_real_block_durations(
     # window, falling back to the widest [s, e] span across any element
     # tagged with that block_id when no bonded element is present.
     old_windows: dict[str, tuple[float, float]] = {}
+    bonded_bids: set[str] = set()  # blocks whose window is already the bonded element's — protected from widening
     block_order: list[str] = []  # preserve original timeline order
     for tr in tracks:
         if not isinstance(tr, dict):
@@ -1719,15 +1720,28 @@ def _apply_real_block_durations(
             if e_v <= s_v:
                 continue
             # Bonded element wins (defines the canonical window); else
-            # widen the existing tentative window.
+            # widen the existing tentative window — but only until a
+            # bonded element has actually claimed it. Track order isn't
+            # guaranteed (captions/overlay tracks can be processed after
+            # the video/audio tracks), so without `bonded_bids` a
+            # non-bonded rider processed later — e.g. a caption whose own
+            # real-audio-derived span runs past the block's stale bonded
+            # slot, exactly the condition this whole reflow exists to fix —
+            # would silently stretch the "old window" everything else
+            # (including the bonded video/audio's own reflow math) is
+            # measured against, corrupting the correction it was supposed
+            # to feed into.
             is_bonded = bool(meta.get("bonded"))
             if bid not in old_windows:
                 old_windows[bid] = (s_v, e_v)
                 block_order.append(bid)
+                if is_bonded:
+                    bonded_bids.add(bid)
             else:
                 if is_bonded:
                     old_windows[bid] = (s_v, e_v)
-                else:
+                    bonded_bids.add(bid)
+                elif bid not in bonded_bids:
                     cs, ce = old_windows[bid]
                     old_windows[bid] = (min(cs, s_v), max(ce, e_v))
     if not old_windows:
@@ -1797,10 +1811,30 @@ def _apply_real_block_durations(
             new_s_blk, new_e_blk = new_windows[bid]
             old_dur = max(1e-6, old_e - old_s)
             new_dur = max(0.0, new_e_blk - new_s_blk)
-            rel_s = max(0.0, s_v - old_s) / old_dur
-            rel_e = max(0.0, e_v - old_s) / old_dur
-            mapped_s = _snap(new_s_blk + rel_s * new_dur)
-            mapped_e = _snap(new_s_blk + rel_e * new_dur)
+
+            el_type = (el.get("type") or "").lower().strip()
+            if el_type in ("caption", "captions"):
+                # Captions carry REAL word-level timing (Whisper transcription
+                # of the actual final audio) — unlike the block's slot length,
+                # this was never a guess, so it was never wrong. Proportional
+                # rescaling (the else branch, correct for elements that
+                # genuinely need to stretch/shrink to fill a slot, e.g. a
+                # b-roll clip or product overlay) distorts an already-correct
+                # caption whenever the real audio duration differs from the
+                # stale Arrange-slot estimate this reflow is correcting for —
+                # captions would drift out of sync in the render while still
+                # looking perfect in the editor preview (which never runs
+                # this reflow at all, so it never had a reason to drift).
+                # Shift instead: move the caption by exactly how far its
+                # block moved, preserving its own internal span untouched.
+                delta = new_s_blk - old_s
+                mapped_s = _snap(s_v + delta)
+                mapped_e = _snap(e_v + delta)
+            else:
+                rel_s = max(0.0, s_v - old_s) / old_dur
+                rel_e = max(0.0, e_v - old_s) / old_dur
+                mapped_s = _snap(new_s_blk + rel_s * new_dur)
+                mapped_e = _snap(new_s_blk + rel_e * new_dur)
             if mapped_e <= mapped_s:
                 mapped_e = _snap(mapped_s + snap_step)
             new_el = dict(el)
