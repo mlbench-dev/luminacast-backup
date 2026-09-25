@@ -141,27 +141,32 @@ jobs:
           name: playwright-report
           path: frontend/companion-app/playwright-report/
 
-  deploy:
-    name: Deploy to Production
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: 72.62.39.238
-          username: root
-          password: ${{ secrets.SSH_PASSWORD }}
-          command_timeout: 20m
-          script: |
-            set -e
-            cd /opt/luminacast-omni
-            git pull origin main
-            docker compose build
-            docker compose down --remove-orphans || true
-            docker compose up -d --force-recreate
-            sleep 10
-            docker compose exec -T orchestrator alembic upgrade head
-            docker compose exec -T orchestrator python scripts/create_admin.py || true
-            echo "Deployed at $(date)"
+  # Deployment is manual now — see deploy.sh at the repo root, run by hand
+  # on the server. Pushing to main (even after CI passes) no longer
+  # deploys anything by itself. Kept below, commented out, in case
+  # auto-deploy-on-push is ever wanted again.
+  #
+  # deploy:
+  #   name: Deploy to Production
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #
+  #   steps:
+  #     - name: Deploy via SSH
+  #       uses: appleboy/ssh-action@v1
+  #       with:
+  #         host: 72.62.39.238
+  #         username: root
+  #         password: ${{ secrets.SSH_PASSWORD }}
+  #         command_timeout: 20m
+  #         script: |
+  #           set -e
+  #           cd /opt/luminacast-omni
+  #           git pull origin main
+  #           docker compose build
+  #           docker compose down --remove-orphans || true
+  #           docker compose up -d --force-recreate
+  #           sleep 10
+  #           docker compose exec -T orchestrator alembic upgrade head
+  #           docker compose exec -T orchestrator python scripts/create_admin.py || true
+  #           echo "Deployed at $(date)"
