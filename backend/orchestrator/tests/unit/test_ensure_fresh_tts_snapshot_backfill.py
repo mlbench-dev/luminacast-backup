@@ -23,8 +23,12 @@ class _FakeVariant:
         self.tts_r2_key = "casts/cst_x/blk_11/tts.wav"
         self.audio_key = "casts/cst_x/blk_11/tts.wav"
         self.tts_duration_seconds = 4.2
-        # Baked AFTER the last variant edit -> not stale.
+        # Baked AFTER the last script edit -> not stale. updated_at is
+        # intentionally NOT what the staleness check reads (see
+        # script_text_updated_at's docstring on the Variant model) — it's
+        # set here anyway since some code paths may still touch it.
         self.updated_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        self.script_text_updated_at = datetime.now(timezone.utc) - timedelta(hours=1)
 
 
 class _Scalars:

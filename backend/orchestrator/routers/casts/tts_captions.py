@@ -308,7 +308,10 @@ async def generate_captions(
                         "error": str(outcome)[:200],
                     })
             else:
-                variant.caption_words = outcome.get("words", [])
+                from utils.sfx_extraction import align_caption_words_to_script
+                raw_words = outcome.get("words", [])
+                aligned_words = align_caption_words_to_script(variant.script_text, raw_words)
+                variant.caption_words = aligned_words if aligned_words is not None else raw_words
                 variant.caption_segments = outcome.get("segments", [])
                 _realign_sfx(variant)
                 results.append({
@@ -413,6 +416,34 @@ async def editor_generate_captions(
                 continue
 
             words = outcome.get("words", [])
+
+            variant = None
+            if variant_id:
+                variant_result = await db.execute(
+                    select(Variant)
+                    .join(Block, Variant.block_id == Block.id)
+                    .where(Variant.id == variant_id, Block.cast_id == cast_id)
+                )
+                variant = variant_result.scalar_one_or_none()
+                if variant is None:
+                    logger.warning(
+                        "editor-generate-captions: variant_id=%s not found under cast=%s — "
+                        "preview updated but render source-of-truth was NOT persisted",
+                        variant_id, cast_id,
+                    )
+
+            # Whisper transcribes the ACTUAL audio, but the audio was
+            # synthesized from the variant's own known script_text — so an
+            # ASR mishear (e.g. "That" -> "Fat") can be corrected against
+            # ground truth before it ever reaches the preview or gets
+            # persisted. See align_caption_words_to_script's docstring.
+            from utils.sfx_extraction import align_caption_words_to_script
+            aligned_words = (
+                align_caption_words_to_script(variant.script_text, words)
+                if variant is not None else None
+            )
+            corrected_words = aligned_words if aligned_words is not None else words
+
             remapped_words = [
                 {
                     "word": w.get("word", "").strip(),
@@ -422,7 +453,7 @@ async def editor_generate_captions(
                     "block_id": block_id,
                     "source_audio_id": audio_element_id,
                 }
-                for w in words
+                for w in corrected_words
             ]
             captions = [
                 {
@@ -439,35 +470,22 @@ async def editor_generate_captions(
                 "audio_element_id": audio_element_id,
                 "captions": captions,
                 "words": remapped_words,
-                "word_count": len(words),
+                "word_count": len(corrected_words),
             })
 
-            if variant_id:
-                variant_result = await db.execute(
-                    select(Variant)
-                    .join(Block, Variant.block_id == Block.id)
-                    .where(Variant.id == variant_id, Block.cast_id == cast_id)
-                )
-                variant = variant_result.scalar_one_or_none()
-                if variant is None:
-                    logger.warning(
-                        "editor-generate-captions: variant_id=%s not found under cast=%s — "
-                        "preview updated but render source-of-truth was NOT persisted",
-                        variant_id, cast_id,
-                    )
-                else:
-                    variant.caption_words = [
-                        {
-                            "word": w.get("word", "").strip(),
-                            "start": round(w.get("start", 0), 3),
-                            "end": round(w.get("end", 0), 3),
-                            "probability": w.get("probability", 0),
-                        }
-                        for w in words
-                    ]
-                    variant.caption_segments = outcome.get("segments", [])
-                    _realign_sfx(variant)
-                    variants_to_commit = True
+            if variant is not None:
+                variant.caption_words = [
+                    {
+                        "word": w.get("word", "").strip(),
+                        "start": round(w.get("start", 0), 3),
+                        "end": round(w.get("end", 0), 3),
+                        "probability": w.get("probability", 0),
+                    }
+                    for w in corrected_words
+                ]
+                variant.caption_segments = outcome.get("segments", [])
+                _realign_sfx(variant)
+                variants_to_commit = True
 
     if variants_to_commit:
         await db.commit()

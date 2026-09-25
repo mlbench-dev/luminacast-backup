@@ -141,6 +141,80 @@ def _map_text_words_to_spoken(script_words: list[str], spoken_words: list[str]) 
     return mapping  # type: ignore[return-value]
 
 
+def align_caption_words_to_script(
+    script_text: str | None,
+    whisper_words: list[dict] | None,
+) -> list[dict] | None:
+    """Reconcile Whisper's transcribed words against the KNOWN script text.
+
+    The TTS audio is synthesized FROM ``script_text``, so the words actually
+    spoken are already known with certainty — the only thing Whisper tells us
+    that we don't already know is WHEN each word lands. Storing Whisper's
+    transcribed word TEXT verbatim (the previous behavior) means an ordinary
+    ASR mishear — e.g. "That" heard as "Fat", acoustically similar and common
+    right at the soft onset of an utterance — got written straight into
+    ``caption_words`` and burned into the rendered video's captions.
+
+    Keeps Whisper's per-word timing but replaces the word TEXT with the
+    aligned script word, using the same difflib-based matching
+    :func:`_map_text_words_to_spoken` already uses for SFX marker alignment
+    (tolerates the usual mismatches: numbers spoken as multiple words,
+    occasional dropped/inserted words, minor mishears).
+
+    Returns ``None`` (not an empty list) when there's nothing to align
+    against — no script text, or no Whisper words — so the caller can fall
+    back to its existing raw/fallback behavior.
+    """
+    from utils.script_cleaning import clean_script_tokens
+
+    script_words = clean_script_tokens(script_text or "")
+    if not script_words or not whisper_words:
+        return None
+
+    spoken_words = [str(w.get("word") or "") for w in whisper_words]
+    mapping = _map_text_words_to_spoken(script_words, spoken_words)
+
+    out: list[dict] = []
+    i = 0
+    n = len(script_words)
+    while i < n:
+        j = mapping[i]
+        i2 = i + 1
+        while i2 < n and mapping[i2] == j:
+            i2 += 1
+        group = script_words[i:i2]
+        src = whisper_words[j] if j is not None and 0 <= j < len(whisper_words) else None
+        if src is None:
+            start = out[-1]["end"] if out else 0.0
+            end = start
+            prob = 0.5
+        else:
+            try:
+                start = float(src.get("start", 0) or 0)
+                end = float(src.get("end", start) or start)
+            except (TypeError, ValueError):
+                start = out[-1]["end"] if out else 0.0
+                end = start
+            prob = src.get("probability", 0.5)
+        # Two+ script words landing on the same Whisper word (a "delete" or a
+        # multi-word "replace" group) share that word's timing window —
+        # subdivide it evenly so each still gets its own start/end instead of
+        # all of them stacking on identical timestamps.
+        span = max(end - start, 0.0)
+        step = span / len(group) if group else 0.0
+        for k, w in enumerate(group):
+            ws = start + k * step
+            we = (start + (k + 1) * step) if step > 0 else end
+            out.append({
+                "word": w,
+                "start": round(ws, 3),
+                "end": round(max(we, ws), 3),
+                "probability": prob,
+            })
+        i = i2
+    return out
+
+
 def align_sfx_to_words(
     markers: list[SfxMarker],
     caption_words: list[dict] | None,

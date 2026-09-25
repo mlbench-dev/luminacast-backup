@@ -990,7 +990,10 @@ async def _generate_tts_only(cast_id: str, user_id: str, force: bool = False):
                             ]
                             variant.caption_segments = [{"start": 0, "end": dur, "text": clean_text}]
                     else:
-                        variant.caption_words = result.get("words", [])
+                        from utils.sfx_extraction import align_caption_words_to_script
+                        raw_words = result.get("words", [])
+                        aligned_words = align_caption_words_to_script(variant.script_text, raw_words)
+                        variant.caption_words = aligned_words if aligned_words is not None else raw_words
                         variant.caption_segments = result.get("segments", [])
 
                 # Resolve SFX markers to absolute timings now that word-level

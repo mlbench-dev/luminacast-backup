@@ -14,6 +14,7 @@ template which returns base64-encoded audio.
 
 import asyncio
 import base64
+import difflib
 import hashlib
 import json
 import logging
@@ -21,6 +22,7 @@ import os
 import subprocess
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 
 import httpx
@@ -66,6 +68,81 @@ def _max_new_tokens_for(text: str) -> int:
     """
     base = max(64, len(text) * 3 + 64)
     return min(base, 1024)
+
+
+def _norm_chars(text: str) -> str:
+    """Lowercase, alnum-only, no spaces — collapses away every formatting
+    difference between the script's own word-splitting and however the
+    transcriber happened to tokenize the same speech (hyphens, contractions,
+    punctuation), so comparison is purely about the actual SPOKEN content.
+    """
+    return _re_tts.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _find_hallucination_trim_point(
+    expected_text: str, transcribed_words: list[dict],
+) -> tuple[float | None, list[str]]:
+    """Compare the script actually sent to TTS against what a transcriber
+    heard, and return (trim_at_seconds, extra_words) if the audio runs on
+    past the script with a real, spoken hallucinated tail — else (None, []).
+
+    Character-level (not word-level) alignment: expected_text is a script
+    string, transcribed_words is per-word {word, start, end} from a real
+    transcription of the generated audio. Comparing at the character level
+    (after stripping all punctuation/spacing) means a script token like
+    "crusted-on" doesn't falsely look like a mismatch just because the
+    transcriber split it into "crusted" + "on" — a naive word-by-word walk
+    would wrongly bail out on the very first such split.
+    """
+    expected_norm = _norm_chars(expected_text)
+    if not expected_norm or not transcribed_words:
+        return None, []
+
+    got_norm_parts: list[str] = []
+    char_to_word: list[int] = []
+    for idx, w in enumerate(transcribed_words):
+        piece = _norm_chars(w.get("word", ""))
+        if not piece:
+            continue
+        got_norm_parts.append(piece)
+        char_to_word.extend([idx] * len(piece))
+    got_norm = "".join(got_norm_parts)
+    if not got_norm:
+        return None, []
+
+    matcher = difflib.SequenceMatcher(None, expected_norm, got_norm, autojunk=False)
+    blocks = matcher.get_matching_blocks()
+    total_matched = sum(m.size for m in blocks)
+    # Most of the script must actually show up in the transcription for this
+    # comparison to be trustworthy — otherwise this is a garbled/low-quality
+    # transcription overall, not evidence of a hallucinated tail, and
+    # trimming on it would risk cutting real content.
+    if total_matched < len(expected_norm) * 0.7:
+        return None, []
+
+    # Furthest point reached in the TRANSCRIPTION by any real (non-trivial)
+    # match against the script — ignores incidental 1-2 char coincidences.
+    match_end_in_got = 0
+    for m in blocks:
+        if m.size >= 3:
+            match_end_in_got = max(match_end_in_got, m.b + m.size)
+
+    leftover = len(got_norm) - match_end_in_got
+    # A handful of stray characters is normal transcription noise at a word
+    # boundary (a trailing "s", a mis-heard final syllable) — require a real
+    # multi-character tail (roughly a whole extra word) before trusting it.
+    if leftover < 4 or match_end_in_got >= len(got_norm):
+        return None, []
+
+    last_matched_char = match_end_in_got - 1
+    last_matched_word_idx = char_to_word[last_matched_char]
+    last_matched_word = transcribed_words[last_matched_word_idx]
+    trim_at_s = float(last_matched_word.get("end", 0)) + 0.15
+
+    extra_words = [
+        w.get("word", "") for w in transcribed_words[last_matched_word_idx + 1:]
+    ]
+    return trim_at_s, extra_words
 
 
 RUNPOD_API_BASE = "https://api.runpod.ai/v2"
@@ -910,6 +987,7 @@ class FishAudioService:
                         clip_mic_enabled=clip_mic_enabled,
                         scene_chain_id=scene_chain_id,
                         block_id=block_id,
+                        expected_text=text,
                     )
                 except Exception as e:  # noqa: deliberate fallback — self-hosted TTS → Fish Audio API (zero-shot reference)
                     _log("warning", "fish_speech",
@@ -926,6 +1004,7 @@ class FishAudioService:
                         clip_mic_enabled=clip_mic_enabled,
                         scene_chain_id=scene_chain_id,
                         block_id=block_id,
+                        expected_text=text,
                     )
 
             # Fish Audio UUID voice_id — try self-hosted if configured (won't work for
@@ -941,7 +1020,101 @@ class FishAudioService:
                 clip_mic_enabled=clip_mic_enabled,
                 scene_chain_id=scene_chain_id,
                 block_id=block_id,
+                expected_text=text,
             )
+
+    async def _trim_hallucinated_tail(
+        self, result: dict, expected_text: str, block_id: str | None,
+    ) -> dict:
+        """Detect and cut off TTS hallucination past the script's end.
+
+        Autoregressive voice models (Fish Speech in particular) sometimes
+        keep generating after the intended text ends, producing a spurious
+        trailing phrase the user never wrote — confirmed live: script
+        ending "...never works." was synthesized as "...never works but to
+        a user", where "but to a user" is pure invention with no source in
+        the script. ``_max_new_tokens_for`` caps this for the self-hosted
+        RunPod path; the Fish Audio hosted API fallback (used whenever
+        RunPod is unavailable) has no equivalent length limit — so this
+        runs after EITHER backend, as a shared safety net that doesn't
+        depend on which one actually produced the audio.
+
+        Best-effort: any failure here (transcription error, no words
+        returned, etc.) leaves ``result`` untouched — a render must never
+        fail because this validation step itself broke.
+        """
+        tmp_path = result.get("tmp_path") or ""
+        if not tmp_path or not os.path.exists(tmp_path) or not expected_text.strip():
+            return result
+
+        scratch_key = f"tts/_validate/{uuid.uuid4().hex[:16]}.mp3"
+        r2 = None
+        try:
+            from services.r2_storage import get_r2_storage_service
+            r2 = get_r2_storage_service()
+            with open(tmp_path, "rb") as f:
+                raw_bytes = f.read()
+            await r2.upload_bytes(raw_bytes, scratch_key, content_type="audio/mpeg")
+            scratch_url = r2.get_public_url(scratch_key)
+
+            from services.render_providers import FalWhisperProvider
+            transcription = await FalWhisperProvider().generate(
+                scratch_url, language="en", word_timestamps=True,
+            )
+            words = transcription.get("words") or []
+            if not words:
+                return result
+
+            trim_at_s, extra_words = _find_hallucination_trim_point(expected_text, words)
+            if trim_at_s is None:
+                return result
+
+            raw_duration_s = float(result.get("duration_seconds") or 0.0)
+            if raw_duration_s <= 0 or trim_at_s >= raw_duration_s - 0.05:
+                return result
+
+            _log(
+                "warning", "fish_audio",
+                "TTS hallucination detected and trimmed",
+                block_id=block_id, extra_words=extra_words,
+                trim_at_s=round(trim_at_s, 2), was_s=round(raw_duration_s, 2),
+            )
+            sentry_sdk.capture_message(
+                f"TTS hallucination trimmed for block {block_id}: "
+                f"dropped {extra_words!r}",
+                level="warning",
+            )
+
+            trimmed_path = tmp_path + ".trimmed.mp3"
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", tmp_path, "-t", f"{trim_at_s:.3f}",
+                "-c", "copy", trimmed_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=30)
+            if proc.returncode == 0 and os.path.exists(trimmed_path) and os.path.getsize(trimmed_path) > 0:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                result["tmp_path"] = trimmed_path
+                result["duration_seconds"] = trim_at_s
+            return result
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            _log(
+                "warning", "fish_audio",
+                f"TTS hallucination check failed (non-fatal): {e}",
+                block_id=block_id,
+            )
+            return result
+        finally:
+            if r2 is not None:
+                try:
+                    await r2.delete_object(scratch_key)
+                except Exception:
+                    pass
 
     async def _attach_post_process(
         self,
@@ -950,6 +1123,7 @@ class FishAudioService:
         clip_mic_enabled: bool = False,
         scene_chain_id: str | None = None,
         block_id: str | None = None,
+        expected_text: str = "",
     ) -> dict:
         """Post-process the freshly-generated TTS (de-ess / EQ / compand /
         loudnorm), overwrite ``audio_key`` with the 44.1 kHz MP3 master,
@@ -958,6 +1132,7 @@ class FishAudioService:
         On any failure the original ``result`` dict is returned unchanged
         so renders never abort on a post-process hiccup.
         """
+        result = await self._trim_hallucinated_tail(result, expected_text, block_id)
         try:
             audio_key = result.get("audio_key") or ""
             tmp_path = result.get("tmp_path") or ""

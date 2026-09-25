@@ -1,7 +1,8 @@
 import enum
+from datetime import datetime, timezone
 from database import Base
 from sqlalchemy import Column, String, DateTime, Enum, Boolean, JSON, Float, Integer, ForeignKey, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from sqlalchemy.sql import func
 
 
@@ -24,6 +25,16 @@ class Variant(Base):
     variant_style = Column(String, default="")
 
     script_text = Column(Text, nullable=True)
+    # Set ONLY when script_text itself changes (see the @validates hook
+    # below) — deliberately separate from `updated_at`, which bumps on
+    # ANY column write (captions, sfx timings, status, ...). The render
+    # pipeline's stale-TTS check (tasks/cast_render.py
+    # _ensure_fresh_tts_for_block) needs to ask specifically "was the
+    # script edited after this audio was generated?" — using the
+    # all-purpose `updated_at` for that question made it fire on the
+    # normal generate-audio-then-generate-captions sequence, which always
+    # writes captions in a second commit after the audio already exists.
+    script_text_updated_at = Column(DateTime, nullable=True)
     motion_prompt = Column(Text, default="")
     estimated_duration_seconds = Column(Float, default=0)
 
@@ -66,3 +77,19 @@ class Variant(Base):
     updated_at = Column(DateTime, onupdate=func.now(), nullable=True)
 
     block = relationship("Block", back_populates="variants")
+
+    @validates("script_text")
+    def _touch_script_text_updated_at(self, key, value):
+        # SQLAlchemy validators only run on an explicit Python assignment
+        # (`variant.script_text = ...`), never while hydrating a row from
+        # a SELECT — so this fires exactly on real edits, including the
+        # very first one when a variant is created with a script.
+        if value != self.script_text:
+            # script_text_updated_at is DateTime (no timezone) like every
+            # other timestamp column here — asyncpg rejects a tz-aware
+            # value against a "timestamp without time zone" column outright
+            # (every script edit anywhere would fail to commit), so this
+            # strips tzinfo the same way routers/casts/variants.py already
+            # does for audio_stale_since.
+            self.script_text_updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        return value

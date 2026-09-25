@@ -4635,6 +4635,49 @@ async def generate_cast_clips(
                     failed_count += 1
                     continue
 
+                # Step 1.5: Real word-level captions for THIS take, right
+                # away. Nothing in this primary generation pipeline used to
+                # populate caption_words at all — a freshly generated cast's
+                # captions stayed on the crude evenly-spaced-from-script
+                # fallback (used by both the editor preview and any render)
+                # until something else happened to trigger real alignment
+                # later (a manual "regenerate captions", or the editor's
+                # bonded-shift auto-regen). Mirrors the same re-alignment
+                # added to tasks/cast_render.py's _ensure_fresh_tts_for_block.
+                # Best-effort: any failure here leaves caption_words unset,
+                # same as the previous behavior — never blocks generation on
+                # a transcription hiccup.
+                if audio_url:
+                    try:
+                        from services.provider_chain import try_chain
+                        from services.render_providers import (
+                            HostkeyWhisperxProvider,
+                            FalWhisperProvider,
+                        )
+                        from utils.sfx_extraction import align_caption_words_to_script
+
+                        transcription = await try_chain(
+                            [HostkeyWhisperxProvider(), FalWhisperProvider()],
+                            step_label="transcription",
+                            render_id=cast_id,
+                            block_id=variant.id,
+                            audio_url=audio_url,
+                            language="en",
+                            word_timestamps=True,
+                        )
+                        raw_words = transcription.get("words") or []
+                        aligned_words = align_caption_words_to_script(variant.script_text, raw_words)
+                        variant.caption_words = aligned_words if aligned_words is not None else raw_words
+                        variant.caption_segments = transcription.get("segments") or []
+                    except Exception as cap_exc:
+                        import sentry_sdk
+                        sentry_sdk.capture_exception(cap_exc)
+                        logger.warning(
+                            "Block %s variant %s: caption alignment failed during "
+                            "generation (non-fatal, captions stay unset): %s",
+                            getattr(block, "id", None), variant.id, cap_exc,
+                        )
+
                 # Step 2: Submit InfiniteTalk with webhook (non-blocking)
                 scene_key = getattr(block, 'scene_image_key', None) or ""
                 if not scene_key and avatar_face_ref_key:

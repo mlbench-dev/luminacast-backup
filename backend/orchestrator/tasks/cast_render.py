@@ -3690,18 +3690,31 @@ async def _ensure_fresh_tts_for_block(
                         stale_reason = "r2_object_missing"
                     else:
                         last_mod = head.get("LastModified")
-                        v_updated = variant.updated_at
-                        if last_mod and v_updated:
+                        # Deliberately NOT variant.updated_at — that bumps
+                        # on ANY column write (captions, sfx timings,
+                        # status, ...), including the normal
+                        # generate-audio-then-generate-captions sequence,
+                        # which always writes captions in a SEPARATE,
+                        # LATER commit after the audio already exists.
+                        # Comparing against that made this fire on every
+                        # block's first render, discarding perfectly good
+                        # audio for a fresh (differently-paced) take.
+                        # script_text_updated_at only moves when the
+                        # script itself is actually edited (see the
+                        # Variant model's @validates hook) — the one
+                        # question this check is actually trying to ask.
+                        script_updated = variant.script_text_updated_at
+                        if last_mod and script_updated:
                             lm = last_mod
-                            vu = v_updated
+                            su = script_updated
                             if lm.tzinfo is None:
                                 lm = lm.replace(tzinfo=timezone.utc)
-                            if vu.tzinfo is None:
-                                vu = vu.replace(tzinfo=timezone.utc)
+                            if su.tzinfo is None:
+                                su = su.replace(tzinfo=timezone.utc)
                             # Allow a small clock-skew margin (5s)
-                            if (vu - lm).total_seconds() > 5:
+                            if (su - lm).total_seconds() > 5:
                                 stale = True
-                                stale_reason = "r2_object_older_than_variant_updated_at"
+                                stale_reason = "r2_object_older_than_script_edit"
                 except Exception as head_exc:
                     sentry_sdk.capture_exception(head_exc)
 
@@ -3814,19 +3827,81 @@ async def _ensure_fresh_tts_for_block(
                 variant.tts_lipsync_r2_key = new_lipsync_key
             variant.tts_duration_seconds = duration
             variant.duration_seconds = duration
+            # This is a brand-new take — any caption_words/sfx_timings
+            # resolved against the OLD audio's word positions no longer mean
+            # anything against this one. Cleared here as a safe default;
+            # the re-alignment below (best-effort) repopulates both against
+            # THIS take before the single commit at the end of this block.
             variant.caption_words = None
             variant.caption_segments = None
             variant.word_timestamps = None
-            # This is a brand-new take — any sfx_timings resolved against the
-            # OLD audio's word positions no longer mean anything against this
-            # one. Drop them rather than fire [sfx:NAME] at whatever now
-            # happens to sit at that stale timestamp (the SFX/scene mismatch
-            # bug). Re-resolved next time captions are (re)aligned for this
-            # variant — see routers/casts/tts_captions.py.
             variant.sfx_timings = None
-            await session.commit()
 
             new_url = r2.get_public_url(new_key) if new_key else snapshot_audio_url
+
+            # Re-align captions against THIS take right away. The old
+            # behavior just left caption_words null here with a comment
+            # saying it'd be "re-resolved next time captions are (re)aligned"
+            # — but nothing ever automatically did that, so a block that hit
+            # this inline regen stayed on the crude evenly-spaced fallback
+            # (from editorStarterMapping.ts / routers/casts/tts_captions.py)
+            # in BOTH the editor preview and every subsequent render, until
+            # someone happened to manually hit "regenerate captions" — often
+            # never. Best-effort: any failure here just leaves caption_words
+            # empty (the previous behavior) — never blocks the render on a
+            # transcription hiccup.
+            sfx_markers_snapshot = list(variant.sfx_markers or [])
+            if new_url and script_text:
+                try:
+                    from services.provider_chain import try_chain
+                    from services.render_providers import (
+                        HostkeyWhisperxProvider,
+                        FalWhisperProvider,
+                    )
+                    from utils.sfx_extraction import (
+                        align_caption_words_to_script,
+                        align_sfx_to_words,
+                        SfxMarker,
+                    )
+                    from utils.script_cleaning import clean_script_tokens
+
+                    transcription = await try_chain(
+                        [HostkeyWhisperxProvider(), FalWhisperProvider()],
+                        step_label="transcription",
+                        render_id=cast_id,
+                        block_id=block_id,
+                        audio_url=new_url,
+                        language="en",
+                        word_timestamps=True,
+                    )
+                    raw_words = transcription.get("words") or []
+                    aligned_words = align_caption_words_to_script(script_text, raw_words)
+                    variant.caption_words = aligned_words if aligned_words is not None else raw_words
+                    variant.caption_segments = transcription.get("segments") or []
+                    if sfx_markers_snapshot:
+                        markers = [
+                            SfxMarker(name=m["name"], char_offset=m["char_offset"], word_index=m["word_index"])
+                            for m in sfx_markers_snapshot
+                        ]
+                        variant.sfx_timings = align_sfx_to_words(
+                            markers, variant.caption_words,
+                            tts_duration_seconds=duration,
+                            script_words=clean_script_tokens(script_text),
+                        ) or None
+                    logger.info(
+                        "Block %s: re-aligned captions for regenerated audio (%d words)",
+                        block_id, len(variant.caption_words or []),
+                    )
+                except Exception as cap_exc:
+                    sentry_sdk.capture_exception(cap_exc)
+                    logger.warning(
+                        "Block %s: caption re-alignment after inline TTS regen "
+                        "failed (non-fatal, captions stay unset): %s",
+                        block_id, cap_exc,
+                    )
+
+            await session.commit()
+
             logger.info(
                 "TTS regenerated inline for block %s: key=%s duration=%.2fs",
                 block_id, new_key, duration,
@@ -7460,9 +7535,23 @@ async def _render_async(task, render_id: str):
                     # has succeeded or exhausted every tier. A block that
                     # cycles through 2-3 tiers before succeeding can look
                     # like a silent multi-tens-of-minutes stall otherwise.
+                    #
+                    # state="baking" here is the actual fix for that: without
+                    # it, this callback updated current_provider/current_tier
+                    # (real, useful diagnostic data — confirmed via a live
+                    # cast) but never touched `state`, which stayed frozen at
+                    # its init value of "queued" through the whole multi-tier
+                    # retry. The frontend's RenderStatusPill only shows the
+                    # active-working spinner when state === "baking" (its
+                    # type union has no other in-progress value), so a block
+                    # deep into its 2nd/3rd provider tier still rendered as a
+                    # plain "queued / next" clock icon — indistinguishable
+                    # from a block that hadn't started at all.
                     if event.get("phase") == "started":
                         await _update_block_status(
                             render_id, block_id,
+                            state="baking",
+                            started_at=datetime.now(timezone.utc),
                             current_provider=event["provider"],
                             current_tier=event["tier"],
                         )

@@ -2578,24 +2578,31 @@ class FalWhisperProvider:
             text = (chunk.get("text") or "").strip()
             if not text:
                 continue
-            if word_timestamps and len(text.split()) <= 1:
+            chunk_words = text.split()
+            if word_timestamps and len(chunk_words) <= 1:
                 words.append({"word": text, "start": start, "end": end, "probability": 1.0})
-            else:
-                segments.append({"start": start, "end": end, "text": text})
-
-        if word_timestamps and not words and segments:
-            for seg in segments:
-                seg_words = (seg.get("text") or "").split()
-                if not seg_words:
-                    continue
-                step = (seg["end"] - seg["start"]) / max(len(seg_words), 1)
-                for i, w in enumerate(seg_words):
-                    words.append({
-                        "word": w,
-                        "start": round(seg["start"] + i * step, 3),
-                        "end": round(seg["start"] + (i + 1) * step, 3),
-                        "probability": 0.5,
-                    })
+                continue
+            segments.append({"start": start, "end": end, "text": text})
+            if not word_timestamps:
+                continue
+            # fal's Whisper doesn't always honor chunk_level="word" —
+            # two quickly-spoken words sometimes arrive fused into one
+            # chunk. Evenly split THIS chunk's own words across its
+            # [start, end] window instead of dropping them. Previously
+            # this only happened as an all-or-nothing fallback below when
+            # EVERY chunk failed to be single-word, so a single fused pair
+            # among otherwise-clean chunks silently lost its words from
+            # the per-word array entirely (no timestamp at all) — the
+            # karaoke highlight had nothing real to track right at that
+            # phrase, then desynced from whatever came after it.
+            step = (end - start) / len(chunk_words)
+            for i, w in enumerate(chunk_words):
+                words.append({
+                    "word": w,
+                    "start": round(start + i * step, 3),
+                    "end": round(start + (i + 1) * step, 3),
+                    "probability": 0.5,
+                })
 
         return {
             "transcript": result.get("text", ""),
