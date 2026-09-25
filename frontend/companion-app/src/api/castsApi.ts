@@ -90,8 +90,10 @@ export const castsApi = {
     api.post(`/casts/${castId}/retry`).then((r) => r.data),
   retryVariant: (castId: string, variantId: string) =>
     api.post(`/casts/${castId}/variants/${variantId}/retry`).then((r) => r.data),
-  generateOutline: (id: string) =>
-    api.post<OutlineResponse>(`/casts/${id}/generate-outline`).then((r) => r.data),
+  generateOutline: (id: string, opts?: { confirmMismatch?: boolean }) =>
+    api.post<OutlineResponse>(`/casts/${id}/generate-outline`, undefined, {
+      params: opts?.confirmMismatch ? { confirm_mismatch: true } : undefined,
+    }).then((r) => r.data),
   // Smart Cast outline: the LLM designs the whole video (categories + Pexels
   // stock + transitions). Returns expanded block dicts with category and
   // stock_media_url so the editor can show the right visual immediately.

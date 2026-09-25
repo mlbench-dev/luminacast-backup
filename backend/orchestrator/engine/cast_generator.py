@@ -862,6 +862,17 @@ Produce a cast script as N blocks where:
 - Each block's script is tuned to the target audience's voice and interests
 - First block hooks immediately (no "Hi everyone, welcome to my live")
 - Last block has a clear CTA tied to the product
+- EVERY block that shows or describes the product — not just the CTA — must
+  be grounded in the REAL product above (its actual name, materials,
+  features, benefits). If the user goal describes a scene or mood that
+  doesn't naturally include the product (e.g. "show a man waking up" for a
+  hoodie), find a natural way to bring the ACTUAL product into that scene
+  (e.g. he reaches for the hoodie, puts it on) — do NOT invent a
+  different, generic product or accessory that merely fits the mood
+  better (e.g. do not write about a drink/supplement/gadget that isn't
+  the attached product, even if it fits a "morning routine" story more
+  smoothly). The product block(s) must be identifiably THIS product, not
+  a stand-in.
 - MIX block categories — never produce all avatar_speaking. If the brief describes
   motion / action / a setting (running, jungle, office, dancing, walking),
   use avatar_action or stock_video for those moments instead of a talking head.

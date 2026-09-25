@@ -243,6 +243,14 @@ async def retry_cast_generation(
 @router.post("/{cast_id}/generate-outline", response_model=OutlineResponse)
 async def generate_outline(
     cast_id: str,
+    confirm_mismatch: bool = Query(
+        False,
+        description=(
+            "Set true to proceed even though a prior call to this endpoint "
+            "flagged the cast's description as naming a different product "
+            "than the one attached (see the 409 product_mismatch response)."
+        ),
+    ),
     user: User = Depends(get_current_user),
     ctx: WorkspaceContext = Depends(require_role(TeamRole.CREATOR.value)),
     db: AsyncSession = Depends(get_db),
@@ -278,6 +286,34 @@ async def generate_outline(
         }
         for cp in cast_products if cp.product
     ]
+
+    # Catch the "typed the wrong product" mistake before spending a full
+    # outline+script generation on a contradictory brief — e.g. the cast's
+    # description says "chopping board" while the attached product is a
+    # lazy susan. Deliberately narrow: only flags when the description
+    # names a SPECIFIC, DIFFERENT product, never a generic scene/activity
+    # that just doesn't mention the product by name (see
+    # check_product_prompt_mismatch's docstring). confirm_mismatch=true
+    # (set by the frontend after the user explicitly says "continue
+    # anyway") skips the check on the retry.
+    if products and not confirm_mismatch and getattr(cast, "description", None):
+        from services.product_prompt_check import check_product_prompt_mismatch
+        mismatch_result = await check_product_prompt_mismatch(cast.description, products)
+        if mismatch_result["mismatch"]:
+            raise HTTPException(
+                409,
+                detail={
+                    "type": "product_mismatch",
+                    "named_object": mismatch_result["named_object"],
+                    "product_name": products[0]["name"] if products else None,
+                    "message": (
+                        f"Your creative direction mentions "
+                        f"\"{mismatch_result['named_object']}\", but this cast's "
+                        f"attached product is \"{products[0]['name'] if products else 'unknown'}\". "
+                        "Continue anyway, or fix the direction / product first?"
+                    ),
+                },
+            )
 
     # Vision-generated Pexels queries from each product's own cover photo —
     # cached on Product.ai_stock_queries, so this is free after the first

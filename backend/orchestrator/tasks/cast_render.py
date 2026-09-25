@@ -1587,6 +1587,70 @@ def _rewrite_mux_audio_to_lipsync(
     return rewritten
 
 
+def _shift_caption_tokens_for_lipsync_pad(
+    timeline: dict,
+    *,
+    padded_block_ids: set[str],
+    pad_ms: float,
+    render_id: str,
+) -> int:
+    """Shift caption word timestamps forward for blocks whose audible audio
+    was rewritten to the lipsync-padded track by ``_rewrite_mux_audio_to_lipsync``.
+
+    ``prepare_lipsync_audio`` (services/lipsync_audio_prep.py) adds a fixed
+    ``pad_ms`` of silence to the HEAD of the audio so the lipsync engine has
+    an anchor frame — a deliberate, permanent shift of what the viewer
+    actually hears, not a bug. But the caption word timestamps are Whisper's
+    transcription of the ORIGINAL, un-padded take, so once the padded track
+    becomes the real mux audio (see _rewrite_mux_audio_to_lipsync), the
+    highlight for every word in that block leads the actual spoken audio by
+    exactly ``pad_ms`` — confirmed on cst_3a9479e2107e block blk_4c680edb22ac:
+    caption said "Tap" ~100ms before the audio actually said it, consistently
+    across the whole block. Mutates ``timeline`` in place. Returns the number
+    of caption elements shifted.
+    """
+    if not padded_block_ids or pad_ms == 0:
+        return 0
+    shifted = 0
+    for track in timeline.get("tracks") or []:
+        if not isinstance(track, dict):
+            continue
+        for el in track.get("elements") or []:
+            if not isinstance(el, dict):
+                continue
+            if (el.get("type") or "").lower() not in ("caption", "captions"):
+                continue
+            meta = el.get("metadata") or {}
+            bid = meta.get("block_id") or ""
+            if bid not in padded_block_ids:
+                continue
+            # A render_id can get reprocessed on retry, re-reading this same
+            # (already-mutated) timeline_snapshot — without this guard a
+            # retry would shift an already-shifted block a second time.
+            if meta.get("_lipsync_caption_shift_ms") == pad_ms:
+                continue
+            props = el.get("props")
+            tokens = props.get("_captions_tokens") if isinstance(props, dict) else None
+            if not isinstance(tokens, list) or not tokens:
+                continue
+            for tok in tokens:
+                if not isinstance(tok, dict):
+                    continue
+                for k in ("startMs", "endMs", "timestampMs"):
+                    if isinstance(tok.get(k), (int, float)):
+                        tok[k] = tok[k] + pad_ms
+            meta["_lipsync_caption_shift_ms"] = pad_ms
+            el["metadata"] = meta
+            shifted += 1
+    if shifted:
+        logger.info(
+            "Render %s: shifted caption tokens +%.0fms for %d lipsync-padded "
+            "block(s) so highlights match the actual (padded) mux audio",
+            render_id, pad_ms, shifted,
+        )
+    return shifted
+
+
 async def _assert_lipsync_mux_audio_identity(
     timeline: dict,
     *,
@@ -1830,6 +1894,37 @@ def _apply_real_block_durations(
                 delta = new_s_blk - old_s
                 mapped_s = _snap(s_v + delta)
                 mapped_e = _snap(e_v + delta)
+                # The container's [s, e] isn't the only place time lives on
+                # this element — props._captions_tokens carries each word's
+                # OWN absolute startMs/endMs/timestampMs (that's what the SSR
+                # renderer and the compose overlay actually key the karaoke
+                # highlight off of, per cast_ffmpeg_composer._caption_tokens_
+                # to_ssr's docstring). Shifting the container without shifting
+                # these leaves the highlight clock pointing at the caption's
+                # PRE-shift position — confirmed on cast cst_3a9479e2107e:
+                # the container moved but the words underneath didn't, so
+                # every highlight kept running ahead of the spoken word by
+                # the same fixed delta. Mirrors the fix already applied to
+                # the frontend's own version of this same shift — see
+                # patchMarginallyStaleBlockDurations in editorStarterMapping.ts.
+                if abs(delta) > 1e-9:
+                    delta_ms = delta * 1000.0
+                    el_props = el.get("props")
+                    if isinstance(el_props, dict) and isinstance(el_props.get("_captions_tokens"), list):
+                        shifted_tokens = []
+                        for tok in el_props["_captions_tokens"]:
+                            if not isinstance(tok, dict):
+                                shifted_tokens.append(tok)
+                                continue
+                            new_tok = dict(tok)
+                            for _ms_key in ("startMs", "endMs", "timestampMs"):
+                                if isinstance(tok.get(_ms_key), (int, float)):
+                                    new_tok[_ms_key] = tok[_ms_key] + delta_ms
+                            shifted_tokens.append(new_tok)
+                        new_props = dict(el_props)
+                        new_props["_captions_tokens"] = shifted_tokens
+                        el = dict(el)
+                        el["props"] = new_props
             else:
                 rel_s = max(0.0, s_v - old_s) / old_dur
                 rel_e = max(0.0, e_v - old_s) / old_dur
@@ -5155,6 +5250,11 @@ async def _render_async(task, render_id: str):
     # mux passes lay down byte-identical audio — lips can't drift from a
     # track they were synced to.
     lipsync_audio_by_block: dict[str, str] = {}
+    # Block ids whose mux audio got switched to the lipsync-padded track
+    # (prepare_lipsync_audio's fixed head-pad — see services/lipsync_audio_
+    # prep.py's _HEAD_PAD_S). Captions for these blocks need the same shift
+    # applied — see _shift_caption_tokens_for_lipsync_pad below.
+    lipsync_padded_block_ids: set[str] = set()
     # The REAL, audio-driven duration a voiceover block's bake targeted
     # (broll_s — always the probed TTS/lipsync-prep length, never the
     # Arrange-timeline slot; see the voiceover branch below). Registered
@@ -5293,6 +5393,22 @@ async def _render_async(task, render_id: str):
         except Exception as _fresh_exc:
             sentry_sdk.capture_exception(_fresh_exc)
 
+        # The TTS master BEFORE any lipsync-only post-processing below —
+        # captions (variant.caption_words / props._captions_tokens) were
+        # timed against THIS audio. The lipsync prep step immediately below
+        # pads ~100ms of silence onto the head (services/lipsync_audio_prep.py
+        # — needed to anchor a virtual avatar's mouth-movement engine, not
+        # something the viewer should ever hear) and reassigns `audio_url`
+        # to that padded copy. A voiceover (B-roll) block has no avatar face
+        # at all, so it never uses that padded copy for lipsync — but it WAS
+        # still using it as the actual audible narration track (below), which
+        # meant the sound played ~100ms+ later than the word timestamps the
+        # captions were built from. Confirmed on cst_3a9479e2107e: audio
+        # measured from the final render lagged the caption timing by
+        # ~150ms, closely matching this pad. raw_audio_url is the unpadded
+        # master voiceover muxing should use instead.
+        raw_audio_url = audio_url
+
         # PR #65: prefer the 16 kHz WAV lipsync output for the lipsync
         # engine (InfiniteTalk / MuseTalk / Kling) when the variant has
         # one. The compose audio remux (PR #64) still reads the 44.1 kHz
@@ -5329,6 +5445,7 @@ async def _render_async(task, render_id: str):
                         block_id, prep_url[:80],
                     )
                     audio_url = prep_url
+                    lipsync_padded_block_ids.add(block_id)
             except Exception as _prep_exc:
                 # Already captured to Sentry inside the helper. Fall
                 # back to the un-prepared URL so the render proceeds.
@@ -5632,7 +5749,7 @@ async def _render_async(task, render_id: str):
                 )
 
         pending_jobs.append((idx, block_id, v1_element, a1_element, baked_key, duration_s,
-                             face_ref_url, audio_url, motion_prompt))
+                             face_ref_url, audio_url, motion_prompt, raw_audio_url))
 
     if not pending_jobs and not baked_urls:
         raise RuntimeError("No blocks submitted for baking")
@@ -5679,7 +5796,7 @@ async def _render_async(task, render_id: str):
         for _pj in pending_jobs:
             # Tuple shape: (idx, block_id, v1_el, a1_el, baked_key,
             #               duration_s, face_ref_url, audio_url,
-            #               motion_prompt). duration_s == `using=`.
+            #               motion_prompt, raw_audio_url). duration_s == `using=`.
             try:
                 _bid = _pj[1]
                 _slot_dur = float(_pj[5] or 0)
@@ -5733,7 +5850,7 @@ async def _render_async(task, render_id: str):
                 (
                     pj[0], pj[1], pj[2], pj[3], pj[4],
                     _slot_duration_for_block(timeline, pj[1], pj[5]) or pj[5],
-                    pj[6], pj[7], pj[8],
+                    pj[6], pj[7], pj[8], pj[9],
                 )
                 for pj in pending_jobs
             ]
@@ -5778,7 +5895,7 @@ async def _render_async(task, render_id: str):
     HOSTKEY_ONLY = os.environ.get("CAST_RENDER_HOSTKEY_ONLY", "1") == "1"
 
     async def dispatch_and_upload(idx, block_id, v1_el, a1_el, baked_key, duration_s,
-                                  face_ref_url, audio_url, motion_prompt):
+                                  face_ref_url, audio_url, motion_prompt, raw_audio_url):
         """Dispatch one block to HOSTKEY or RunPod, decode result, upload to R2."""
         nonlocal completed_count
 
@@ -5942,7 +6059,9 @@ async def _render_async(task, render_id: str):
 
             cw, ch, fps = _canvas_dims_for_render(timeline)
             # Audio is the source of truth for a voiceover slot's length.
-            audio_dur = await _probe_audio_duration_s(audio_url) if audio_url else 0.0
+            # raw_audio_url (not the lipsync-padded audio_url) — see its
+            # definition above for why.
+            audio_dur = await _probe_audio_duration_s(raw_audio_url) if raw_audio_url else 0.0
             slot_s = _slot_duration_for_block(timeline, block_id, float(duration_s or 0.0))
             broll_s = audio_dur if audio_dur > 0 else slot_s
             if broll_s <= 0:
@@ -5991,10 +6110,10 @@ async def _render_async(task, render_id: str):
 
             if seq_bytes is not None:
                 try:
-                    if audio_url:
+                    if raw_audio_url:
                         try:
                             seq_bytes = await _mux_audio_into_clip(
-                                seq_bytes, audio_url, duration_s=broll_s,
+                                seq_bytes, raw_audio_url, duration_s=broll_s,
                             )
                         except Exception as mux_e:
                             sentry_sdk.capture_exception(mux_e)
@@ -6020,7 +6139,7 @@ async def _render_async(task, render_id: str):
                     )
                     await _validate_baked_clip_bytes(
                         seq_bytes, block_id=block_id, render_id=render_id,
-                        require_audio=bool(audio_url),
+                        require_audio=bool(raw_audio_url),
                     )
                     video_bytes = seq_bytes
                     broll_source = "broll_sequence"
@@ -6058,10 +6177,10 @@ async def _render_async(task, render_id: str):
                             fade_in_s=_vo_fade_in_s, fade_out_s=_vo_fade_out_s_padded,
                         )
 
-                    if audio_url:
+                    if raw_audio_url:
                         try:
                             cand_bytes = await _mux_audio_into_clip(
-                                cand_bytes, audio_url, duration_s=broll_s,
+                                cand_bytes, raw_audio_url, duration_s=broll_s,
                             )
                         except Exception as mux_e:
                             sentry_sdk.capture_exception(mux_e)
@@ -6087,7 +6206,7 @@ async def _render_async(task, render_id: str):
                     )
                     await _validate_baked_clip_bytes(
                         cand_bytes, block_id=block_id, render_id=render_id,
-                        require_audio=bool(audio_url),
+                        require_audio=bool(raw_audio_url),
                     )
 
                     video_bytes = cand_bytes
@@ -6134,8 +6253,20 @@ async def _render_async(task, render_id: str):
             # compose than the one actually muxed into the bake, landing
             # right on top of the next block's narration and sounding like
             # two voices at once).
-            if audio_url:
-                lipsync_audio_by_block[block_id] = audio_url
+            # raw_audio_url, not audio_url — this dict name says "lipsync"
+            # but for a voiceover block it's actually what COMPOSE reads as
+            # the A1 track's real audio (see the dl-audio step in the
+            # compose pass), so the ~100ms lipsync head-pad has no business
+            # being in it; it has to be the same master the captions were
+            # timed against.
+            if raw_audio_url:
+                lipsync_audio_by_block[block_id] = raw_audio_url
+            # This block has no avatar face, so it never used the padded
+            # lipsync-driver audio for real (Pass 1a computed it speculatively
+            # for every block before render_mode was known) — drop it from
+            # the padded set so _shift_caption_tokens_for_lipsync_pad doesn't
+            # shift captions that were never actually delayed.
+            lipsync_padded_block_ids.discard(block_id)
 
             # Mux, canvas-normalize, and Phase 3 validation already happened
             # per-candidate inside the resolution loop above — video_bytes
@@ -8040,7 +8171,7 @@ async def _render_async(task, render_id: str):
     total = len(pending_jobs)
 
     async def _run_one_job(i: int, job: tuple) -> tuple:
-        idx, bid, v1, a1, key, dur, face, audio, prompt = job
+        idx, bid, v1, a1, key, dur, face, audio, prompt, raw_audio = job
         try:
             await _update_render(
                 render_id,
@@ -8050,7 +8181,7 @@ async def _render_async(task, render_id: str):
             sentry_sdk.capture_exception(_ue)
         try:
             element_id, baked_key = await dispatch_and_upload(
-                idx, bid, v1, a1, key, dur, face, audio, prompt,
+                idx, bid, v1, a1, key, dur, face, audio, prompt, raw_audio,
             )
             return ("ok", bid, element_id, baked_key)
         except Exception as exc:
@@ -8276,6 +8407,19 @@ async def _render_async(task, render_id: str):
             lipsync_audio_by_block=lipsync_audio_by_block,
             render_id=render_id,
         )
+        # The rewrite above points avatar blocks' mux audio at the
+        # lipsync-padded track (deliberately ~100ms later than the original
+        # TTS take the captions were transcribed from) — shift those same
+        # blocks' caption word timestamps by the same amount so the
+        # word-by-word highlight still lands on the actually-spoken word.
+        from services.lipsync_audio_prep import _HEAD_PAD_S
+        n_caption_shifted = _shift_caption_tokens_for_lipsync_pad(
+            timeline,
+            padded_block_ids=lipsync_padded_block_ids,
+            pad_ms=_HEAD_PAD_S * 1000,
+            render_id=render_id,
+        )
+        n_rewritten = n_rewritten or n_caption_shifted
         await _assert_lipsync_mux_audio_identity(
             timeline,
             lipsync_audio_by_block=lipsync_audio_by_block,

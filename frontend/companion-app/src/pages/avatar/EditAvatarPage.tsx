@@ -630,13 +630,17 @@ export function EditAvatarPage() {
 
       {/* Preview Modal */}
       {previewLook && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={() => setPreviewLook(null)}>
-          <div className="relative max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 overflow-y-auto py-12" onClick={() => setPreviewLook(null)}>
+          <div className="relative max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <button onClick={() => setPreviewLook(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white">
               <X className="h-6 w-6" />
             </button>
             {previewLook.image_url && (
-              <img src={previewLook.image_url} alt={previewLook.name} className="w-full rounded-lg" />
+              <img
+                src={previewLook.image_url}
+                alt={previewLook.name}
+                className="w-auto max-w-full max-h-[70vh] mx-auto object-contain rounded-lg block"
+              />
             )}
             <div className="mt-3 text-center">
               <p className="text-white font-medium">{previewLook.name}</p>

@@ -586,17 +586,36 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
     }
   }, [freshCast?.id, freshCast?.blocks?.length, freshCast?.status]);
 
-  const generateOutline = useCallback(async () => {
+  const generateOutline = useCallback(async (confirmMismatch = false) => {
     setGenerating(true);
     try {
-      await castsApi.generateOutline(cast.id);
+      await castsApi.generateOutline(cast.id, { confirmMismatch });
       await castsApi.generateScripts(cast.id);
       await refetch();
       toast({ title: "Script generated", description: "Review and edit the blocks below." });
     } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      // Backend flagged the cast's description as naming a different
+      // product than the one attached (e.g. "chopping board" typed while
+      // a lazy susan is the actual product) — ask before generating a
+      // script that would drift off-product. See product_prompt_check.py.
+      if (err?.response?.status === 409 && detail?.type === "product_mismatch") {
+        setGenerating(false);
+        const proceed = await confirmAction({
+          title: "Direction doesn't match the product?",
+          text: detail.message || `Your direction mentions "${detail.named_object}", but this cast's product is "${detail.product_name}".`,
+          confirmButtonText: "Continue anyway",
+          cancelButtonText: "Let me fix it",
+          icon: "warning",
+        });
+        if (proceed) {
+          await generateOutline(true);
+        }
+        return;
+      }
       toast({
         title: "Script generation failed",
-        description: err?.response?.data?.detail || err.message,
+        description: (typeof detail === "string" ? detail : null) || err.message,
         variant: "destructive",
       });
     } finally {
@@ -1276,7 +1295,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                       <div className="w-full sm:w-56">
                         <AddBlockButton onAdd={handleAddBlock} />
                       </div>
-                      <Button onClick={generateOutline} variant="outline" className="shrink-0">
+                      <Button onClick={() => generateOutline()} variant="outline" className="shrink-0">
                         <Wand2 className="w-4 h-4 mr-2" /> Regenerate script
                       </Button>
                     </div>
@@ -1284,7 +1303,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                 ) : (
                   <>
                     <p className="text-white/40 text-sm">Script generation failed or is still loading.</p>
-                    <Button onClick={generateOutline} className="bg-accent hover:bg-accent/90">
+                    <Button onClick={() => generateOutline()} className="bg-accent hover:bg-accent/90">
                       <Wand2 className="w-4 h-4 mr-2" /> Retry Script Generation
                     </Button>
                   </>
@@ -1838,7 +1857,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
                           <div className="flex items-center justify-between text-xs text-amber-300/70 bg-amber-500/5 border border-amber-500/20 rounded px-3 py-2">
                             <span>Script text not loaded yet for this block.</span>
                             <button
-                              onClick={generateOutline}
+                              onClick={() => generateOutline()}
                               className="text-amber-300 hover:text-amber-200 underline underline-offset-2"
                             >
                               Regenerate
@@ -2058,7 +2077,7 @@ export function ScriptPhase({ cast, onDone, renderInProgress, onCancelRender }: 
             );
             return (
             <div className="flex items-center justify-between pt-4 border-t border-white/10">
-              <Button variant="outline" onClick={generateOutline} className="border-white/20 text-white/70">
+              <Button variant="outline" onClick={() => generateOutline()} className="border-white/20 text-white/70">
                 <RefreshCw className="w-4 h-4 mr-2" /> Regenerate Script
               </Button>
               <div className="flex flex-col items-end gap-1.5">

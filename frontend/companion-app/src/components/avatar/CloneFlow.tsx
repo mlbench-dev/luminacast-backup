@@ -1948,16 +1948,27 @@ function CloneAudiencePhase({
     const trimmed = customInterest.trim();
     if (!trimmed) return;
     setCustomInterest("");
+    // If this matches a built-in preset in any case ("fitness" vs
+    // "Fitness"), select the PRESET's own casing instead of the raw typed
+    // text. Selecting the raw text created a case-mismatched duplicate
+    // that satisfied neither the preset button's highlight check
+    // (interests.includes(interest), case-sensitive) nor the custom-chip
+    // list below (filtered out case-insensitively as "already a preset")
+    // — an invisible selection with no visible feedback anywhere.
+    const lower = trimmed.toLowerCase();
+    const presetMatch = INTEREST_OPTIONS.find((o) => o.toLowerCase() === lower);
+    const canonical = presetMatch || trimmed;
     // Always select on this avatar (even if already there — the toggle
     // logic below treats already-included as no-op).
     setInterests((prev) =>
-      prev.includes(trimmed) ? prev : [...prev, trimmed]
+      prev.some((i) => i.toLowerCase() === lower) ? prev : [...prev, canonical]
     );
-    // Persist as a user preset so the chip survives across future avatars.
-    // We compare case-insensitively against the existing presets to avoid
-    // creating 'Vegan' AND 'vegan' AND 'VEGAN' as separate entries.
-    const lower = trimmed.toLowerCase();
-    const alreadyPreset = userInterests.some((p) => p.toLowerCase() === lower);
+    // Persist as a user preset so the chip survives across future avatars —
+    // skipped when it's just a built-in preset (presetMatch), which needs
+    // no separate persistence. We compare case-insensitively against the
+    // existing presets to avoid creating 'Vegan' AND 'vegan' AND 'VEGAN'
+    // as separate entries.
+    const alreadyPreset = !!presetMatch || userInterests.some((p) => p.toLowerCase() === lower);
     if (!alreadyPreset) {
       const next = [...userInterests, trimmed];
       // Optimistic local update so the chip appears immediately.
@@ -1997,11 +2008,24 @@ function CloneAudiencePhase({
 
   const addCustomOccupation = useCallback(() => {
     const trimmed = customOccupation.trim();
-    if (trimmed && !occupations.includes(trimmed)) {
-      setOccupations((prev) => [...prev, trimmed]);
+    if (trimmed) {
+      // Case-insensitive match, same as addCustomInterest — selecting the
+      // preset's own casing (instead of the raw typed text) keeps this in
+      // sync with the preset chip's highlight check above, and avoids
+      // silently adding a case-mismatched duplicate.
+      const lower = trimmed.toLowerCase();
+      const presetMatch = OCCUPATION_OPTIONS.find((o) => o.toLowerCase() === lower);
+      const canonical = presetMatch || trimmed;
+      setOccupations((prev) =>
+        prev.some((o) => o.toLowerCase() === lower) ? prev : [...prev, canonical]
+      );
     }
     setCustomOccupation("");
-  }, [customOccupation, occupations]);
+  }, [customOccupation]);
+
+  const removeCustomOccupation = useCallback((occ: string) => {
+    setOccupations((prev) => prev.filter((o) => o !== occ));
+  }, []);
 
   // Save + continue
   const handleContinue = useCallback(async () => {
@@ -2246,6 +2270,27 @@ function CloneAudiencePhase({
               {occ}
             </button>
           ))}
+          {/* Custom occupations typed into the input below — without this,
+              adding one updated `occupations` state with no visible chip
+              anywhere, looking like the Add button did nothing. */}
+          {occupations
+            .filter((o) => !OCCUPATION_OPTIONS.some((b) => b.toLowerCase() === o.toLowerCase()))
+            .map((occ) => (
+              <span
+                key={`custom-${occ}`}
+                className="inline-flex items-center gap-1 rounded-full pl-2.5 pr-1.5 py-1 text-[11px] font-medium transition-all border bg-accent/20 text-accent border-accent/40"
+              >
+                {occ}
+                <button
+                  type="button"
+                  aria-label={`Remove ${occ}`}
+                  onClick={() => removeCustomOccupation(occ)}
+                  className="ml-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full text-accent/70 hover:text-accent hover:bg-white/10"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
         </div>
         <div className="flex gap-2">
           <input
