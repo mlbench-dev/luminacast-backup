@@ -385,7 +385,9 @@ function ScheduledPostCard({ post }: { post: any }) {
 // (which does call socialApi.generateCaption) remains the deeper editor.
 function PublishCard({ cast }: { cast: any }) {
   const navigate = useNavigate();
-  const [platforms, setPlatforms] = useState<string[]>(["tiktok", "instagram_reels"]);
+  const [platforms, setPlatforms] = useState<string[]>(
+    cast.format_family === "horizontal" ? ["youtube_shorts"] : ["tiktok", "instagram_reels"],
+  );
   const [scheduleMode, setScheduleMode] = useState<"now" | "later">("now");
   const [scheduleDate, setScheduleDate] = useState<string>("");
   // datetime-local has no timezone — offset by the local UTC offset so
@@ -405,6 +407,14 @@ function PublishCard({ cast }: { cast: any }) {
 
   const togglePlatform = (p: string) =>
     setPlatforms((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
+
+  // Instagram Reels and TikTok both require a vertical (9:16) video on the
+  // platform's own side — Instagram publishes any single video as a Reel
+  // with no way to force it into Feed, and TikTok has no landscape feed at
+  // all. A horizontal cast here would just get rejected once it hit
+  // create_social_post, so disable those toggles up front instead.
+  const isHorizontal = cast.format_family === "horizontal";
+  const VERTICAL_ONLY_PLATFORMS = new Set(["tiktok", "instagram_reels"]);
 
   const goPublish = () => {
     // The per-cast Publish page is where the actual posting happens;
@@ -473,20 +483,27 @@ function PublishCard({ cast }: { cast: any }) {
       </div>
 
       <div className="flex flex-wrap gap-2 mb-3">
-        {["tiktok", "instagram_reels", "youtube_shorts", "facebook", "linkedin"].map((p) => (
-          <button
-            key={p}
-            onClick={() => togglePlatform(p)}
-            className={cn(
-              "text-[10px] px-2.5 py-1 rounded-full border transition-all",
-              platforms.includes(p)
-                ? "bg-accent/20 border-accent/40 text-accent"
-                : "border-white/10 text-white/30 hover:border-white/20",
-            )}
-          >
-            {p.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-          </button>
-        ))}
+        {["tiktok", "instagram_reels", "youtube_shorts", "facebook", "linkedin"].map((p) => {
+          const disabled = isHorizontal && VERTICAL_ONLY_PLATFORMS.has(p);
+          return (
+            <button
+              key={p}
+              disabled={disabled}
+              onClick={() => !disabled && togglePlatform(p)}
+              title={disabled ? "This cast is horizontal — requires a vertical (9:16) cast" : undefined}
+              className={cn(
+                "text-[10px] px-2.5 py-1 rounded-full border transition-all",
+                disabled
+                  ? "border-white/5 text-white/15 cursor-not-allowed"
+                  : platforms.includes(p)
+                    ? "bg-accent/20 border-accent/40 text-accent"
+                    : "border-white/10 text-white/30 hover:border-white/20",
+              )}
+            >
+              {p.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+            </button>
+          );
+        })}
       </div>
 
       <textarea
