@@ -192,6 +192,17 @@ export default function PublishCast() {
 
   const [generatingCaption, setGeneratingCaption] = useState(false);
 
+  // Instagram (any single video → Reel, no way to force Feed) and TikTok
+  // (no landscape feed) both require a vertical (9:16) cast on the
+  // platform's own side. If a horizontal cast lands here with one of those
+  // preselected (e.g. handed off from PublishHub before this cast's
+  // orientation was known), drop it rather than let submit 400.
+  const isHorizontal = cast?.format_family === "horizontal";
+  useEffect(() => {
+    if (!isHorizontal) return;
+    setSelectedPlatforms((prev) => prev.filter((p) => p !== "instagram" && p !== "tiktok"));
+  }, [isHorizontal]);
+
   const [postNow, setPostNow] = useState(() => searchParams.get("mode") !== "later");
   // datetime-local value — the source (PublishHub's PublishCard) uses the
   // same input type, so the raw query value is already in the right shape.
@@ -420,15 +431,25 @@ export default function PublishCast() {
           {PLATFORMS.map((p) => {
             const active = selectedPlatforms.includes(p.value);
             const connected = !!accountByPlatform[p.value];
+            // Instagram publishes any single video as a Reel (no way to
+            // force it into Feed) and TikTok has no landscape feed at all
+            // — both require a vertical (9:16) cast on the platform's own
+            // side, so block them here rather than let the submit 400.
+            const orientationBlocked =
+              isHorizontal && (p.value === "instagram" || p.value === "tiktok");
             if (!connected) {
               const connecting = connectingPlatform === p.value;
               return (
                 <button
                   key={p.value}
-                  onClick={() => handleConnect(p.value)}
-                  disabled={connecting}
+                  onClick={() => !orientationBlocked && handleConnect(p.value)}
+                  disabled={connecting || orientationBlocked}
                   className="relative rounded-md border border-dashed border-white/15 px-3 py-2 text-sm text-white/60 hover:border-accent/60 hover:text-white transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:border-white/15 disabled:hover:text-white/60"
-                  title={`Connect ${p.label} via Zernio`}
+                  title={
+                    orientationBlocked
+                      ? `${p.label} requires a vertical (9:16) cast`
+                      : `Connect ${p.label} via Zernio`
+                  }
                 >
                   <span className="flex items-center gap-1.5">
                     {connecting ? (
@@ -444,10 +465,15 @@ export default function PublishCast() {
             return (
               <button
                 key={p.value}
-                onClick={() => togglePlatform(p.value)}
-                className={`relative rounded-md border px-3 py-2 text-sm transition cursor-pointer ${active
-                    ? "border-accent bg-accent/10 text-white"
-                    : "border-white/10 text-white/70 hover:border-white/20"
+                onClick={() => !orientationBlocked && togglePlatform(p.value)}
+                disabled={orientationBlocked}
+                title={orientationBlocked ? `${p.label} requires a vertical (9:16) cast` : undefined}
+                className={`relative rounded-md border px-3 py-2 text-sm transition ${orientationBlocked
+                    ? "border-white/5 text-white/20 cursor-not-allowed"
+                    : `cursor-pointer ${active
+                      ? "border-accent bg-accent/10 text-white"
+                      : "border-white/10 text-white/70 hover:border-white/20"
+                    }`
                   }`}
               >
                 {p.label}
