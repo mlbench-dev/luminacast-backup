@@ -225,17 +225,7 @@ export function SetupPage() {
 
 // ── Avatar Card Component ──
 
-// Thumbnail/preview aspect ratios were hardcoded to portrait everywhere in
-// this file, so a landscape avatar's video always got squeezed into a
-// portrait-shaped box (object-cover crops it, or contain letterboxes it —
-// either way it reads as "still vertical" even though the underlying
-// face_ref/test_video files are the correct landscape shape). Derive the
-// box shape from avatar.layout instead; falls back to the pre-existing
-// portrait default for avatars with no stored layout (created before this
-// field existed).
-function thumbnailAspectRatio(layout: string | undefined | null): string {
-  return layout === "16:9" ? "4/3" : "3/4";
-}
+const PORTRAIT_THUMBNAIL_WIDTH = 200;
 
 function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avatar; activeVideoId: string | null; setActiveVideoId: (id: string | null) => void }) {
   const navigate = useNavigate();
@@ -408,10 +398,20 @@ function AvatarCard({ avatar, activeVideoId, setActiveVideoId }: { avatar: Avata
 
       {(isReady || isApproved) && (avatar.preview_video_url || avatar.test_video_url || avatar.face_image_url) && (
         <div className="mt-3">
-          {/* Face thumbnail with click-to-play video */}
+          {/* Face thumbnail with click-to-play video.
+              Portrait boxes are sized by width (200px wide, tall box). A
+              landscape (16:9) box sized the same way ends up very short —
+              correct, but reads as "tiny" next to a portrait card in the
+              same grid row. Size it by height instead, matching the height
+              a portrait box renders at, and let width fill the card
+              (object-cover on the media crops the sides as needed). */}
           <div
             className="group relative mx-auto cursor-pointer rounded-lg overflow-hidden border border-border"
-            style={{ maxWidth: "200px", aspectRatio: thumbnailAspectRatio(avatar.layout) }}
+            style={
+              avatar.layout === "16:9"
+                ? { height: PORTRAIT_THUMBNAIL_WIDTH * (16 / 9), width: "100%" }
+                : { maxWidth: PORTRAIT_THUMBNAIL_WIDTH, aspectRatio: playerAspectRatio(avatar.layout) }
+            }
             onClick={(e) => {
               e.stopPropagation();
               const videoUrl = avatar.preview_video_url || avatar.test_video_url;
