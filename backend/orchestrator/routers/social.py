@@ -802,6 +802,25 @@ async def create_social_post(
                 "This cast needs Publisher approval before it can be scheduled or published.",
             )
 
+    # Instagram always publishes a single video as a Reel (no field exists to
+    # force it into a regular Feed post), and TikTok has no non-vertical feed
+    # at all — both require 9:16 on the platform's own side. Zernio gives us
+    # no override for either, so a horizontal cast has to be caught here
+    # rather than left to fail (or worse, silently misclassify) downstream.
+    # YouTube/Facebook/LinkedIn accept both orientations, so they're exempt.
+    VERTICAL_ONLY_PLATFORMS = {"instagram", "tiktok"}
+    if getattr(cast, "format_family", "vertical") != "vertical":
+        blocked = sorted({
+            p.platform for p in req.platforms if p.platform in VERTICAL_ONLY_PLATFORMS
+        })
+        if blocked:
+            raise HTTPException(
+                400,
+                f"This cast is horizontal ({cast.output_format or '16:9'}) and can't be "
+                f"published to {', '.join(blocked)} — those require a vertical (9:16) "
+                "cast. Remove them or publish a vertical cast instead.",
+            )
+
     # Pick the render to publish: explicit render_id or the latest ready render.
     render: Optional[CastRender] = None
     if req.render_id:
